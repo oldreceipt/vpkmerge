@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "vpkmerge-core",
+    "vpkmerge-cli",
+    "gui/src-tauri",
+]
