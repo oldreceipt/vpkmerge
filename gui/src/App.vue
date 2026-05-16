@@ -1,11 +1,16 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 const mods = ref([]);
 const outputPath = ref('');
 const status = ref({ text: '', kind: '' });
 const busy = ref(false);
+const isDragging = ref(false);
+const showConflictsModal = ref(false);
+const showMergedModal = ref(false);
+const lastReport = ref(null);
 
 const conflicts = computed(() => {
   const owners = new Map();
@@ -24,13 +29,42 @@ const conflicts = computed(() => {
   return out.sort((a, b) => a.path.localeCompare(b.path));
 });
 
-const canMerge = computed(() => mods.value.length >= 2 && !!outputPath.value && !busy.value);
+const canMerge = computed(() => mods.value.length >= 2 && !busy.value);
 
 function setStatus(text, kind = '') {
   status.value = { text, kind };
 }
 
-async function addMod() {
+function defaultOutputPath(firstInputPath) {
+  if (!firstInputPath) return '';
+  const sepIdx = Math.max(firstInputPath.lastIndexOf('/'), firstInputPath.lastIndexOf('\\'));
+  if (sepIdx < 0) return 'combined_dir.vpk';
+  const dir = firstInputPath.substring(0, sepIdx);
+  const sep = firstInputPath.charAt(sepIdx);
+  return `${dir}${sep}combined_dir.vpk`;
+}
+
+async function loadPaths(paths) {
+  const vpks = paths.filter((p) => p.toLowerCase().endsWith('.vpk'));
+  if (vpks.length === 0) {
+    setStatus('No .vpk files in that drop', 'error');
+    return;
+  }
+  for (const path of vpks) {
+    if (mods.value.some((m) => m.path === path)) continue;
+    try {
+      const mod = await invoke('add_mod', { path });
+      mods.value.push(mod);
+    } catch (e) {
+      setStatus(`Failed to load ${path}: ${e}`, 'error');
+    }
+  }
+  if (mods.value.length > 0 && !outputPath.value) {
+    outputPath.value = defaultOutputPath(mods.value[0].path);
+  }
+}
+
+async function pickViaDialog() {
   setStatus('');
   let paths;
   try {
@@ -40,15 +74,7 @@ async function addMod() {
     return;
   }
   if (!paths?.length) return;
-  for (const path of paths) {
-    if (mods.value.some((m) => m.path === path)) continue;
-    try {
-      const mod = await invoke('add_mod', { path });
-      mods.value.push(mod);
-    } catch (e) {
-      setStatus(`Failed to load ${path}: ${e}`, 'error');
-    }
-  }
+  await loadPaths(paths);
 }
 
 async function browseOutput() {
@@ -62,6 +88,10 @@ async function browseOutput() {
 }
 
 async function doMerge() {
+  if (!outputPath.value) {
+    setStatus('Add at least one VPK first', 'error');
+    return;
+  }
   busy.value = true;
   setStatus('Merging...');
   try {
@@ -69,10 +99,9 @@ async function doMerge() {
       orderedPaths: mods.value.map((m) => m.path),
       outputPath: outputPath.value,
     });
-    setStatus(
-      `Done. Wrote ${report.total_entries} entries (${report.overridden} overridden) to ${report.output_path}`,
-      'success'
-    );
+    lastReport.value = report;
+    showMergedModal.value = true;
+    setStatus(`Wrote ${report.total_entries} entries`, 'success');
   } catch (e) {
     setStatus(`Merge failed: ${e}`, 'error');
   } finally {
@@ -82,6 +111,16 @@ async function doMerge() {
 
 function removeMod(idx) {
   mods.value.splice(idx, 1);
+  if (mods.value.length === 0) outputPath.value = '';
+}
+
+async function revealOutput() {
+  if (!lastReport.value?.output_path) return;
+  try {
+    await invoke('reveal_in_folder', { path: lastReport.value.output_path });
+  } catch (e) {
+    setStatus(`Could not open folder: ${e}`, 'error');
+  }
 }
 
 const dragSrcIdx = ref(null);
@@ -102,125 +141,257 @@ function onDrop(idx) {
 function onDragEnd() {
   dragSrcIdx.value = null;
 }
+
+let unlistenDragDrop = null;
+onMounted(async () => {
+  unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === 'enter' || event.payload.type === 'over') {
+      isDragging.value = true;
+    } else if (event.payload.type === 'leave') {
+      isDragging.value = false;
+    } else if (event.payload.type === 'drop') {
+      isDragging.value = false;
+      loadPaths(event.payload.paths || []);
+    }
+  });
+});
+onBeforeUnmount(() => { if (unlistenDragDrop) unlistenDragDrop(); });
 </script>
 
 <template>
-  <main class="bg-paper min-h-screen text-ink-700">
-    <div class="max-w-3xl mx-auto px-6 pt-8 pb-32 space-y-5">
-      <header>
-        <h1 class="text-3xl font-bold text-accent-700 tracking-tight">vpkmerge</h1>
-        <p class="text-ink-500 mt-1 text-sm">
-          Combine Deadlock mod VPKs to bypass the ~100 mount limit.
+  <div class="w-screen h-screen flex flex-col select-none cursor-default bg-surface-0 dark:bg-surface-950 text-ink-800 dark:text-ink-100">
+    <div class="flex flex-col w-full h-full bg-paper overflow-hidden">
+
+      <!-- Heading -->
+      <header class="flex items-center justify-between gap-3 px-4 py-2 sm:px-6 sm:py-4 border-b border-surface-200 dark:border-surface-800">
+        <div class="min-w-0 flex-1">
+          <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+            vpkmerge
+          </h4>
+          <h2 class="font-serif text-lg sm:text-2xl text-ink-800 dark:text-ink-100 truncate">
+            {{ mods.length === 0 ? 'No mods loaded' : `${mods.length} ${mods.length === 1 ? 'mod' : 'mods'} loaded` }}
+          </h2>
+        </div>
+        <p class="hidden sm:block text-xs italic font-serif text-ink-500 dark:text-ink-300 text-right max-w-xs">
+          Combine Deadlock VPKs to bypass the ~100 mount limit
         </p>
       </header>
 
-      <!-- Mods -->
-      <section class="paper-card rounded-xl p-5">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-ink-500">Mods</h2>
-          <button class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0" @click="addMod">
-            + Add VPK
-          </button>
-        </div>
-        <p class="text-xs text-ink-500 mb-3">
-          Drag rows to reorder. Mods lower in the list win on conflict.
-        </p>
+      <!-- Content -->
+      <div class="doodle-overlay flex-1 min-h-0 overflow-y-auto">
+        <div class="min-h-full flex flex-col p-3 sm:p-4 md:p-8 pb-24">
 
-        <ul v-if="mods.length" class="flex flex-col gap-2">
-          <li
-            v-for="(mod, idx) in mods"
-            :key="mod.path"
-            draggable="true"
-            class="paper-card-pressable flex items-center gap-3 px-3 py-2.5 rounded-lg border border-surface-300/70 bg-surface-0/40 cursor-grab select-none hover:border-accent-500"
-            :class="{ 'opacity-40': dragSrcIdx === idx }"
-            @dragstart="onDragStart(idx, $event)"
-            @dragover="onDragOver"
-            @drop="onDrop(idx)"
-            @dragend="onDragEnd"
-          >
-            <span class="text-ink-300 text-lg leading-none">≡</span>
-            <span class="text-ink-500 text-xs tabular-nums w-6 text-right">{{ idx + 1 }}.</span>
-            <span class="flex-1 font-medium text-ink-700 truncate" :title="mod.path">{{ mod.name }}</span>
-            <span class="text-ink-500 text-xs tabular-nums">{{ mod.file_count }} files</span>
+          <!-- Empty state -->
+          <div v-if="mods.length === 0" class="flex-1 w-full flex items-center justify-center px-2 py-4">
             <button
-              class="text-ink-300 hover:text-red-700 text-lg leading-none px-2 py-1 rounded"
-              title="Remove"
-              @click.stop="removeMod(idx)"
-            >×</button>
-          </li>
-        </ul>
-        <p v-else class="text-center text-ink-500 text-sm py-4">No mods added yet.</p>
-      </section>
+              type="button"
+              @click="pickViaDialog"
+              class="empty-state paper-card paper-card-pressable w-full max-w-xl flex flex-col items-center justify-center gap-y-3 py-10 px-6 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
+              :class="{ '!border-accent-300 !bg-accent-300/5': isDragging }"
+            >
+              <div class="relative aspect-square w-[clamp(5rem,24vh,12rem)] flex items-center justify-center pointer-events-none">
+                <svg
+                  viewBox="-110 -110 220 220"
+                  class="absolute inset-0 w-full h-full overflow-visible text-accent-700/45 dark:text-accent-300/40"
+                  aria-hidden="true"
+                >
+                  <circle cx="0" cy="0" r="92" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2.4 4.8" />
+                  <circle cx="0" cy="0" r="76" fill="none" stroke="currentColor" stroke-width="0.6" />
+                </svg>
+                <span class="text-5xl text-accent-700 dark:text-accent-300 font-serif leading-none">⤓</span>
+              </div>
+              <h3 class="font-serif text-xl sm:text-2xl tracking-wide text-ink-800 dark:text-ink-100 text-center">
+                {{ isDragging ? 'Drop to add' : 'Ready to merge' }}
+              </h3>
+              <p class="text-xs sm:text-sm font-serif italic text-ink-500 dark:text-ink-300 text-center">
+                Drop VPK files here or click to browse
+              </p>
+            </button>
+          </div>
 
-      <!-- Conflicts -->
-      <section class="paper-card rounded-xl p-5">
-        <div class="flex items-center gap-2 mb-3">
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-ink-500">Conflicts</h2>
-          <span
-            v-if="conflicts.length"
-            class="bg-accent-600 text-surface-0 text-[10px] font-bold rounded-full px-2 py-0.5 tracking-wider"
-          >{{ conflicts.length }}</span>
-        </div>
+          <!-- Non-empty: add control, mod list, output -->
+          <div v-else class="w-full max-w-2xl mx-auto space-y-5">
 
-        <ul v-if="conflicts.length" class="flex flex-col gap-2 max-h-96 overflow-auto">
-          <li
-            v-for="c in conflicts"
-            :key="c.path"
-            class="border border-surface-300/70 bg-surface-0/40 rounded-lg px-3 py-2.5"
-          >
-            <div class="font-mono text-xs text-ink-700 break-all mb-1.5">{{ c.path }}</div>
-            <div class="flex flex-col gap-0.5">
-              <div
-                v-for="idx in c.owners"
-                :key="idx"
-                class="text-xs flex items-center gap-2"
-                :class="idx === c.winner
-                  ? 'text-accent-700 font-semibold'
-                  : 'text-ink-500 line-through'"
-              >
-                <span class="text-accent-600" v-if="idx === c.winner">✓</span>
-                <span class="text-ink-300" v-else>·</span>
-                {{ mods[idx].name }}
-                <span class="text-ink-300 not-italic">({{ idx === c.winner ? 'wins' : 'overridden' }})</span>
+            <button
+              type="button"
+              @click="pickViaDialog"
+              class="paper-card paper-card-pressable w-full py-3 px-4 rounded-md flex items-center justify-center gap-2 text-sm font-serif italic border-accent-700/30 dark:border-accent-300/30 text-accent-700 dark:text-accent-300 hover:!border-accent-700 dark:hover:!border-accent-300"
+              :class="{ '!border-accent-300 !bg-accent-300/10': isDragging }"
+            >
+              <span class="text-base leading-none">+</span>
+              {{ isDragging ? 'Drop to add more' : 'Add more VPKs' }}
+            </button>
+
+            <div class="paper-card rounded-md p-1">
+              <ul class="flex flex-col">
+                <li
+                  v-for="(mod, idx) in mods"
+                  :key="mod.path"
+                  draggable="true"
+                  class="group flex items-center gap-3 px-3 py-2.5 rounded-sm cursor-grab select-none transition-colors hover:bg-surface-100/60 dark:hover:bg-surface-800/60"
+                  :class="{ 'opacity-40': dragSrcIdx === idx }"
+                  @dragstart="onDragStart(idx, $event)"
+                  @dragover="onDragOver"
+                  @drop="onDrop(idx)"
+                  @dragend="onDragEnd"
+                >
+                  <span class="text-ink-500 dark:text-ink-300 text-lg leading-none opacity-50 group-hover:opacity-100">≡</span>
+                  <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums w-5 text-right font-mono">{{ idx + 1 }}</span>
+                  <span class="flex-1 font-serif text-base text-ink-800 dark:text-ink-100 truncate" :title="mod.path">
+                    {{ mod.name }}
+                  </span>
+                  <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums italic font-serif">{{ mod.file_count }} files</span>
+                  <button
+                    class="text-ink-500 dark:text-ink-300 hover:text-red-600 dark:hover:text-red-400 text-lg leading-none px-2 py-0.5 rounded opacity-50 group-hover:opacity-100"
+                    title="Remove"
+                    @click.stop="removeMod(idx)"
+                  >×</button>
+                </li>
+              </ul>
+            </div>
+
+            <p class="text-xs font-serif italic text-ink-500 dark:text-ink-300 text-center">
+              Drag to reorder. Mods lower in the list win on conflict.
+            </p>
+
+            <!-- Output -->
+            <div class="paper-card rounded-md p-4">
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium mb-2">
+                Output
+              </h4>
+              <div class="flex gap-2 items-center">
+                <input
+                  type="text"
+                  readonly
+                  :value="outputPath"
+                  placeholder="Auto-set from the first VPK added..."
+                  class="flex-1 bg-transparent border border-surface-300 dark:border-surface-700 rounded-md px-3 py-2 text-xs font-mono text-ink-800 dark:text-ink-100 placeholder:italic placeholder:font-serif placeholder:text-ink-500 dark:placeholder:text-ink-300 focus:outline-none focus:border-accent-500"
+                />
+                <button class="btn" @click="browseOutput">Browse</button>
               </div>
             </div>
-          </li>
-        </ul>
-        <p v-else class="text-center text-ink-500 text-sm py-4">No conflicts.</p>
-      </section>
-
-      <!-- Output -->
-      <section class="paper-card rounded-xl p-5">
-        <h2 class="text-xs font-semibold uppercase tracking-wider text-ink-500 mb-3">Output</h2>
-        <div class="flex gap-2">
-          <input
-            type="text"
-            readonly
-            :value="outputPath"
-            placeholder="Choose output VPK file..."
-            class="flex-1 bg-surface-0/60 border border-surface-300/70 rounded-md px-3 py-2 text-sm text-ink-700 focus:outline-none focus:border-accent-500"
-          />
-          <button class="btn" @click="browseOutput">Browse</button>
+          </div>
         </div>
-      </section>
+      </div>
+
+      <!-- Bottom bar -->
+      <footer class="border-t border-surface-200 dark:border-surface-800 px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-3 min-w-0 flex-1">
+          <span
+            class="text-xs font-serif italic truncate"
+            :class="{
+              'text-ink-500 dark:text-ink-300': !status.kind,
+              'text-green-700 dark:text-green-400 not-italic font-sans': status.kind === 'success',
+              'text-red-700 dark:text-red-400 not-italic font-sans': status.kind === 'error',
+            }"
+          >
+            {{ status.text || (mods.length ? 'Ready when you are' : 'Drop a VPK to start') }}
+          </span>
+          <button
+            v-if="conflicts.length"
+            @click="showConflictsModal = true"
+            class="text-xs flex items-center gap-1.5 shrink-0 text-accent-700 dark:text-accent-300 hover:underline italic font-serif"
+          >
+            <span class="bg-accent-600 text-surface-0 font-bold rounded-full px-2 py-0.5 tracking-wider text-[10px] not-italic font-sans">{{ conflicts.length }}</span>
+            view conflicts
+          </button>
+        </div>
+        <button
+          :disabled="!canMerge"
+          class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 font-medium"
+          @click="doMerge"
+        >Merge VPKs</button>
+      </footer>
     </div>
 
-    <footer
-      class="fixed bottom-0 left-0 right-0 bg-paper border-t border-surface-300/70 px-6 py-3 flex items-center justify-between"
-    >
+    <!-- Conflicts modal -->
+    <Transition name="fx-rise">
       <div
-        class="text-sm"
-        :class="{
-          'text-ink-500': !status.kind,
-          'text-green-700': status.kind === 'success',
-          'text-red-700': status.kind === 'error',
-        }"
-      >{{ status.text }}</div>
-      <button
-        :disabled="!canMerge"
-        class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 px-6 disabled:opacity-40 disabled:cursor-not-allowed"
-        @click="doMerge"
-      >Merge VPKs</button>
-    </footer>
-  </main>
+        v-if="showConflictsModal"
+        class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70 flex items-center justify-center p-6"
+        @click.self="showConflictsModal = false"
+      >
+        <div class="paper-card rounded-md w-full max-w-2xl max-h-[80vh] flex flex-col">
+          <header class="flex items-center justify-between px-5 py-4 border-b border-surface-200 dark:border-surface-800">
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+                Path conflicts
+              </h4>
+              <h2 class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+                {{ conflicts.length }} {{ conflicts.length === 1 ? 'collision' : 'collisions' }}
+              </h2>
+            </div>
+            <button
+              class="text-ink-500 dark:text-ink-300 hover:text-ink-800 dark:hover:text-ink-100 text-2xl leading-none px-2"
+              @click="showConflictsModal = false"
+            >×</button>
+          </header>
+          <div class="overflow-y-auto p-5 space-y-3">
+            <div
+              v-for="c in conflicts"
+              :key="c.path"
+              class="border border-surface-200 dark:border-surface-800 rounded-md px-3 py-2.5"
+            >
+              <div class="font-mono text-xs text-ink-800 dark:text-ink-100 break-all mb-1.5">{{ c.path }}</div>
+              <div class="flex flex-col gap-0.5">
+                <div
+                  v-for="idx in c.owners"
+                  :key="idx"
+                  class="text-xs flex items-center gap-2 font-serif"
+                  :class="idx === c.winner
+                    ? 'text-accent-700 dark:text-accent-300 font-semibold'
+                    : 'text-ink-500 dark:text-ink-300 line-through italic'"
+                >
+                  <span v-if="idx === c.winner" class="text-accent-700 dark:text-accent-300">✓</span>
+                  <span v-else class="text-ink-500 dark:text-ink-300">·</span>
+                  {{ mods[idx].name }}
+                  <span class="text-ink-500 dark:text-ink-300 not-italic">({{ idx === c.winner ? 'wins' : 'overridden' }})</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Merged success modal -->
+    <Transition name="fx-rise">
+      <div
+        v-if="showMergedModal && lastReport"
+        class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70 flex items-center justify-center p-6"
+        @click.self="showMergedModal = false"
+      >
+        <div class="paper-card rounded-md w-full max-w-md flex flex-col">
+          <header class="px-5 py-4 border-b border-surface-200 dark:border-surface-800">
+            <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+              Merged
+            </h4>
+            <h2 class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+              {{ lastReport.total_entries }} {{ lastReport.total_entries === 1 ? 'entry' : 'entries' }}
+            </h2>
+          </header>
+
+          <div class="px-5 py-4 space-y-3">
+            <p class="text-xs font-serif italic text-ink-500 dark:text-ink-300">
+              Wrote to
+            </p>
+            <code class="block font-mono text-xs text-ink-800 dark:text-ink-100 bg-surface-100 dark:bg-surface-800/60 rounded-sm px-2 py-1.5 break-all border border-surface-200 dark:border-surface-800">
+              {{ lastReport.output_path }}
+            </code>
+            <p class="text-xs font-serif italic text-ink-500 dark:text-ink-300">
+              From {{ lastReport.inputs }} {{ lastReport.inputs === 1 ? 'input' : 'inputs' }}<span v-if="lastReport.overridden">, {{ lastReport.overridden }} {{ lastReport.overridden === 1 ? 'path' : 'paths' }} overridden</span>.
+            </p>
+          </div>
+
+          <footer class="px-5 py-4 border-t border-surface-200 dark:border-surface-800 flex items-center justify-end gap-2">
+            <button class="btn" @click="showMergedModal = false">Close</button>
+            <button
+              class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 font-medium"
+              @click="revealOutput"
+            >Open folder</button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+  </div>
 </template>

@@ -107,6 +107,23 @@ async fn merge_vpks(ordered_paths: Vec<String>, output_path: String) -> Result<M
     })
 }
 
+#[tauri::command]
+async fn reveal_in_folder(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let result = if cfg!(target_os = "linux") {
+        let p = std::path::Path::new(&path);
+        let target = if p.is_file() { p.parent().unwrap_or(p) } else { p };
+        Command::new("xdg-open").arg(target).spawn()
+    } else if cfg!(target_os = "windows") {
+        Command::new("explorer").args(["/select,", &path]).spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").args(["-R", &path]).spawn()
+    } else {
+        return Err("Unsupported OS".into());
+    };
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -115,7 +132,8 @@ pub fn run() {
             pick_vpk_files,
             pick_output_path,
             add_mod,
-            merge_vpks
+            merge_vpks,
+            reveal_in_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
