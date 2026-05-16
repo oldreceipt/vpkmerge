@@ -1,10 +1,4 @@
-# .NET (CLI)
-bin/
-obj/
-*.user
-*.suo
-
-# Rust / Tauri (GUI)
+# Rust / Tauri
 target/
 gui/src-tauri/gen/
 
