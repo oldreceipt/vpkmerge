@@ -1,0 +1,49 @@
+/* Restrained, paper-stationery feel: short durations, gentle easing, small distances. */
+
+.fx-fade-enter-active,
+.fx-fade-leave-active { transition: opacity 150ms ease; }
+.fx-fade-enter-from,
+.fx-fade-leave-to     { opacity: 0; }
+
+/* Scale + fade — small popovers (dropdowns). */
+.fx-scale-enter-active { transition: transform 180ms ease-out, opacity 180ms ease-out; }
+.fx-scale-leave-active { transition: transform 130ms ease-in,  opacity 130ms ease-in; }
+.fx-scale-enter-from,
+.fx-scale-leave-to     { transform: scale(0.97); opacity: 0; }
+
+/* Modal — single transition controls backdrop fade AND inner card scale.
+   Card targeted via `.fx-modal-card` so we don't need nested <Transition>. */
+.fx-modal-enter-active { transition: opacity 180ms ease-out; }
+.fx-modal-leave-active { transition: opacity 140ms ease-in; }
+.fx-modal-enter-from,
+.fx-modal-leave-to     { opacity: 0; }
+.fx-modal-enter-active .fx-modal-card { animation: fx-modal-in  180ms ease-out; }
+.fx-modal-leave-active .fx-modal-card { animation: fx-modal-out 140ms ease-in forwards; }
+@keyframes fx-modal-in  { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes fx-modal-out { from { transform: scale(1);    opacity: 1; } to { transform: scale(0.97); opacity: 0; } }
+
+/* Rise — cards entering a list (or any single block). */
+.fx-rise-enter-active { transition: transform 240ms ease-out, opacity 240ms ease-out; }
+.fx-rise-leave-active { transition: transform 160ms ease-in,  opacity 160ms ease-in; }
+.fx-rise-enter-from   { transform: translateY(8px);  opacity: 0; }
+.fx-rise-leave-to     { transform: translateY(-4px); opacity: 0; }
+.fx-rise-move         { transition: transform 240ms ease; }
+
+/* Slide-in from right — toasts. */
+.fx-toast-enter-active { transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 200ms ease-out; }
+.fx-toast-leave-active { transition: transform 160ms ease-in, opacity 160ms ease-in; position: absolute; right: 0; }
+.fx-toast-enter-from,
+.fx-toast-leave-to     { transform: translateX(24px); opacity: 0; }
+.fx-toast-move         { transition: transform 200ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+    .fx-fade-enter-active,  .fx-fade-leave-active,
+    .fx-scale-enter-active, .fx-scale-leave-active,
+    .fx-modal-enter-active, .fx-modal-leave-active,
+    .fx-rise-enter-active,  .fx-rise-leave-active, .fx-rise-move,
+    .fx-toast-enter-active, .fx-toast-leave-active, .fx-toast-move {
+        transition-duration: 0ms !important;
+    }
+    .fx-modal-enter-active .fx-modal-card,
+    .fx-modal-leave-active .fx-modal-card { animation: none !important; }
+}

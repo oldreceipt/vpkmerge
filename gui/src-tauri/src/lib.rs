@@ -21,7 +21,7 @@ struct MergeReport {
 }
 
 #[tauri::command]
-fn pick_vpk_files(app: AppHandle) -> Vec<String> {
+async fn pick_vpk_files(app: AppHandle) -> Vec<String> {
     app.dialog()
         .file()
         .add_filter("VPK files", &["vpk"])
@@ -34,7 +34,7 @@ fn pick_vpk_files(app: AppHandle) -> Vec<String> {
 }
 
 #[tauri::command]
-fn pick_output_path(app: AppHandle) -> Option<String> {
+async fn pick_output_path(app: AppHandle) -> Option<String> {
     app.dialog()
         .file()
         .add_filter("VPK file", &["vpk"])
@@ -45,7 +45,7 @@ fn pick_output_path(app: AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-fn add_mod(path: String) -> Result<ModInfo, String> {
+async fn add_mod(path: String) -> Result<ModInfo, String> {
     let vpk = valve_pak::open(&path).map_err(|e| format!("{e:#}"))?;
     let name = Path::new(&path)
         .file_name()
@@ -57,7 +57,7 @@ fn add_mod(path: String) -> Result<ModInfo, String> {
 }
 
 #[tauri::command]
-fn merge_vpks(ordered_paths: Vec<String>, output_path: String) -> Result<MergeReport, String> {
+async fn merge_vpks(ordered_paths: Vec<String>, output_path: String) -> Result<MergeReport, String> {
     if ordered_paths.len() < 2 {
         return Err("Need at least 2 input VPKs to merge".into());
     }

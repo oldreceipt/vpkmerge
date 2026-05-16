@@ -1,0 +1,56 @@
+@layer utilities {
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+html, body, #app {
+    font-family: var(--font-sans);
+    outline: 1px solid transparent;
+    -webkit-backface-visibility: hidden;
+    transform: translateZ(0);
+    will-change: transform;
+    -webkit-perspective: 1000;
+}
+
+/* One-shot unfold on app load — the page settles onto the desk like a letter
+   being opened. scaleY-from-top + brief fade. Fires once per real load;
+   hot-reloads don't retrigger because the element identity is preserved. */
+#app {
+    animation: paper-unfold 320ms ease-out;
+    transform-origin: top center;
+}
+
+@keyframes paper-unfold {
+    from { opacity: 0; transform: scaleY(0.92) translateY(-8px); }
+    to   { opacity: 1; transform: scaleY(1)    translateY(0);    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #app { animation: none; }
+}
+
+/* v4 preflight removed `cursor: pointer` on buttons; restore it for non-disabled
+   interactive elements so clickable affordance matches the v3 baseline. */
+@layer base {
+    button:not(:disabled),
+    [role="button"]:not([aria-disabled="true"]),
+    summary,
+    label[for] {
+        cursor: pointer;
+    }
+}
+
+/* Scrollbar */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+    background: rgba(94, 80, 57, 0.35);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(94, 80, 57, 0.55);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+}

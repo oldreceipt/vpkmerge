@@ -8,6 +8,10 @@ obj/
 target/
 gui/src-tauri/gen/
 
+# Node / Vite (GUI frontend)
+node_modules/
+gui/dist/
+
 # IDE
 .vs/
 .vscode/

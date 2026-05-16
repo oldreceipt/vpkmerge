@@ -1,0 +1,108 @@
+@layer components {
+
+/* === Status indicator (pulse) ================================ */
+.status-indicator {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 48px;
+}
+.status-indicator .circle {
+    position: absolute;
+    top: 18px; left: 18px;
+    width: 12px; height: 12px;
+    border-radius: 100px;
+}
+.status-indicator--xl { width: 72px; height: 72px; }
+.status-indicator--xl .circle { top: 27px; left: 27px; width: 18px; height: 18px; }
+
+.status-indicator .circle.circle--animated {
+    animation-iteration-count: infinite;
+    animation-fill-mode: backwards;
+    animation-duration: 6s;
+    animation-timing-function: ease-out;
+}
+.status-indicator .circle-main      { z-index: 3; @apply bg-accent-600; }
+.status-indicator .circle-secondary { z-index: 2; @apply bg-accent-600/25; }
+.status-indicator .circle-tertiary  { z-index: 1; @apply bg-accent-600/25; }
+.dark .status-indicator .circle-main      { @apply bg-accent-300; }
+.dark .status-indicator .circle-secondary { @apply bg-accent-300/25; }
+.dark .status-indicator .circle-tertiary  { @apply bg-accent-300/25; }
+
+.status-indicator .circle-main.circle--animated      { animation-name: pulsate-main; animation-duration: 5s; animation-timing-function: ease-in-out; }
+.status-indicator .circle-secondary.circle--animated { animation-name: pulsate-ring; animation-delay: 0s; }
+.status-indicator .circle-tertiary.circle--animated  { animation-name: pulsate-ring; animation-delay: 3s; }
+.status-indicator--infinite .circle.circle--animated { animation-iteration-count: infinite; }
+
+/* Sonar-style ring: fades in from the dot, expands, fades out.
+   Slower, gentler expansion + lower peak opacity for a zen breathing feel. */
+@keyframes pulsate-ring {
+    0%   { transform: scale(1);   opacity: 0; }
+    25%  { opacity: 0.7; }
+    100% { transform: scale(2.6); opacity: 0; }
+}
+@keyframes pulsate-main {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.06); }
+}
+
+/* === Buttons / inputs ======================================== */
+.btn {
+    @apply h-10 min-h-10 cursor-pointer rounded-md font-medium px-4 inline-flex justify-center items-center gap-2
+           hover:bg-accent-700/10 dark:hover:bg-accent-200/10 transition-colors;
+}
+
+.checkbox {
+    flex-shrink: 0;
+    height: 1.25rem;
+    width: 1.25rem;
+    cursor: pointer;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    border-radius: 0.25rem;
+    border-width: 1px;
+    @apply border-surface-300 dark:border-surface-700 bg-surface-0/50 dark:bg-surface-800/50;
+    transition: all 0.15s ease;
+}
+.checkbox:checked, .checkbox[checked=true], .checkbox[aria-checked=true] {
+    @apply bg-accent-500 border-accent-500;
+    background-image:
+        linear-gradient(-45deg, transparent 65%, var(--color-accent-500) 65.99%),
+        linear-gradient(45deg, transparent 75%, var(--color-accent-500) 75.99%),
+        linear-gradient(-45deg, var(--color-accent-500) 40%, transparent 40.99%),
+        linear-gradient(45deg, var(--color-accent-500) 30%, white 30.99%, white 40%, transparent 40.99%),
+        linear-gradient(-45deg, white 50%, var(--color-accent-500) 50.99%);
+    background-repeat: no-repeat;
+    animation: checkmark 0.18s ease-out;
+}
+
+/* === Progress ring =========================================== */
+.circular-progress {
+    --size: 250px;
+    --half-size: calc(var(--size) / 2);
+    --stroke-width: 12px;
+    --radius: calc((var(--size) - var(--stroke-width)) / 2);
+    --circumference: calc(var(--radius) * pi * 2);
+    --dash: calc((var(--progress) * var(--circumference)) / 100);
+}
+.circular-progress circle {
+    cx: var(--half-size);
+    cy: var(--half-size);
+    r: var(--radius);
+    stroke-width: var(--stroke-width);
+    fill: none;
+    stroke-linecap: round;
+}
+.circular-progress circle.bg { @apply stroke-surface-200 dark:stroke-surface-700; }
+.circular-progress circle.fg {
+    transform: rotate(-90deg);
+    transform-origin: var(--half-size) var(--half-size);
+    stroke-dasharray: var(--dash) calc(var(--circumference) - var(--dash));
+    transition: stroke-dasharray 0.3s linear 0s;
+    @apply stroke-accent-600 dark:stroke-accent-300;
+}
+.error circle.bg, .error circle.fg { @apply !stroke-red-700 dark:!stroke-red-400; }
+
+}
+

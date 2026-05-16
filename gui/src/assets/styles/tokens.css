@@ -1,0 +1,43 @@
+/* Manual dark mode: theme store toggles `.dark` on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans:  "Inter", system-ui, -apple-system, sans-serif;
+    --font-serif: "Lora", Georgia, serif;
+    --font-mono:  "JetBrains Mono", ui-monospace, monospace;
+
+    /* Sepia ink — accent ramp */
+    --color-accent-50:  #fbf3e4;
+    --color-accent-100: #f4e0bf;
+    --color-accent-200: #e6c386;
+    --color-accent-300: #d4a05b;
+    --color-accent-400: #bd7a3a;
+    --color-accent-500: #a05a2b;
+    --color-accent-600: #864324;
+    --color-accent-700: #6a331e;
+    --color-accent-800: #4f2516;
+    --color-accent-900: #341811;
+
+    /* Paper sheets — light cream → dark kraft */
+    --color-surface-0:   #faf6e9;
+    --color-surface-50:  #f1e8d5;
+    --color-surface-100: #e8dcc1;
+    --color-surface-200: #d4c4a0;
+    --color-surface-300: #bba87f;
+    --color-surface-400: #9d8a63;
+    --color-surface-500: #7d6c4d;
+    --color-surface-600: #5e5039;
+    --color-surface-700: #403628;
+    --color-surface-800: #3b342a;
+    --color-surface-900: #2a241b;
+    --color-surface-950: #1c1814;
+
+    /* Ink — text colors */
+    --color-ink-50:  #f5efde;
+    --color-ink-100: #e8ddc9;
+    --color-ink-300: #bba87f;
+    --color-ink-500: #5d513d;
+    --color-ink-700: #3b342a;
+    --color-ink-800: #2a2620;
+    --color-ink-900: #1c1814;
+}
