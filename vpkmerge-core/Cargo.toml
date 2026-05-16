@@ -1,0 +1,11 @@
+[package]
+name = "vpkmerge-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core VPK merging logic shared by the vpkmerge CLI and GUI."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+valve_pak = "0.1"
+tempfile = "3"

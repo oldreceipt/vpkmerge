@@ -1,6 +1,4 @@
 use serde::Serialize;
-use std::collections::HashMap;
-use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
@@ -12,12 +10,34 @@ struct ModInfo {
     file_paths: Vec<String>,
 }
 
+impl From<vpkmerge_core::ModInfo> for ModInfo {
+    fn from(m: vpkmerge_core::ModInfo) -> Self {
+        ModInfo {
+            path: m.path.to_string_lossy().into_owned(),
+            name: m.name,
+            file_count: m.file_count,
+            file_paths: m.file_paths,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct MergeReport {
     total_entries: usize,
     overridden: usize,
     inputs: usize,
     output_path: String,
+}
+
+impl From<vpkmerge_core::MergeReport> for MergeReport {
+    fn from(r: vpkmerge_core::MergeReport) -> Self {
+        MergeReport {
+            total_entries: r.total_entries,
+            overridden: r.overridden,
+            inputs: r.inputs,
+            output_path: r.output_path.to_string_lossy().into_owned(),
+        }
+    }
 }
 
 #[tauri::command]
@@ -46,65 +66,19 @@ async fn pick_output_path(app: AppHandle) -> Option<String> {
 
 #[tauri::command]
 async fn add_mod(path: String) -> Result<ModInfo, String> {
-    let vpk = valve_pak::open(&path).map_err(|e| format!("{e:#}"))?;
-    let name = Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.clone());
-    let file_paths: Vec<String> = vpk.file_paths().cloned().collect();
-    let file_count = file_paths.len();
-    Ok(ModInfo { path, name, file_count, file_paths })
+    vpkmerge_core::inspect(&path)
+        .map(Into::into)
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
-async fn merge_vpks(ordered_paths: Vec<String>, output_path: String) -> Result<MergeReport, String> {
-    if ordered_paths.len() < 2 {
-        return Err("Need at least 2 input VPKs to merge".into());
-    }
-
-    let vpks: Vec<_> = ordered_paths
-        .iter()
-        .map(|p| valve_pak::open(p).map_err(|e| format!("Failed to open {p}: {e:#}")))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // Last input wins on collision
-    let mut winner: HashMap<String, usize> = HashMap::new();
-    let mut collisions = 0usize;
-    for (idx, vpk) in vpks.iter().enumerate() {
-        for path in vpk.file_paths() {
-            if winner.insert(path.clone(), idx).is_some() {
-                collisions += 1;
-            }
-        }
-    }
-
-    let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
-    for (path, idx) in &winner {
-        let mut vf = vpks[*idx]
-            .get_file(path)
-            .map_err(|e| format!("get_file {path}: {e:#}"))?;
-        let bytes = vf
-            .read_all()
-            .map_err(|e| format!("read_all {path}: {e:#}"))?;
-        let dst = tmp.path().join(path);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
-        }
-        std::fs::write(&dst, &bytes).map_err(|e| format!("write {dst:?}: {e}"))?;
-    }
-
-    let merged = valve_pak::from_directory(tmp.path())
-        .map_err(|e| format!("from_directory: {e:#}"))?;
-    merged
-        .save(&output_path)
-        .map_err(|e| format!("save: {e:#}"))?;
-
-    Ok(MergeReport {
-        total_entries: winner.len(),
-        overridden: collisions,
-        inputs: ordered_paths.len(),
-        output_path,
-    })
+async fn merge_vpks(
+    ordered_paths: Vec<String>,
+    output_path: String,
+) -> Result<MergeReport, String> {
+    vpkmerge_core::merge(&ordered_paths, &output_path)
+        .map(Into::into)
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
