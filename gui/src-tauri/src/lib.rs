@@ -76,9 +76,13 @@ async fn merge_vpks(
     ordered_paths: Vec<String>,
     output_path: String,
 ) -> Result<MergeReport, String> {
-    vpkmerge_core::merge(&ordered_paths, &output_path, &vpkmerge_core::MergeOptions::default())
-        .map(Into::into)
-        .map_err(|e| format!("{e:#}"))
+    vpkmerge_core::merge(
+        &ordered_paths,
+        &output_path,
+        &vpkmerge_core::MergeOptions::default(),
+    )
+    .map(Into::into)
+    .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -86,10 +90,16 @@ async fn reveal_in_folder(path: String) -> Result<(), String> {
     use std::process::Command;
     let result = if cfg!(target_os = "linux") {
         let p = std::path::Path::new(&path);
-        let target = if p.is_file() { p.parent().unwrap_or(p) } else { p };
+        let target = if p.is_file() {
+            p.parent().unwrap_or(p)
+        } else {
+            p
+        };
         Command::new("xdg-open").arg(target).spawn()
     } else if cfg!(target_os = "windows") {
-        Command::new("explorer").arg(format!("/select,{}", path)).spawn()
+        Command::new("explorer")
+            .arg(format!("/select,{path}"))
+            .spawn()
     } else if cfg!(target_os = "macos") {
         Command::new("open").args(["-R", &path]).spawn()
     } else {

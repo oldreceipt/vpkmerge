@@ -66,10 +66,10 @@ pub struct MergeReport {
 pub fn inspect<P: AsRef<Path>>(path: P) -> Result<ModInfo> {
     let path = path.as_ref();
     let vpk = valve_pak::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let file_paths: Vec<String> = vpk.file_paths().cloned().collect();
     Ok(ModInfo {
         path: path.to_path_buf(),
@@ -87,7 +87,10 @@ pub fn detect_conflicts<P: AsRef<Path>>(inputs: &[P]) -> Result<Vec<Conflict>> {
     let mut conflicts: Vec<Conflict> = owners
         .into_iter()
         .filter(|(_, idxs)| idxs.len() > 1)
-        .map(|(path, owner_indices)| Conflict { path, owner_indices })
+        .map(|(path, owner_indices)| Conflict {
+            path,
+            owner_indices,
+        })
         .collect();
     conflicts.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(conflicts)
@@ -123,17 +126,14 @@ pub fn merge<P: AsRef<Path>, O: AsRef<Path>>(
     for (path, idx) in &winners {
         let mut vf = vpks[*idx]
             .get_file(path)
-            .with_context(|| format!("locating {} in input {}", path, idx))?;
-        let bytes = vf
-            .read_all()
-            .with_context(|| format!("reading {}", path))?;
+            .with_context(|| format!("locating {path} in input {idx}"))?;
+        let bytes = vf.read_all().with_context(|| format!("reading {path}"))?;
         let dst = tmp.path().join(path);
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
         }
-        std::fs::write(&dst, &bytes)
-            .with_context(|| format!("writing {}", dst.display()))?;
+        std::fs::write(&dst, &bytes).with_context(|| format!("writing {}", dst.display()))?;
     }
 
     let merged = valve_pak::from_directory(tmp.path()).context("packing merged VPK")?;
@@ -180,7 +180,12 @@ fn resolve_winners(
             .map(|(k, _)| k.as_str())
             .collect();
         if !conflicts.is_empty() {
-            let sample = conflicts.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+            let sample = conflicts
+                .iter()
+                .take(5)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
             anyhow::bail!(
                 "{} path conflict{} (collision policy is Error). First: {}",
                 conflicts.len(),
@@ -207,23 +212,19 @@ fn reject_output_equals_input<P: AsRef<Path>>(inputs: &[P], output: &Path) -> Re
         if p.as_os_str().is_empty() {
             None
         } else {
-            p.canonicalize().ok().and_then(|p| {
-                output.file_name().map(|f| p.join(f))
-            })
+            p.canonicalize()
+                .ok()
+                .and_then(|p| output.file_name().map(|f| p.join(f)))
         }
     });
-    let canonical_output = match canonical_output {
-        Some(p) => p,
-        None => return Ok(()),
+    let Some(canonical_output) = canonical_output else {
+        return Ok(());
     };
     let mut seen = HashSet::new();
     for input in inputs {
         if let Ok(canon) = input.as_ref().canonicalize() {
             if canon == canonical_output {
-                anyhow::bail!(
-                    "output path equals input path: {}",
-                    canon.display()
-                );
+                anyhow::bail!("output path equals input path: {}", canon.display());
             }
             if !seen.insert(canon.clone()) {
                 anyhow::bail!("input listed twice: {}", canon.display());
@@ -255,11 +256,11 @@ mod tests {
     fn read_entry(vpk_path: &Path, entry: &str) -> Result<Vec<u8>> {
         let vpk = valve_pak::open(vpk_path)?;
         let mut f = vpk.get_file(entry)?;
-        f.read_all().map_err(Into::into)
+        f.read_all()
     }
 
     struct Fixture {
-        _tmp: TempDir,
+        dir: TempDir,
         a: PathBuf,
         b: PathBuf,
         out: PathBuf,
@@ -284,7 +285,12 @@ mod tests {
                 ("shared/file.txt", b"from b"),
             ],
         )?;
-        Ok(Fixture { _tmp: tmp, a, b, out })
+        Ok(Fixture {
+            dir: tmp,
+            a,
+            b,
+            out,
+        })
     }
 
     #[test]
@@ -303,7 +309,9 @@ mod tests {
     #[test]
     fn first_wins() -> Result<()> {
         let fx = two_inputs()?;
-        let opts = MergeOptions { collision_policy: CollisionPolicy::FirstWins };
+        let opts = MergeOptions {
+            collision_policy: CollisionPolicy::FirstWins,
+        };
         merge(&[&fx.a, &fx.b], &fx.out, &opts)?;
         assert_eq!(read_entry(&fx.out, "shared/file.txt")?, b"from a");
         Ok(())
@@ -312,7 +320,9 @@ mod tests {
     #[test]
     fn error_policy_rejects_conflicts() -> Result<()> {
         let fx = two_inputs()?;
-        let opts = MergeOptions { collision_policy: CollisionPolicy::Error };
+        let opts = MergeOptions {
+            collision_policy: CollisionPolicy::Error,
+        };
         let result = merge(&[&fx.a, &fx.b], &fx.out, &opts);
         assert!(result.is_err(), "expected error policy to reject");
         let msg = format!("{:#}", result.unwrap_err());
@@ -335,7 +345,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let out = tmp.path().join("out_dir.vpk");
         let err = merge::<&Path, _>(&[], &out, &MergeOptions::default()).unwrap_err();
-        assert!(format!("{:#}", err).contains("at least 2"));
+        assert!(format!("{err:#}").contains("at least 2"));
     }
 
     #[test]
@@ -343,7 +353,7 @@ mod tests {
         let fx = two_inputs()?;
         // Try to merge into one of the inputs.
         let err = merge(&[&fx.a, &fx.b], &fx.a, &MergeOptions::default()).unwrap_err();
-        let msg = format!("{:#}", err);
+        let msg = format!("{err:#}");
         assert!(msg.contains("equals input"), "msg = {msg}");
         Ok(())
     }
@@ -351,7 +361,7 @@ mod tests {
     #[test]
     fn creates_missing_parent_dir() -> Result<()> {
         let fx = two_inputs()?;
-        let nested = fx._tmp.path().join("does/not/exist/yet/out_dir.vpk");
+        let nested = fx.dir.path().join("does/not/exist/yet/out_dir.vpk");
         merge(&[&fx.a, &fx.b], &nested, &MergeOptions::default())?;
         assert!(nested.exists());
         Ok(())
@@ -364,8 +374,8 @@ mod tests {
         // the filesystem in OS-dependent order. Set equality is what's
         // semantically required.)
         let fx = two_inputs()?;
-        let out1 = fx._tmp.path().join("m1_dir.vpk");
-        let out2 = fx._tmp.path().join("m2_dir.vpk");
+        let out1 = fx.dir.path().join("m1_dir.vpk");
+        let out2 = fx.dir.path().join("m2_dir.vpk");
         merge(&[&fx.a, &fx.b], &out1, &MergeOptions::default())?;
         merge(&[&fx.a, &fx.b], &out2, &MergeOptions::default())?;
         let mut p1: Vec<_> = valve_pak::open(&out1)?.file_paths().cloned().collect();

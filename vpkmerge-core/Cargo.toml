@@ -9,3 +9,6 @@ license = "MIT"
 anyhow = "1"
 valve_pak = "0.1"
 tempfile = "3"
+
+[lints]
+workspace = true

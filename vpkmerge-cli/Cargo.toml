@@ -13,3 +13,6 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 vpkmerge-core = { path = "../vpkmerge-core" }
+
+[lints]
+workspace = true

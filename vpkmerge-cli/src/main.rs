@@ -38,10 +38,10 @@ fn main() -> Result<()> {
         let conflicts = vpkmerge_core::detect_conflicts(&cli.inputs)?;
         for c in &conflicts {
             let winner_idx = *c.owner_indices.last().unwrap();
-            let winner = cli.inputs[winner_idx]
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| cli.inputs[winner_idx].display().to_string());
+            let winner = cli.inputs[winner_idx].file_name().map_or_else(
+                || cli.inputs[winner_idx].display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             println!("override: {} <- {}", c.path, winner);
         }
     }

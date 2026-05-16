@@ -2,7 +2,7 @@
 
 fn main() {
     apply_linux_workarounds();
-    vpkmerge_gui_lib::run()
+    vpkmerge_gui_lib::run();
 }
 
 #[cfg(target_os = "linux")]
