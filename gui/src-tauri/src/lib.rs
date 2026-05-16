@@ -33,7 +33,7 @@ impl From<vpkmerge_core::MergeReport> for MergeReport {
     fn from(r: vpkmerge_core::MergeReport) -> Self {
         MergeReport {
             total_entries: r.total_entries,
-            overridden: r.overridden,
+            overridden: r.overridden_paths,
             inputs: r.inputs,
             output_path: r.output_path.to_string_lossy().into_owned(),
         }
@@ -76,7 +76,7 @@ async fn merge_vpks(
     ordered_paths: Vec<String>,
     output_path: String,
 ) -> Result<MergeReport, String> {
-    vpkmerge_core::merge(&ordered_paths, &output_path)
+    vpkmerge_core::merge(&ordered_paths, &output_path, &vpkmerge_core::MergeOptions::default())
         .map(Into::into)
         .map_err(|e| format!("{e:#}"))
 }
