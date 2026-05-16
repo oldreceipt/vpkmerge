@@ -1,8 +1,17 @@
+# .NET (CLI)
 bin/
 obj/
 *.user
 *.suo
+
+# Rust / Tauri (GUI)
+target/
+gui/src-tauri/gen/
+
+# IDE
 .vs/
 .vscode/
 .idea/
+
+# Build artifacts
 *.vpk
