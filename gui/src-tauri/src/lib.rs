@@ -115,7 +115,7 @@ async fn reveal_in_folder(path: String) -> Result<(), String> {
         let target = if p.is_file() { p.parent().unwrap_or(p) } else { p };
         Command::new("xdg-open").arg(target).spawn()
     } else if cfg!(target_os = "windows") {
-        Command::new("explorer").args(["/select,", &path]).spawn()
+        Command::new("explorer").arg(format!("/select,{}", path)).spawn()
     } else if cfg!(target_os = "macos") {
         Command::new("open").args(["-R", &path]).spawn()
     } else {
