@@ -16,3 +16,7 @@ gui/dist/
 
 # morphic: gitignored extended corpus (committed canonical corpus lives next to it)
 morphic/fixtures/_local/
+
+# .NET (morphic-oracle dev tool)
+tools/morphic-oracle/bin/
+tools/morphic-oracle/obj/
