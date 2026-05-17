@@ -3,6 +3,22 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useSettings } from './composables/useSettings.js';
+
+const { settings, setTheme, setDoodleTheme, setCandleEnabled, THEMES, DOODLE_THEMES } = useSettings();
+const showSettingsModal = ref(false);
+const settingsModalRef = ref(null);
+const DOODLE_LABELS = {
+  arcane: 'Arcane',
+  celestial: 'Celestial',
+  botanical: 'Botanical',
+  nautical: 'Nautical',
+};
+const THEME_LABELS = {
+  light: 'Light',
+  dark: 'Dark',
+  system: 'System',
+};
 
 const mods = ref([]);
 const outputPath = ref('');
@@ -18,6 +34,67 @@ const conflictsModalRef = ref(null);
 const mergedModalRef = ref(null);
 const policy = ref('last_wins');
 const overrides = ref(new Map());
+
+// Texture preview cache. Keyed by `${vpkPath}::${entry}`. Values are one of:
+//   { state: 'loading' }
+//   { state: 'ok', dataUrl, width, height, origWidth, origHeight, format }
+//   { state: 'error', message }
+const texturePreviews = ref(new Map());
+
+function isPreviewablePath(path) {
+  return typeof path === 'string' && path.toLowerCase().endsWith('.vtex_c');
+}
+
+function previewKey(vpkPath, entry) {
+  return `${vpkPath}::${entry}`;
+}
+
+function getPreview(vpkPath, entry) {
+  return texturePreviews.value.get(previewKey(vpkPath, entry));
+}
+
+async function ensurePreview(vpkPath, entry) {
+  const key = previewKey(vpkPath, entry);
+  if (texturePreviews.value.has(key)) return;
+  // Mark as loading immediately so the row shows a skeleton.
+  const next = new Map(texturePreviews.value);
+  next.set(key, { state: 'loading' });
+  texturePreviews.value = next;
+  try {
+    const p = await invoke('preview_texture', {
+      vpkPath,
+      entry,
+      maxDim: 96,
+    });
+    const ok = new Map(texturePreviews.value);
+    ok.set(key, {
+      state: 'ok',
+      dataUrl: p.data_url,
+      width: p.width,
+      height: p.height,
+      origWidth: p.orig_width,
+      origHeight: p.orig_height,
+      format: p.format,
+    });
+    texturePreviews.value = ok;
+  } catch (e) {
+    const err = new Map(texturePreviews.value);
+    err.set(key, { state: 'error', message: String(e) });
+    texturePreviews.value = err;
+  }
+}
+
+// Kick off previews for every previewable conflict when the modal opens.
+// Fires fire-and-forget; results stream into the cache as they land.
+function prefetchPreviewsForConflicts() {
+  for (const c of conflicts.value) {
+    if (!isPreviewablePath(c.path)) continue;
+    for (const idx of c.owners) {
+      const mod = mods.value[idx];
+      if (mod) ensurePreview(mod.path, c.path);
+    }
+  }
+}
 
 const POLICY_LABELS = {
   last_wins: 'Last wins',
@@ -146,8 +223,8 @@ async function browseOutput() {
 
 async function doMerge() {
   if (!outputPath.value) {
-    setStatus('Add at least one VPK first', 'error');
-    return;
+    await browseOutput();
+    if (!outputPath.value) return;
   }
   busy.value = true;
   setStatus('Merging...');
@@ -274,19 +351,21 @@ watch(() => mods.value.length, async (n) => {
 
 function onWindowKeydown(e) {
   if (e.key !== 'Escape') return;
-  if (showMergedModal.value) { showMergedModal.value = false; e.stopPropagation(); }
+  if (showSettingsModal.value) { showSettingsModal.value = false; e.stopPropagation(); }
+  else if (showMergedModal.value) { showMergedModal.value = false; e.stopPropagation(); }
   else if (showConflictsModal.value) { showConflictsModal.value = false; e.stopPropagation(); }
 }
 
-watch([showConflictsModal, showMergedModal], async ([cv, mv], [pcv, pmv]) => {
-  const anyOpen = cv || mv;
-  const wasOpen = pcv || pmv;
+watch([showConflictsModal, showMergedModal, showSettingsModal], async ([cv, mv, sv], [pcv, pmv, psv]) => {
+  const anyOpen = cv || mv || sv;
+  const wasOpen = pcv || pmv || psv;
   if (anyOpen && !wasOpen) {
     lastFocused.value = document.activeElement;
     window.addEventListener('keydown', onWindowKeydown);
     await nextTick();
-    const target = mv ? mergedModalRef.value : conflictsModalRef.value;
+    const target = sv ? settingsModalRef.value : (mv ? mergedModalRef.value : conflictsModalRef.value);
     target?.focus?.();
+    if (cv) prefetchPreviewsForConflicts();
   } else if (!anyOpen && wasOpen) {
     window.removeEventListener('keydown', onWindowKeydown);
     const prior = lastFocused.value;
@@ -321,7 +400,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="w-screen h-screen flex flex-col select-none cursor-default bg-surface-0 dark:bg-surface-950 text-ink-800 dark:text-ink-100">
-    <div class="flex flex-col w-full h-full bg-paper overflow-hidden">
+    <div class="relative flex flex-col w-full h-full bg-paper overflow-hidden">
 
       <!-- Custom title bar -->
       <div
@@ -333,6 +412,18 @@ onBeforeUnmount(() => {
           <span>vpkmerge</span>
         </div>
         <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/60 dark:focus-visible:ring-accent-300/60 focus-visible:ring-inset"
+            @click="showSettingsModal = true"
+            aria-label="Settings"
+            title="Settings"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.2"/>
+              <path d="M8 1.5 L9 3 L11 2.6 L11.6 4.4 L13.4 5 L13 7 L14.5 8 L13 9 L13.4 11 L11.6 11.6 L11 13.4 L9 13 L8 14.5 L7 13 L5 13.4 L4.4 11.6 L2.6 11 L3 9 L1.5 8 L3 7 L2.6 5 L4.4 4.4 L5 2.6 L7 3 Z"/>
+            </svg>
+          </button>
           <button
             type="button"
             class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/60 dark:focus-visible:ring-accent-300/60 focus-visible:ring-inset"
@@ -368,8 +459,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Content -->
-      <div class="doodle-overlay flex-1 min-h-0 overflow-y-auto">
+      <!-- Content + footer share a single doodle overlay so the whole sheet
+           below the title bar carries the same tiled doodles. -->
+      <div class="doodle-overlay flex-1 min-h-0 flex flex-col">
+      <div class="flex-1 min-h-0 overflow-y-auto">
         <div class="min-h-full flex flex-col p-3 sm:p-4 md:p-8 pb-24">
 
           <!-- Empty state -->
@@ -521,7 +614,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Bottom bar -->
-      <footer class="border-t border-surface-200 dark:border-surface-800 px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
+      <footer class="px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
         <div class="flex items-center gap-3 min-w-0 flex-1">
           <svg
             v-if="busy"
@@ -560,6 +653,10 @@ onBeforeUnmount(() => {
           @click="doMerge"
         >Merge VPKs</button>
       </footer>
+      </div>
+
+      <!-- Warm vignette: a soft candle-light glow. Toggled by html[data-candle="on"]. -->
+      <div class="candle-glow" aria-hidden="true" />
     </div>
 
     <!-- Conflicts modal -->
@@ -632,6 +729,31 @@ onBeforeUnmount(() => {
                 >
                   <span v-if="idx === effectiveWinner(c)" class="text-accent-700 dark:text-accent-300">✓</span>
                   <span v-else class="text-ink-500 dark:text-ink-300">·</span>
+                  <template v-if="isPreviewablePath(c.path)">
+                    <span
+                      class="inline-flex items-center justify-center w-12 h-12 shrink-0 rounded border border-surface-200 dark:border-surface-800 bg-surface-100/60 dark:bg-surface-900/60 overflow-hidden text-[10px] text-ink-500 dark:text-ink-300"
+                      :title="getPreview(mods[idx].path, c.path)?.state === 'error'
+                        ? getPreview(mods[idx].path, c.path).message
+                        : (getPreview(mods[idx].path, c.path)?.format || '')"
+                    >
+                      <img
+                        v-if="getPreview(mods[idx].path, c.path)?.state === 'ok'"
+                        :src="getPreview(mods[idx].path, c.path).dataUrl"
+                        :alt="`${mods[idx].name} preview`"
+                        class="w-full h-full object-contain"
+                        style="image-rendering: pixelated;"
+                      />
+                      <span
+                        v-else-if="getPreview(mods[idx].path, c.path)?.state === 'error'"
+                        class="not-italic"
+                      >?</span>
+                      <span
+                        v-else
+                        class="animate-pulse not-italic"
+                        aria-label="loading preview"
+                      >…</span>
+                    </span>
+                  </template>
                   {{ mods[idx].name }}
                   <span class="text-ink-500 dark:text-ink-300 not-italic ml-auto text-[10px] uppercase tracking-wide">
                     {{ idx === effectiveWinner(c) ? 'wins' : 'click to pick' }}
@@ -674,13 +796,21 @@ onBeforeUnmount(() => {
           aria-labelledby="merged-modal-title"
           class="paper-card rounded-md w-full max-w-md flex flex-col focus:outline-none"
         >
-          <header class="px-5 py-4 border-b border-surface-200 dark:border-surface-800">
-            <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
-              Merged
-            </h4>
-            <h2 id="merged-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
-              {{ lastReport.total_entries }} {{ lastReport.total_entries === 1 ? 'entry' : 'entries' }}
-            </h2>
+          <header class="px-5 py-4 border-b border-surface-200 dark:border-surface-800 flex items-center gap-3">
+            <span class="check-badge shrink-0" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <circle class="check-ring" cx="16" cy="16" r="13"/>
+                <path class="check-tick" d="M9 16.5 L14 21 L23 11"/>
+              </svg>
+            </span>
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+                Merged
+              </h4>
+              <h2 id="merged-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+                {{ lastReport.total_entries }} {{ lastReport.total_entries === 1 ? 'entry' : 'entries' }}
+              </h2>
+            </div>
           </header>
 
           <div class="px-5 py-4 space-y-3">
@@ -701,6 +831,100 @@ onBeforeUnmount(() => {
               class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 font-medium"
               @click="revealOutput"
             >Open folder</button>
+          </footer>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Settings modal -->
+    <Transition name="fx-rise">
+      <div
+        v-if="showSettingsModal"
+        class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70 flex items-center justify-center p-6"
+        @click.self="showSettingsModal = false"
+      >
+        <div
+          ref="settingsModalRef"
+          tabindex="-1"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-modal-title"
+          class="paper-card rounded-md w-full max-w-md flex flex-col focus:outline-none"
+        >
+          <header class="flex items-center justify-between px-5 py-4 border-b border-surface-200 dark:border-surface-800">
+            <h2 id="settings-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+              Settings
+            </h2>
+            <button
+              class="text-ink-500 dark:text-ink-300 hover:text-ink-800 dark:hover:text-ink-100 text-2xl leading-none px-2"
+              @click="showSettingsModal = false"
+              aria-label="Close"
+            >×</button>
+          </header>
+
+          <div class="px-5 py-4 space-y-5">
+            <!-- Theme -->
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium mb-2">
+                Theme
+              </h4>
+              <div role="radiogroup" aria-label="Theme" class="flex gap-1 p-1 bg-surface-100/70 dark:bg-surface-800/40 rounded-md">
+                <button
+                  v-for="key in THEMES"
+                  :key="key"
+                  type="button"
+                  role="radio"
+                  :aria-checked="settings.theme === key"
+                  @click="setTheme(key)"
+                  class="flex-1 text-xs font-medium py-1.5 px-2 rounded transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
+                  :class="settings.theme === key
+                    ? 'bg-accent-600 text-surface-0'
+                    : 'text-ink-700 dark:text-ink-300 hover:bg-surface-200/60 dark:hover:bg-surface-700/40'"
+                >{{ THEME_LABELS[key] }}</button>
+              </div>
+            </div>
+
+            <!-- Doodle theme -->
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium mb-2">
+                Doodles
+              </h4>
+              <div role="radiogroup" aria-label="Doodle theme" class="grid grid-cols-2 gap-1 p-1 bg-surface-100/70 dark:bg-surface-800/40 rounded-md">
+                <button
+                  v-for="key in DOODLE_THEMES"
+                  :key="key"
+                  type="button"
+                  role="radio"
+                  :aria-checked="settings.doodleTheme === key"
+                  @click="setDoodleTheme(key)"
+                  class="text-xs font-medium py-1.5 px-2 rounded transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
+                  :class="settings.doodleTheme === key
+                    ? 'bg-accent-600 text-surface-0'
+                    : 'text-ink-700 dark:text-ink-300 hover:bg-surface-200/60 dark:hover:bg-surface-700/40'"
+                >{{ DOODLE_LABELS[key] }}</button>
+              </div>
+            </div>
+
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium mb-2">
+                Candlelight
+              </h4>
+              <label class="flex items-center justify-between gap-3 cursor-pointer select-none">
+                <span class="text-sm font-serif text-ink-800 dark:text-ink-100">
+                  Warm glow in the corner
+                </span>
+                <input
+                  type="checkbox"
+                  class="checkbox"
+                  :checked="settings.candleEnabled"
+                  @change="setCandleEnabled($event.target.checked)"
+                />
+              </label>
+            </div>
+          </div>
+
+          <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-800 flex items-center justify-end">
+            <button class="btn" @click="showSettingsModal = false">Done</button>
           </footer>
         </div>
       </div>

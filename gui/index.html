@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,6 +10,28 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply theme + doodle + candle before paint so there is no FOUC.
+      // Mirrors loadFromStorage() in src/composables/useSettings.js.
+      (function () {
+        try {
+          var raw = localStorage.getItem('vpkmerge.settings.v1');
+          var s = raw ? JSON.parse(raw) : {};
+          var theme = ['light', 'dark', 'system'].indexOf(s.theme) >= 0 ? s.theme : 'system';
+          var doodle = ['arcane', 'celestial', 'botanical', 'nautical'].indexOf(s.doodleTheme) >= 0 ? s.doodleTheme : 'arcane';
+          var candle = typeof s.candleEnabled === 'boolean' ? s.candleEnabled : true;
+          var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var h = document.documentElement;
+          if (dark) h.classList.add('dark');
+          h.setAttribute('data-doodle', doodle);
+          h.setAttribute('data-candle', candle ? 'on' : 'off');
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+          document.documentElement.setAttribute('data-doodle', 'arcane');
+          document.documentElement.setAttribute('data-candle', 'on');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -104,5 +104,32 @@
 }
 .error circle.bg, .error circle.fg { @apply !stroke-red-700 dark:!stroke-red-400; }
 
+/* === Check badge (merge success) ============================ */
+.check-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 9999px;
+    @apply text-accent-600 dark:text-accent-300 bg-accent-600/10 dark:bg-accent-300/15;
+}
+.check-badge .check-ring {
+    stroke-dasharray: 82;
+    stroke-dashoffset: 82;
+    animation: check-ring-draw 360ms ease-out forwards;
+}
+.check-badge .check-tick {
+    stroke-dasharray: 28;
+    stroke-dashoffset: 28;
+    animation: check-tick-draw 260ms ease-out 280ms forwards;
+}
+@keyframes check-ring-draw { to { stroke-dashoffset: 0; } }
+@keyframes check-tick-draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .check-badge .check-ring,
+    .check-badge .check-tick { animation: none; stroke-dashoffset: 0; }
+}
+
 }
 

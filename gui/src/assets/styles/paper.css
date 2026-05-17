@@ -16,8 +16,6 @@
     background-blend-mode: screen;
 }
 
-/* Doodle overlay — apply ONLY to content regions, not chrome (header, cards).
-   Uses an absolutely-positioned ::before so children paint above it. */
 .doodle-overlay {
     position: relative;
     isolation: isolate;
@@ -27,22 +25,30 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background-image: url("/doodles/paper-doodle-light.svg");
+    background-image: url("/doodles/arcane-light.svg");
     background-size: 480px 480px;
     background-repeat: repeat;
     mix-blend-mode: multiply;
     z-index: 0;
 }
 .dark .doodle-overlay::before {
-    background-image: url("/doodles/paper-doodle-dark.svg");
+    background-image: url("/doodles/arcane-dark.svg");
     mix-blend-mode: screen;
 }
+
+html[data-doodle="celestial"] .doodle-overlay::before        { background-image: url("/doodles/celestial-light.svg"); }
+html.dark[data-doodle="celestial"] .doodle-overlay::before   { background-image: url("/doodles/celestial-dark.svg"); }
+html[data-doodle="botanical"] .doodle-overlay::before        { background-image: url("/doodles/botanical-light.svg"); }
+html.dark[data-doodle="botanical"] .doodle-overlay::before   { background-image: url("/doodles/botanical-dark.svg"); }
+html[data-doodle="nautical"] .doodle-overlay::before         { background-image: url("/doodles/nautical-light.svg"); }
+html.dark[data-doodle="nautical"] .doodle-overlay::before    { background-image: url("/doodles/nautical-dark.svg"); }
+
 .doodle-overlay > * {
     position: relative;
     z-index: 1;
 }
 
-/* Sheet of paper on the desk — same fiber, slightly brighter base, hairline border + soft shadow */
+/* Sheet of paper on the desk: same fiber, slightly brighter base, hairline border + soft shadow */
 .paper-card {
     position: relative;
     background-color: #f6edda;
@@ -54,9 +60,6 @@
         0 1px 0 rgba(0, 0, 0, 0.04),
         0 6px 18px -8px rgba(58, 44, 24, 0.20),
         0 1px 2px rgba(58, 44, 24, 0.10);
-}
-
-
 }
 .dark .paper-card {
     background-color: #3a3326;
@@ -115,3 +118,86 @@
     border-color: rgba(212, 160, 91, 0.75);
     background-color: rgba(212, 160, 91, 0.05);
 }
+
+.candle-glow {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    --candle-x: 80px;
+    --candle-y: calc(100% - 60px);
+    --candle-i: 0.18;
+    --candle-o: 0.09;
+    --candle-r: 42%;
+    background: radial-gradient(
+        circle at var(--candle-x) var(--candle-y),
+        rgba(255, 196, 110, var(--candle-i)) 0%,
+        rgba(255, 162, 70, var(--candle-o)) 16%,
+        rgba(0, 0, 0, 0) var(--candle-r)
+    );
+    z-index: 2;
+    mix-blend-mode: screen;
+    opacity: 0;
+    transition: opacity 280ms ease;
+    animation:
+        candle-flicker 4.7s steps(40, end) infinite,
+        candle-sway 7.3s ease-in-out infinite;
+}
+html[data-candle="on"] .candle-glow { opacity: 1; }
+.dark .candle-glow {
+    --candle-i: 0.26;
+    --candle-o: 0.14;
+    --candle-r: 50%;
+    background: radial-gradient(
+        circle at var(--candle-x) var(--candle-y),
+        rgba(255, 180, 90, var(--candle-i)) 0%,
+        rgba(255, 140, 50, var(--candle-o)) 18%,
+        rgba(0, 0, 0, 0) var(--candle-r)
+    );
+}
+
+@keyframes candle-flicker {
+    0%   { filter: brightness(1.00); }
+    7%   { filter: brightness(1.05); }
+    11%  { filter: brightness(0.92); }
+    18%  { filter: brightness(1.03); }
+    23%  { filter: brightness(0.97); }
+    29%  { filter: brightness(1.08); }
+    34%  { filter: brightness(0.94); }
+    40%  { filter: brightness(1.01); }
+    47%  { filter: brightness(0.90); }
+    53%  { filter: brightness(1.06); }
+    59%  { filter: brightness(0.98); }
+    65%  { filter: brightness(1.04); }
+    72%  { filter: brightness(0.93); }
+    78%  { filter: brightness(1.07); }
+    84%  { filter: brightness(0.96); }
+    91%  { filter: brightness(1.02); }
+    96%  { filter: brightness(0.95); }
+    100% { filter: brightness(1.00); }
+}
+
+@keyframes candle-sway {
+    0%, 100% { --candle-x: 78px; --candle-y: calc(100% - 58px); }
+    33%      { --candle-x: 84px; --candle-y: calc(100% - 62px); }
+    66%      { --candle-x: 79px; --candle-y: calc(100% - 56px); }
+}
+
+/* @property lets the sway keyframes interpolate the gradient position
+   smoothly. Browsers without @property snap on sway; flicker still works. */
+@property --candle-x {
+    syntax: "<length-percentage>";
+    inherits: false;
+    initial-value: 80px;
+}
+@property --candle-y {
+    syntax: "<length-percentage>";
+    inherits: false;
+    initial-value: 0%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .candle-glow { animation: none; }
+}
+
+}
+
