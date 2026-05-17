@@ -41,7 +41,7 @@ Two flavors below: most people want the **desktop app**. Power users / scripters
 
 | Your computer | File |
 |---|---|
-| **Windows** | [\`vpkmerge_${ver}_x64-setup.exe\`](${base}/vpkmerge_${ver}_x64-setup.exe) (installer) or [\`vpkmerge_${ver}_x64_en-US.msi\`](${base}/vpkmerge_${ver}_x64_en-US.msi) |
+| **Windows** | [\`vpkmerge_${ver}_x64-setup.exe\`](${base}/vpkmerge_${ver}_x64-setup.exe) (installer), [\`vpkmerge_${ver}_x64_en-US.msi\`](${base}/vpkmerge_${ver}_x64_en-US.msi), or [\`vpkmerge_${ver}_x64_portable.exe\`](${base}/vpkmerge_${ver}_x64_portable.exe) (portable, no install) |
 | **macOS** (Apple Silicon, M1+) | [\`vpkmerge_${ver}_aarch64.dmg\`](${base}/vpkmerge_${ver}_aarch64.dmg) |
 | **macOS** (Intel) | Run the Apple Silicon \`.dmg\` under Rosetta 2, or build from source. |
 | **Linux** (Debian / Ubuntu) | [\`vpkmerge_${ver}_amd64.deb\`](${base}/vpkmerge_${ver}_amd64.deb) |
@@ -49,7 +49,7 @@ Two flavors below: most people want the **desktop app**. Power users / scripters
 | **Linux** (anything else)   | [\`vpkmerge_${ver}_amd64.AppImage\`](${base}/vpkmerge_${ver}_amd64.AppImage) (no install, \`chmod +x\` and run) |
 
 Install steps:
-- **Windows**: double-click the \`.exe\` installer.
+- **Windows**: double-click the \`.exe\` installer, or just run \`vpkmerge_${ver}_x64_portable.exe\` directly (no install; needs WebView2, preinstalled on Windows 10 1903+ and all Windows 11).
 - **macOS**: open the \`.dmg\`, drag the app into Applications. First launch: right-click → Open (app is not notarized).
 - **Linux .deb**: \`sudo dpkg -i vpkmerge_${ver}_amd64.deb\`
 - **Linux .rpm**: \`sudo dnf install ./vpkmerge-${ver}-1.x86_64.rpm\`
@@ -191,6 +191,23 @@ DL
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      - name: stage portable Windows .exe
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/vpkmerge-gui.exe" \
+             "dist/vpkmerge_${ver}_x64_portable.exe"
+
+      - name: upload portable Windows .exe
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: dist/vpkmerge_*_x64_portable.exe
 
   publish:
     name: Publish release

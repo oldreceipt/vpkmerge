@@ -1,0 +1,9 @@
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.tar.gz
+*.deb
+LICENSE-*
+vpkmerge-cli-*
+!vpkmerge-cli-bin/
