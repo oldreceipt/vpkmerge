@@ -4,6 +4,38 @@ Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many.
 
 Built for **Deadlock** modding: the game caps mounted mod VPKs at roughly 100, so pre-merging several mods into one VPK lets players run more mods than the engine would otherwise allow. Splitting is the inverse operation for mod managers that want per-feature granularity (e.g. one ability slot at a time).
 
+## Download
+
+Prebuilt downloads live on the **[Releases page](https://github.com/Slush97/vpkmerge/releases/latest)**. Two flavors:
+
+- **Desktop app** (the GUI most people want): drag-and-drop file picker, conflict resolver with texture previews, themes, dark/light mode.
+- **Command-line tool** (`vpkmerge`): for scripts, mod-manager integrations, or anyone who lives in a terminal.
+
+Grab the right file for your system:
+
+### Desktop app
+
+| Your computer                | File to download                                                       |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| **Windows**                  | `vpkmerge_<version>_x64-setup.exe` (recommended) or the `.msi`         |
+| **macOS** (Apple Silicon, M1/M2/M3/M4) | `vpkmerge_<version>_aarch64.dmg`                              |
+| **macOS** (Intel)            | Use the Apple Silicon `.dmg` under Rosetta 2, or build from source     |
+| **Linux** (Debian/Ubuntu)    | `vpkmerge_<version>_amd64.deb`                                         |
+| **Linux** (Fedora/RHEL)      | `vpkmerge-<version>-1.x86_64.rpm`                                      |
+| **Linux** (anything else)    | `vpkmerge_<version>_amd64.AppImage` (no install, just `chmod +x` and run) |
+
+On Windows, double-click the installer. On macOS, open the `.dmg` and drag the app into Applications (you may need to right-click → Open the first time because the app isn't notarized). On Linux, install the `.deb`/`.rpm` with your usual package tool, or make the AppImage executable and double-click it.
+
+### Command-line tool
+
+| Your computer                          | File to download                |
+| -------------------------------------- | ------------------------------- |
+| **Linux** (x86_64)                     | `vpkmerge-linux-x86_64`         |
+| **macOS** (Apple Silicon)              | `vpkmerge-macos-aarch64`        |
+| **Windows** (x86_64)                   | `vpkmerge-windows-x86_64.exe`   |
+
+On Linux/macOS, run `chmod +x vpkmerge-*` once after downloading, then call it from a terminal. On Windows it's already executable.
+
 ## Layout
 
 This repo is a Cargo workspace with four crates:
