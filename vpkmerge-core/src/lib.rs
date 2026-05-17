@@ -61,6 +61,60 @@ pub struct MergeReport {
     pub output_path: PathBuf,
 }
 
+/// One output bucket: where to write, and the rule that decides which paths
+/// from the input belong in it.
+#[derive(Clone, Debug)]
+pub struct SplitOutput {
+    pub path: PathBuf,
+    pub predicate: PathPredicate,
+}
+
+/// Path matchers. Start with prefix-only (covers ability slots); add more
+/// variants if a real use case shows up. Keep this an enum, not a closure,
+/// so a `SplitOutput` is serializable from the CLI/JSON layer.
+#[derive(Clone, Debug)]
+pub enum PathPredicate {
+    /// Match if the entry path starts with any of the given prefixes.
+    /// Case-sensitive. Empty list matches nothing.
+    AnyPrefix(Vec<String>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlapPolicy {
+    /// Each path goes to the FIRST output whose predicate matches it.
+    #[default]
+    FirstMatch,
+    /// Each path goes to EVERY output whose predicate matches it.
+    /// Use when you intentionally want the same entry in multiple outputs.
+    AllMatches,
+    /// Refuse to split if any path matches more than one output.
+    Error,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SplitOptions {
+    pub overlap_policy: OverlapPolicy,
+    /// Optional path for a VPK containing every input entry that no
+    /// `SplitOutput` predicate claimed. None = drop unmatched entries silently.
+    pub residual_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitOutputReport {
+    pub path: PathBuf,
+    pub entries: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitReport {
+    pub input_entries: usize,
+    pub outputs: Vec<SplitOutputReport>,
+    pub residual: Option<SplitOutputReport>,
+    /// Number of input entries that landed in zero outputs (and were either
+    /// written to residual or dropped depending on options).
+    pub unmatched: usize,
+}
+
 /// Open a single VPK and return its file list plus a display name.
 pub fn inspect<P: AsRef<Path>>(path: P) -> Result<ModInfo> {
     let path = path.as_ref();
@@ -151,6 +205,168 @@ pub fn merge<P: AsRef<Path>, O: AsRef<Path>>(
     })
 }
 
+/// Route entries from `input` into N output VPKs according to `outputs`.
+/// Reads `input` once. Returns a per-output entry count.
+///
+/// Entries that no `SplitOutput` predicate claims are written to
+/// `options.residual_path` if set, or dropped silently otherwise. Either way,
+/// the count appears in `SplitReport.unmatched`.
+pub fn split<I: AsRef<Path>>(
+    input: I,
+    outputs: &[SplitOutput],
+    options: &SplitOptions,
+) -> Result<SplitReport> {
+    let input = input.as_ref();
+
+    let mut all_dst: Vec<&Path> = outputs.iter().map(|o| o.path.as_path()).collect();
+    if let Some(r) = &options.residual_path {
+        all_dst.push(r.as_path());
+    }
+    reject_split_path_collisions(input, &all_dst)?;
+    for dst in &all_dst {
+        if let Some(parent) = dst.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating output directory {}", parent.display()))?;
+            }
+        }
+    }
+
+    let vpk = valve_pak::open(input).with_context(|| format!("opening {}", input.display()))?;
+    let all_paths: Vec<String> = vpk.file_paths().cloned().collect();
+    let input_entries = all_paths.len();
+
+    if options.overlap_policy == OverlapPolicy::Error {
+        let offenders: Vec<&str> = all_paths
+            .iter()
+            .filter(|p| {
+                outputs
+                    .iter()
+                    .filter(|o| matches_predicate(&o.predicate, p))
+                    .count()
+                    > 1
+            })
+            .map(String::as_str)
+            .collect();
+        if !offenders.is_empty() {
+            let sample = offenders
+                .iter()
+                .take(5)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "{} path{} matched by more than one output (overlap policy is Error). First few: {}",
+                offenders.len(),
+                if offenders.len() == 1 { "" } else { "s" },
+                sample,
+            );
+        }
+    }
+
+    let mut routes: Vec<Vec<String>> = vec![Vec::new(); outputs.len()];
+    let mut residual: Vec<String> = Vec::new();
+    let mut unmatched = 0usize;
+
+    for p in &all_paths {
+        let mut matched = false;
+        for (i, o) in outputs.iter().enumerate() {
+            if matches_predicate(&o.predicate, p) {
+                matched = true;
+                routes[i].push(p.clone());
+                if options.overlap_policy == OverlapPolicy::FirstMatch {
+                    break;
+                }
+            }
+        }
+        if !matched {
+            unmatched += 1;
+            if options.residual_path.is_some() {
+                residual.push(p.clone());
+            }
+        }
+    }
+
+    let mut output_reports = Vec::with_capacity(outputs.len());
+    for (i, o) in outputs.iter().enumerate() {
+        write_bucket(&vpk, &routes[i], &o.path)?;
+        output_reports.push(SplitOutputReport {
+            path: o.path.clone(),
+            entries: routes[i].len(),
+        });
+    }
+
+    let residual_report = if let Some(rpath) = &options.residual_path {
+        write_bucket(&vpk, &residual, rpath)?;
+        Some(SplitOutputReport {
+            path: rpath.clone(),
+            entries: residual.len(),
+        })
+    } else {
+        None
+    };
+
+    Ok(SplitReport {
+        input_entries,
+        outputs: output_reports,
+        residual: residual_report,
+        unmatched,
+    })
+}
+
+fn matches_predicate(pred: &PathPredicate, path: &str) -> bool {
+    match pred {
+        PathPredicate::AnyPrefix(prefixes) => prefixes.iter().any(|pref| path.starts_with(pref)),
+    }
+}
+
+fn write_bucket(vpk: &valve_pak::VPK, entries: &[String], output_path: &Path) -> Result<()> {
+    let tmp = tempfile::tempdir().context("creating temp directory")?;
+    for path in entries {
+        let mut vf = vpk
+            .get_file(path)
+            .with_context(|| format!("locating {path} in input"))?;
+        let bytes = vf.read_all().with_context(|| format!("reading {path}"))?;
+        let dst = tmp.path().join(path);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        std::fs::write(&dst, &bytes).with_context(|| format!("writing {}", dst.display()))?;
+    }
+    let packed = valve_pak::from_directory(tmp.path()).context("packing split VPK")?;
+    packed
+        .save(output_path)
+        .with_context(|| format!("saving {}", output_path.display()))?;
+    Ok(())
+}
+
+fn reject_split_path_collisions(input: &Path, outputs: &[&Path]) -> Result<()> {
+    let canon_input = input.canonicalize().ok();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for dst in outputs {
+        let canon_dst = dst.parent().and_then(|p| {
+            if p.as_os_str().is_empty() {
+                None
+            } else {
+                p.canonicalize()
+                    .ok()
+                    .and_then(|p| dst.file_name().map(|f| p.join(f)))
+            }
+        });
+        let Some(canon_dst) = canon_dst else {
+            continue;
+        };
+        if Some(&canon_dst) == canon_input.as_ref() {
+            anyhow::bail!("output path equals input path: {}", canon_dst.display());
+        }
+        if !seen.insert(canon_dst.clone()) {
+            anyhow::bail!("output listed twice: {}", canon_dst.display());
+        }
+    }
+    Ok(())
+}
+
 fn open_all<P: AsRef<Path>>(inputs: &[P]) -> Result<Vec<valve_pak::VPK>> {
     inputs
         .iter()
@@ -190,7 +406,7 @@ fn resolve_winners(
                 .collect::<Vec<_>>()
                 .join(", ");
             anyhow::bail!(
-                "{} unresolved path conflict{} (collision policy is Error). First: {}",
+                "{} unresolved path conflict{} (collision policy is Error). First few: {}",
                 conflicts.len(),
                 if conflicts.len() == 1 { "" } else { "s" },
                 sample
@@ -468,6 +684,245 @@ mod tests {
         let nested = fx.dir.path().join("does/not/exist/yet/out_dir.vpk");
         merge(&[&fx.a, &fx.b], &nested, &MergeOptions::default())?;
         assert!(nested.exists());
+        Ok(())
+    }
+
+    fn make_abilities_fixture(path: &Path) -> Result<()> {
+        make_vpk(
+            path,
+            &[
+                ("sounds/abilities/abrams/a2_charge/x.vsnd_c", b"a2x"),
+                ("sounds/abilities/abrams/a2_charge/y.vsnd_c", b"a2y"),
+                ("sounds/abilities/abrams/a4_leap/z.vsnd_c", b"a4z"),
+                ("other/unrelated.txt", b"misc"),
+            ],
+        )
+    }
+
+    fn prefix_output(path: PathBuf, prefixes: &[&str]) -> SplitOutput {
+        SplitOutput {
+            path,
+            predicate: PathPredicate::AnyPrefix(
+                prefixes.iter().map(|s| (*s).to_string()).collect(),
+            ),
+        }
+    }
+
+    fn entry_set(vpk_path: &Path) -> Result<Vec<String>> {
+        let mut paths: Vec<String> = valve_pak::open(vpk_path)?.file_paths().cloned().collect();
+        paths.sort();
+        Ok(paths)
+    }
+
+    #[test]
+    fn split_routes_by_prefix() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let out_a2 = tmp.path().join("a2_dir.vpk");
+        let out_a4 = tmp.path().join("a4_dir.vpk");
+        let outputs = vec![
+            prefix_output(out_a2.clone(), &["sounds/abilities/abrams/a2_"]),
+            prefix_output(out_a4.clone(), &["sounds/abilities/abrams/a4_"]),
+        ];
+        let report = split(&input, &outputs, &SplitOptions::default())?;
+        assert_eq!(report.input_entries, 4);
+        assert_eq!(report.outputs[0].entries, 2);
+        assert_eq!(report.outputs[1].entries, 1);
+        assert_eq!(report.unmatched, 1);
+        assert!(report.residual.is_none());
+        assert_eq!(
+            entry_set(&out_a2)?,
+            vec![
+                "sounds/abilities/abrams/a2_charge/x.vsnd_c".to_string(),
+                "sounds/abilities/abrams/a2_charge/y.vsnd_c".to_string(),
+            ]
+        );
+        assert_eq!(
+            entry_set(&out_a4)?,
+            vec!["sounds/abilities/abrams/a4_leap/z.vsnd_c".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn split_residual_collects_unmatched() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let out_a2 = tmp.path().join("a2_dir.vpk");
+        let residual = tmp.path().join("residual_dir.vpk");
+        let outputs = vec![prefix_output(out_a2, &["sounds/abilities/abrams/a2_"])];
+        let opts = SplitOptions {
+            residual_path: Some(residual.clone()),
+            ..Default::default()
+        };
+        let report = split(&input, &outputs, &opts)?;
+        assert_eq!(report.unmatched, 2);
+        let res = report.residual.as_ref().expect("residual report");
+        assert_eq!(res.entries, 2);
+        assert_eq!(
+            entry_set(&residual)?,
+            vec![
+                "other/unrelated.txt".to_string(),
+                "sounds/abilities/abrams/a4_leap/z.vsnd_c".to_string(),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn split_no_residual_drops_unmatched() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let out_a2 = tmp.path().join("a2_dir.vpk");
+        let outputs = vec![prefix_output(out_a2, &["sounds/abilities/abrams/a2_"])];
+        let report = split(&input, &outputs, &SplitOptions::default())?;
+        assert_eq!(report.unmatched, 2);
+        assert!(report.residual.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn split_empty_output_still_writes_vpk() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let empty = tmp.path().join("empty_dir.vpk");
+        let outputs = vec![prefix_output(empty.clone(), &["no/such/prefix/"])];
+        let report = split(&input, &outputs, &SplitOptions::default())?;
+        assert_eq!(report.outputs[0].entries, 0);
+        assert!(
+            empty.exists(),
+            "empty bucket should still produce a VPK file"
+        );
+        let paths: Vec<String> = valve_pak::open(&empty)?.file_paths().cloned().collect();
+        assert!(paths.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn split_first_match_wins() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let earlier = tmp.path().join("earlier_dir.vpk");
+        let later = tmp.path().join("later_dir.vpk");
+        // Both predicates match every "sounds/abilities/abrams/a2_charge/*" entry.
+        let outputs = vec![
+            prefix_output(earlier.clone(), &["sounds/abilities/abrams/a2_charge/"]),
+            prefix_output(later.clone(), &["sounds/abilities/abrams/a2_"]),
+        ];
+        let report = split(&input, &outputs, &SplitOptions::default())?;
+        assert_eq!(report.outputs[0].entries, 2);
+        assert_eq!(report.outputs[1].entries, 0);
+        assert!(entry_set(&later)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn split_all_matches_duplicates() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let earlier = tmp.path().join("earlier_dir.vpk");
+        let later = tmp.path().join("later_dir.vpk");
+        let outputs = vec![
+            prefix_output(earlier.clone(), &["sounds/abilities/abrams/a2_charge/"]),
+            prefix_output(later.clone(), &["sounds/abilities/abrams/a2_"]),
+        ];
+        let opts = SplitOptions {
+            overlap_policy: OverlapPolicy::AllMatches,
+            ..Default::default()
+        };
+        let report = split(&input, &outputs, &opts)?;
+        assert_eq!(report.outputs[0].entries, 2);
+        assert_eq!(report.outputs[1].entries, 2);
+        assert_eq!(entry_set(&earlier)?, entry_set(&later)?);
+        Ok(())
+    }
+
+    #[test]
+    fn split_error_policy_rejects_overlap() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let outputs = vec![
+            prefix_output(
+                tmp.path().join("earlier_dir.vpk"),
+                &["sounds/abilities/abrams/a2_charge/"],
+            ),
+            prefix_output(
+                tmp.path().join("later_dir.vpk"),
+                &["sounds/abilities/abrams/a2_"],
+            ),
+        ];
+        let opts = SplitOptions {
+            overlap_policy: OverlapPolicy::Error,
+            ..Default::default()
+        };
+        let err = split(&input, &outputs, &opts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("sounds/abilities/abrams/a2_charge/"),
+            "msg = {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn split_rejects_output_equals_input() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let outputs = vec![prefix_output(input.clone(), &["sounds/"])];
+        let err = split(&input, &outputs, &SplitOptions::default()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("equals input"), "msg = {msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn split_creates_missing_parent_dirs() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let nested = tmp.path().join("does/not/exist/a2_dir.vpk");
+        let outputs = vec![prefix_output(
+            nested.clone(),
+            &["sounds/abilities/abrams/a2_"],
+        )];
+        split(&input, &outputs, &SplitOptions::default())?;
+        assert!(nested.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn stable_split_then_merge() -> Result<()> {
+        let tmp = tempdir()?;
+        let input = tmp.path().join("in_dir.vpk");
+        make_abilities_fixture(&input)?;
+        let a2 = tmp.path().join("a2_dir.vpk");
+        let a4 = tmp.path().join("a4_dir.vpk");
+        let residual = tmp.path().join("residual_dir.vpk");
+        let outputs = vec![
+            prefix_output(a2.clone(), &["sounds/abilities/abrams/a2_"]),
+            prefix_output(a4.clone(), &["sounds/abilities/abrams/a4_"]),
+        ];
+        let opts = SplitOptions {
+            residual_path: Some(residual.clone()),
+            ..Default::default()
+        };
+        split(&input, &outputs, &opts)?;
+
+        let recombined = tmp.path().join("recombined_dir.vpk");
+        merge(
+            &[&a2, &a4, &residual],
+            &recombined,
+            &MergeOptions::default(),
+        )?;
+        assert_eq!(entry_set(&input)?, entry_set(&recombined)?);
         Ok(())
     }
 
