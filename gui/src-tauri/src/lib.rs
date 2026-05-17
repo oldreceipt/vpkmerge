@@ -86,6 +86,11 @@ async fn merge_vpks(
 }
 
 #[tauri::command]
+async fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
 async fn reveal_in_folder(path: String) -> Result<(), String> {
     use std::process::Command;
     let result = if cfg!(target_os = "linux") {
@@ -117,6 +122,7 @@ pub fn run() {
             pick_output_path,
             add_mod,
             merge_vpks,
+            path_exists,
             reveal_in_folder
         ])
         .run(tauri::generate_context!())

@@ -1,17 +1,21 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const mods = ref([]);
 const outputPath = ref('');
+const outputExists = ref(false);
 const status = ref({ text: '', kind: '' });
 const busy = ref(false);
 const isDragging = ref(false);
 const showConflictsModal = ref(false);
 const showMergedModal = ref(false);
 const lastReport = ref(null);
+const lastFocused = ref(null);
+const conflictsModalRef = ref(null);
+const mergedModalRef = ref(null);
 
 const conflicts = computed(() => {
   const owners = new Map();
@@ -28,6 +32,16 @@ const conflicts = computed(() => {
     }
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
+});
+
+const conflictsByMod = computed(() => {
+  const counts = new Map();
+  for (const c of conflicts.value) {
+    for (const idx of c.owners) {
+      counts.set(idx, (counts.get(idx) || 0) + 1);
+    }
+  }
+  return counts;
 });
 
 const canMerge = computed(() => mods.value.length >= 2 && !busy.value);
@@ -115,6 +129,12 @@ function removeMod(idx) {
   if (mods.value.length === 0) outputPath.value = '';
 }
 
+function clearAll() {
+  mods.value = [];
+  outputPath.value = '';
+  setStatus('');
+}
+
 async function revealOutput() {
   if (!lastReport.value?.output_path) return;
   try {
@@ -125,22 +145,27 @@ async function revealOutput() {
 }
 
 const dragSrcIdx = ref(null);
+const dragOverIdx = ref(null);
 function onDragStart(idx, e) {
   dragSrcIdx.value = idx;
   e.dataTransfer.effectAllowed = 'move';
 }
-function onDragOver(e) {
+function onDragOver(idx, e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
+  if (dragOverIdx.value !== idx) dragOverIdx.value = idx;
 }
 function onDrop(idx) {
-  if (dragSrcIdx.value === null || dragSrcIdx.value === idx) return;
-  const [moved] = mods.value.splice(dragSrcIdx.value, 1);
-  mods.value.splice(idx, 0, moved);
+  if (dragSrcIdx.value !== null && dragSrcIdx.value !== idx) {
+    const [moved] = mods.value.splice(dragSrcIdx.value, 1);
+    mods.value.splice(idx, 0, moved);
+  }
   dragSrcIdx.value = null;
+  dragOverIdx.value = null;
 }
 function onDragEnd() {
   dragSrcIdx.value = null;
+  dragOverIdx.value = null;
 }
 
 const isMaximized = ref(false);
@@ -155,6 +180,44 @@ async function winToggleMax() {
   await refreshMaximized();
 }
 async function winClose() { await getCurrentWindow().close(); }
+
+let outputCheckTimer = null;
+watch(outputPath, (p) => {
+  if (outputCheckTimer) clearTimeout(outputCheckTimer);
+  if (!p) { outputExists.value = false; return; }
+  outputCheckTimer = setTimeout(async () => {
+    try { outputExists.value = await invoke('path_exists', { path: p }); }
+    catch { outputExists.value = false; }
+  }, 200);
+});
+
+watch(() => mods.value.length, async (n) => {
+  const title = n === 0 ? 'vpkmerge' : `vpkmerge - ${n} mod${n === 1 ? '' : 's'} loaded`;
+  try { await getCurrentWindow().setTitle(title); } catch { /* noop */ }
+});
+
+function onWindowKeydown(e) {
+  if (e.key !== 'Escape') return;
+  if (showMergedModal.value) { showMergedModal.value = false; e.stopPropagation(); }
+  else if (showConflictsModal.value) { showConflictsModal.value = false; e.stopPropagation(); }
+}
+
+watch([showConflictsModal, showMergedModal], async ([cv, mv], [pcv, pmv]) => {
+  const anyOpen = cv || mv;
+  const wasOpen = pcv || pmv;
+  if (anyOpen && !wasOpen) {
+    lastFocused.value = document.activeElement;
+    window.addEventListener('keydown', onWindowKeydown);
+    await nextTick();
+    const target = mv ? mergedModalRef.value : conflictsModalRef.value;
+    target?.focus?.();
+  } else if (!anyOpen && wasOpen) {
+    window.removeEventListener('keydown', onWindowKeydown);
+    const prior = lastFocused.value;
+    lastFocused.value = null;
+    if (prior && typeof prior.focus === 'function') prior.focus();
+  }
+});
 
 let unlistenResize = null;
 let unlistenDragDrop = null;
@@ -175,6 +238,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (unlistenDragDrop) unlistenDragDrop();
   if (unlistenResize) unlistenResize();
+  window.removeEventListener('keydown', onWindowKeydown);
+  if (outputCheckTimer) clearTimeout(outputCheckTimer);
 });
 </script>
 
@@ -194,7 +259,7 @@ onBeforeUnmount(() => {
         <div class="flex items-center gap-1">
           <button
             type="button"
-            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95"
+            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/60 dark:focus-visible:ring-accent-300/60 focus-visible:ring-inset"
             @click="winMinimize"
             aria-label="Minimize"
           >
@@ -202,7 +267,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95"
+            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-accent-700/10 dark:hover:bg-accent-300/10 transition active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/60 dark:focus-visible:ring-accent-300/60 focus-visible:ring-inset"
             @click="winToggleMax"
             :aria-label="isMaximized ? 'Restore' : 'Maximize'"
           >
@@ -216,7 +281,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-red-700 hover:text-ink-50 transition active:scale-95"
+            class="w-7 h-7 rounded-md inline-flex items-center justify-center hover:bg-red-700 hover:text-ink-50 transition active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-600 focus-visible:ring-inset"
             @click="winClose"
             aria-label="Close"
           >
@@ -272,16 +337,30 @@ onBeforeUnmount(() => {
               {{ isDragging ? 'Drop to add more' : 'Add more VPKs' }}
             </button>
 
+            <div class="flex items-center justify-between px-1">
+              <span class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+                {{ mods.length }} {{ mods.length === 1 ? 'mod' : 'mods' }}
+              </span>
+              <button
+                type="button"
+                @click="clearAll"
+                class="text-xs italic font-serif text-ink-500 dark:text-ink-300 hover:text-red-600 dark:hover:text-red-400 focus-visible:outline-none focus-visible:underline rounded"
+              >Clear all</button>
+            </div>
+
             <div class="paper-card rounded-md p-1">
               <ul class="flex flex-col">
                 <li
                   v-for="(mod, idx) in mods"
                   :key="mod.path"
                   draggable="true"
-                  class="group flex items-center gap-3 px-3 py-2.5 rounded-sm cursor-grab select-none transition-colors hover:bg-surface-100/60 dark:hover:bg-surface-800/60"
-                  :class="{ 'opacity-40': dragSrcIdx === idx }"
+                  class="group flex items-center gap-3 px-3 py-2.5 rounded-sm cursor-grab select-none transition-colors hover:bg-surface-100/60 dark:hover:bg-surface-800/60 border-t-2 border-transparent"
+                  :class="{
+                    'opacity-40': dragSrcIdx === idx,
+                    '!border-accent-500 dark:!border-accent-300': dragOverIdx === idx && dragSrcIdx !== null && dragSrcIdx !== idx,
+                  }"
                   @dragstart="onDragStart(idx, $event)"
-                  @dragover="onDragOver"
+                  @dragover="onDragOver(idx, $event)"
                   @drop="onDrop(idx)"
                   @dragend="onDragEnd"
                 >
@@ -290,9 +369,14 @@ onBeforeUnmount(() => {
                   <span class="flex-1 font-serif text-base text-ink-800 dark:text-ink-100 truncate" :title="mod.path">
                     {{ mod.name }}
                   </span>
+                  <span
+                    v-if="conflictsByMod.get(idx)"
+                    class="text-[10px] tracking-wide px-1.5 py-0.5 rounded-full bg-accent-600/15 dark:bg-accent-300/15 text-accent-700 dark:text-accent-300 font-medium tabular-nums whitespace-nowrap"
+                    :title="`${conflictsByMod.get(idx)} path${conflictsByMod.get(idx) === 1 ? '' : 's'} conflict with another mod`"
+                  >{{ conflictsByMod.get(idx) }} conflict{{ conflictsByMod.get(idx) === 1 ? '' : 's' }}</span>
                   <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums italic font-serif">{{ mod.file_count }} files</span>
                   <button
-                    class="text-ink-500 dark:text-ink-300 hover:text-red-600 dark:hover:text-red-400 text-lg leading-none px-2 py-0.5 rounded opacity-50 group-hover:opacity-100"
+                    class="text-ink-500 dark:text-ink-300 hover:text-red-600 dark:hover:text-red-400 text-lg leading-none px-2 py-0.5 rounded opacity-50 group-hover:opacity-100 focus-visible:outline-none focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
                     title="Remove"
                     @click.stop="removeMod(idx)"
                   >×</button>
@@ -312,13 +396,17 @@ onBeforeUnmount(() => {
               <div class="flex gap-2 items-center">
                 <input
                   type="text"
-                  readonly
-                  :value="outputPath"
+                  v-model="outputPath"
+                  spellcheck="false"
                   placeholder="Auto-set from the first VPK added..."
                   class="flex-1 bg-transparent border border-surface-300 dark:border-surface-700 rounded-md px-3 py-2 text-xs font-mono text-ink-800 dark:text-ink-100 placeholder:italic placeholder:font-serif placeholder:text-ink-500 dark:placeholder:text-ink-300 focus:outline-none focus:border-accent-500"
                 />
                 <button class="btn" @click="browseOutput">Browse</button>
               </div>
+              <p
+                v-if="outputExists"
+                class="text-xs font-serif italic text-accent-700 dark:text-accent-300 mt-2"
+              >Will overwrite the existing file at this path.</p>
             </div>
           </div>
         </div>
@@ -327,6 +415,16 @@ onBeforeUnmount(() => {
       <!-- Bottom bar -->
       <footer class="border-t border-surface-200 dark:border-surface-800 px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
         <div class="flex items-center gap-3 min-w-0 flex-1">
+          <svg
+            v-if="busy"
+            class="shrink-0 w-4 h-4 animate-spin text-accent-700 dark:text-accent-300"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.25" />
+            <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
           <span
             class="text-xs font-serif italic truncate"
             :class="{
@@ -334,13 +432,14 @@ onBeforeUnmount(() => {
               'text-green-700 dark:text-green-400 not-italic font-sans': status.kind === 'success',
               'text-red-700 dark:text-red-400 not-italic font-sans': status.kind === 'error',
             }"
+            aria-live="polite"
           >
             {{ status.text || (mods.length ? 'Ready when you are' : 'Drop a VPK to start') }}
           </span>
           <button
             v-if="conflicts.length"
             @click="showConflictsModal = true"
-            class="text-xs flex items-center gap-1.5 shrink-0 text-accent-700 dark:text-accent-300 hover:underline italic font-serif"
+            class="text-xs flex items-center gap-1.5 shrink-0 text-accent-700 dark:text-accent-300 hover:underline italic font-serif focus-visible:outline-none focus-visible:underline rounded"
           >
             <span class="bg-accent-600 text-surface-0 font-bold rounded-full px-2 py-0.5 tracking-wider text-[10px] not-italic font-sans">{{ conflicts.length }}</span>
             view conflicts
@@ -361,13 +460,20 @@ onBeforeUnmount(() => {
         class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70 flex items-center justify-center p-6"
         @click.self="showConflictsModal = false"
       >
-        <div class="paper-card rounded-md w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div
+          ref="conflictsModalRef"
+          tabindex="-1"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="conflicts-modal-title"
+          class="paper-card rounded-md w-full max-w-2xl max-h-[80vh] flex flex-col focus:outline-none"
+        >
           <header class="flex items-center justify-between px-5 py-4 border-b border-surface-200 dark:border-surface-800">
             <div>
               <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
                 Path conflicts
               </h4>
-              <h2 class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+              <h2 id="conflicts-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
                 {{ conflicts.length }} {{ conflicts.length === 1 ? 'collision' : 'collisions' }}
               </h2>
             </div>
@@ -411,12 +517,19 @@ onBeforeUnmount(() => {
         class="fixed inset-0 z-50 bg-black/50 dark:bg-black/70 flex items-center justify-center p-6"
         @click.self="showMergedModal = false"
       >
-        <div class="paper-card rounded-md w-full max-w-md flex flex-col">
+        <div
+          ref="mergedModalRef"
+          tabindex="-1"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="merged-modal-title"
+          class="paper-card rounded-md w-full max-w-md flex flex-col focus:outline-none"
+        >
           <header class="px-5 py-4 border-b border-surface-200 dark:border-surface-800">
             <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
               Merged
             </h4>
-            <h2 class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
+            <h2 id="merged-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
               {{ lastReport.total_entries }} {{ lastReport.total_entries === 1 ? 'entry' : 'entries' }}
             </h2>
           </header>
