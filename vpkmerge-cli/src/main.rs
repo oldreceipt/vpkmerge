@@ -57,6 +57,7 @@ fn main() -> Result<()> {
         &cli.output,
         &MergeOptions {
             collision_policy: policy,
+            ..Default::default()
         },
     )?;
 

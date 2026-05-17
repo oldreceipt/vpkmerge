@@ -16,6 +16,25 @@ const lastReport = ref(null);
 const lastFocused = ref(null);
 const conflictsModalRef = ref(null);
 const mergedModalRef = ref(null);
+const policy = ref('last_wins');
+const overrides = ref(new Map());
+
+const POLICY_LABELS = {
+  last_wins: 'Last wins',
+  first_wins: 'First wins',
+  strict: 'Refuse',
+};
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = n / 1024;
+  for (const u of units) {
+    if (v < 1024) return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${u}`;
+    v /= 1024;
+  }
+  return `${Math.round(v)} TB`;
+}
 
 const conflicts = computed(() => {
   const owners = new Map();
@@ -44,7 +63,30 @@ const conflictsByMod = computed(() => {
   return counts;
 });
 
-const canMerge = computed(() => mods.value.length >= 2 && !busy.value);
+const customizedCount = computed(() => {
+  let n = 0;
+  for (const c of conflicts.value) if (overrides.value.has(c.path)) n += 1;
+  return n;
+});
+
+const unresolvedStrict = computed(() => {
+  if (policy.value !== 'strict') return 0;
+  let n = 0;
+  for (const c of conflicts.value) if (!overrides.value.has(c.path)) n += 1;
+  return n;
+});
+
+const canMerge = computed(() =>
+  mods.value.length >= 2 && !busy.value && unresolvedStrict.value === 0,
+);
+
+const mergeBlockedReason = computed(() => {
+  if (mods.value.length < 2) return '';
+  if (unresolvedStrict.value > 0) {
+    return `Refuse policy: pick a winner for ${unresolvedStrict.value} conflict${unresolvedStrict.value === 1 ? '' : 's'}.`;
+  }
+  return '';
+});
 
 function setStatus(text, kind = '') {
   status.value = { text, kind };
@@ -110,9 +152,13 @@ async function doMerge() {
   busy.value = true;
   setStatus('Merging...');
   try {
+    const overridesObj = {};
+    for (const [path, idx] of overrides.value) overridesObj[path] = idx;
     const report = await invoke('merge_vpks', {
       orderedPaths: mods.value.map((m) => m.path),
       outputPath: outputPath.value,
+      policy: policy.value,
+      overrides: overridesObj,
     });
     lastReport.value = report;
     showMergedModal.value = true;
@@ -124,6 +170,30 @@ async function doMerge() {
   }
 }
 
+function setOverride(path, idx) {
+  const next = new Map(overrides.value);
+  next.set(path, idx);
+  overrides.value = next;
+}
+
+function resetOverrides() {
+  overrides.value = new Map();
+}
+
+function clearOverride(path) {
+  if (!overrides.value.has(path)) return;
+  const next = new Map(overrides.value);
+  next.delete(path);
+  overrides.value = next;
+}
+
+function effectiveWinner(c) {
+  if (overrides.value.has(c.path)) return overrides.value.get(c.path);
+  if (policy.value === 'first_wins') return c.owners[0];
+  if (policy.value === 'last_wins') return c.owners[c.owners.length - 1];
+  return null;
+}
+
 function removeMod(idx) {
   mods.value.splice(idx, 1);
   if (mods.value.length === 0) outputPath.value = '';
@@ -132,8 +202,14 @@ function removeMod(idx) {
 function clearAll() {
   mods.value = [];
   outputPath.value = '';
+  overrides.value = new Map();
   setStatus('');
 }
+
+watch(
+  () => mods.value.map((m) => m.path).join('\x1f'),
+  () => { if (overrides.value.size) overrides.value = new Map(); },
+);
 
 async function revealOutput() {
   if (!lastReport.value?.output_path) return;
@@ -374,7 +450,8 @@ onBeforeUnmount(() => {
                     class="text-[10px] tracking-wide px-1.5 py-0.5 rounded-full bg-accent-600/15 dark:bg-accent-300/15 text-accent-700 dark:text-accent-300 font-medium tabular-nums whitespace-nowrap"
                     :title="`${conflictsByMod.get(idx)} path${conflictsByMod.get(idx) === 1 ? '' : 's'} conflict with another mod`"
                   >{{ conflictsByMod.get(idx) }} conflict{{ conflictsByMod.get(idx) === 1 ? '' : 's' }}</span>
-                  <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums italic font-serif">{{ mod.file_count }} files</span>
+                  <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums italic font-serif whitespace-nowrap">{{ mod.file_count }} files</span>
+                  <span class="text-ink-500 dark:text-ink-300 text-xs tabular-nums italic font-serif whitespace-nowrap">{{ formatBytes(mod.size_bytes || 0) }}</span>
                   <button
                     class="text-ink-500 dark:text-ink-300 hover:text-red-600 dark:hover:text-red-400 text-lg leading-none px-2 py-0.5 rounded opacity-50 group-hover:opacity-100 focus-visible:outline-none focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
                     title="Remove"
@@ -407,6 +484,37 @@ onBeforeUnmount(() => {
                 v-if="outputExists"
                 class="text-xs font-serif italic text-accent-700 dark:text-accent-300 mt-2"
               >Will overwrite the existing file at this path.</p>
+            </div>
+
+            <!-- On conflict -->
+            <div class="paper-card rounded-md p-4">
+              <div class="flex items-baseline justify-between mb-2">
+                <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+                  On conflict
+                </h4>
+                <span class="text-[10px] italic font-serif text-ink-500 dark:text-ink-300">
+                  Default: later mod in the list wins
+                </span>
+              </div>
+              <div role="radiogroup" aria-label="Collision policy" class="flex gap-1 p-1 bg-surface-100/70 dark:bg-surface-800/40 rounded-md">
+                <button
+                  v-for="key in ['last_wins', 'first_wins', 'strict']"
+                  :key="key"
+                  type="button"
+                  role="radio"
+                  :aria-checked="policy === key"
+                  @click="policy = key"
+                  class="flex-1 text-xs font-medium py-1.5 px-2 rounded transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
+                  :class="policy === key
+                    ? 'bg-accent-600 text-surface-0'
+                    : 'text-ink-700 dark:text-ink-300 hover:bg-surface-200/60 dark:hover:bg-surface-700/40'"
+                >{{ POLICY_LABELS[key] }}</button>
+              </div>
+              <p class="text-[11px] font-serif italic text-ink-500 dark:text-ink-300 mt-2">
+                <span v-if="policy === 'last_wins'">Later mods in the list override earlier ones on collision.</span>
+                <span v-else-if="policy === 'first_wins'">Earlier mods in the list win; later duplicates are dropped.</span>
+                <span v-else>Refuse to merge if any path collides. Resolve manually via "view conflicts".</span>
+              </p>
             </div>
           </div>
         </div>
@@ -447,7 +555,8 @@ onBeforeUnmount(() => {
         </div>
         <button
           :disabled="!canMerge"
-          class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 font-medium"
+          :title="mergeBlockedReason || 'Merge the listed VPKs'"
+          class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-0 dark:focus-visible:ring-offset-surface-950"
           @click="doMerge"
         >Merge VPKs</button>
       </footer>
@@ -474,7 +583,10 @@ onBeforeUnmount(() => {
                 Path conflicts
               </h4>
               <h2 id="conflicts-modal-title" class="font-serif text-xl sm:text-2xl text-ink-800 dark:text-ink-100">
-                {{ conflicts.length }} {{ conflicts.length === 1 ? 'collision' : 'collisions' }}
+                {{ conflicts.length }} {{ conflicts.length === 1 ? 'collision' : 'collisions' }}<span
+                  v-if="customizedCount"
+                  class="text-sm sm:text-base text-accent-700 dark:text-accent-300 font-normal italic"
+                > ({{ customizedCount }} customized)</span>
               </h2>
             </div>
             <button
@@ -482,30 +594,67 @@ onBeforeUnmount(() => {
               @click="showConflictsModal = false"
             >×</button>
           </header>
-          <div class="overflow-y-auto p-5 space-y-3">
+          <div class="overflow-y-auto p-5 space-y-3 flex-1">
+            <p class="text-xs font-serif italic text-ink-500 dark:text-ink-300 -mt-1 mb-1">
+              Click a row to make it the winner for that path. Reordering mods clears overrides.
+            </p>
             <div
               v-for="c in conflicts"
               :key="c.path"
-              class="border border-surface-200 dark:border-surface-800 rounded-md px-3 py-2.5"
+              class="border rounded-md px-3 py-2.5"
+              :class="overrides.has(c.path)
+                ? 'border-accent-500/60 bg-accent-500/5'
+                : 'border-surface-200 dark:border-surface-800'"
             >
-              <div class="font-mono text-xs text-ink-800 dark:text-ink-100 break-all mb-1.5">{{ c.path }}</div>
+              <div class="flex items-center gap-2 mb-1.5">
+                <div class="font-mono text-xs text-ink-800 dark:text-ink-100 break-all flex-1">{{ c.path }}</div>
+                <span
+                  v-if="overrides.has(c.path)"
+                  class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-accent-600 text-surface-0 font-medium shrink-0"
+                >edited</span>
+                <span
+                  v-else-if="effectiveWinner(c) === null"
+                  class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-red-700 text-surface-0 font-medium shrink-0"
+                  title="Refuse policy: pick a winner or change the policy"
+                >no winner</span>
+              </div>
               <div class="flex flex-col gap-0.5">
-                <div
+                <button
                   v-for="idx in c.owners"
                   :key="idx"
-                  class="text-xs flex items-center gap-2 font-serif"
-                  :class="idx === c.winner
+                  type="button"
+                  @click="setOverride(c.path, idx)"
+                  class="text-xs flex items-center gap-2 font-serif text-left px-1.5 py-1 rounded transition-colors hover:bg-surface-100/80 dark:hover:bg-surface-800/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-700/45 dark:focus-visible:ring-accent-300/45"
+                  :class="idx === effectiveWinner(c)
                     ? 'text-accent-700 dark:text-accent-300 font-semibold'
                     : 'text-ink-500 dark:text-ink-300 line-through italic'"
+                  :aria-pressed="idx === effectiveWinner(c)"
                 >
-                  <span v-if="idx === c.winner" class="text-accent-700 dark:text-accent-300">✓</span>
+                  <span v-if="idx === effectiveWinner(c)" class="text-accent-700 dark:text-accent-300">✓</span>
                   <span v-else class="text-ink-500 dark:text-ink-300">·</span>
                   {{ mods[idx].name }}
-                  <span class="text-ink-500 dark:text-ink-300 not-italic">({{ idx === c.winner ? 'wins' : 'overridden' }})</span>
-                </div>
+                  <span class="text-ink-500 dark:text-ink-300 not-italic ml-auto text-[10px] uppercase tracking-wide">
+                    {{ idx === effectiveWinner(c) ? 'wins' : 'click to pick' }}
+                  </span>
+                </button>
               </div>
+              <button
+                v-if="overrides.has(c.path)"
+                type="button"
+                @click.stop="clearOverride(c.path)"
+                class="text-[10px] italic font-serif text-ink-500 dark:text-ink-300 hover:text-accent-700 dark:hover:text-accent-300 mt-1.5 focus-visible:outline-none focus-visible:underline rounded"
+              >Reset to default</button>
             </div>
           </div>
+          <footer class="px-5 py-3 border-t border-surface-200 dark:border-surface-800 flex items-center justify-between">
+            <button
+              type="button"
+              @click="resetOverrides"
+              :disabled="!customizedCount"
+              class="text-xs italic font-serif text-ink-500 dark:text-ink-300 hover:text-accent-700 dark:hover:text-accent-300 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:underline rounded"
+            >Reset all overrides</button>
+            <button class="btn" @click="showConflictsModal = false">Done</button>
+          </footer>
         </div>
       </div>
     </Transition>

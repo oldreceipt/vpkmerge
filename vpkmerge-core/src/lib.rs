@@ -12,7 +12,7 @@
 //! ```
 
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ pub struct ModInfo {
     pub path: PathBuf,
     pub name: String,
     pub file_count: usize,
+    pub size_bytes: u64,
     pub file_paths: Vec<String>,
 }
 
@@ -30,9 +31,10 @@ pub struct Conflict {
     pub owner_indices: Vec<usize>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CollisionPolicy {
     /// Later inputs override earlier ones (default).
+    #[default]
     LastWins,
     /// Earlier inputs win; later duplicates are dropped.
     FirstWins,
@@ -40,17 +42,14 @@ pub enum CollisionPolicy {
     Error,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MergeOptions {
     pub collision_policy: CollisionPolicy,
-}
-
-impl Default for MergeOptions {
-    fn default() -> Self {
-        MergeOptions {
-            collision_policy: CollisionPolicy::LastWins,
-        }
-    }
+    /// Per-path manual overrides: maps an entry path to the index (in
+    /// `ordered_inputs`) that should win for that path. Takes precedence
+    /// over `collision_policy`. An override pointing at an index that does
+    /// not actually own the path causes `merge` to error.
+    pub overrides: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,10 +70,12 @@ pub fn inspect<P: AsRef<Path>>(path: P) -> Result<ModInfo> {
         |n| n.to_string_lossy().into_owned(),
     );
     let file_paths: Vec<String> = vpk.file_paths().cloned().collect();
+    let size_bytes = std::fs::metadata(path).map_or(0, |m| m.len());
     Ok(ModInfo {
         path: path.to_path_buf(),
         name,
         file_count: file_paths.len(),
+        size_bytes,
         file_paths,
     })
 }
@@ -119,7 +120,8 @@ pub fn merge<P: AsRef<Path>, O: AsRef<Path>>(
 
     let vpks = open_all(ordered_inputs)?;
     let owners = compute_owners(&vpks);
-    let winners = resolve_winners(&owners, options.collision_policy)?;
+    validate_overrides(&owners, &options.overrides, ordered_inputs.len())?;
+    let winners = resolve_winners(&owners, options.collision_policy, &options.overrides)?;
     let overridden_paths = owners.values().filter(|v| v.len() > 1).count();
 
     let tmp = tempfile::tempdir().context("creating temp directory")?;
@@ -172,11 +174,12 @@ fn compute_owners(vpks: &[valve_pak::VPK]) -> BTreeMap<String, Vec<usize>> {
 fn resolve_winners(
     owners: &BTreeMap<String, Vec<usize>>,
     policy: CollisionPolicy,
+    overrides: &HashMap<String, usize>,
 ) -> Result<BTreeMap<String, usize>> {
     if policy == CollisionPolicy::Error {
         let conflicts: Vec<&str> = owners
             .iter()
-            .filter(|(_, v)| v.len() > 1)
+            .filter(|(path, v)| v.len() > 1 && !overrides.contains_key(path.as_str()))
             .map(|(k, _)| k.as_str())
             .collect();
         if !conflicts.is_empty() {
@@ -187,7 +190,7 @@ fn resolve_winners(
                 .collect::<Vec<_>>()
                 .join(", ");
             anyhow::bail!(
-                "{} path conflict{} (collision policy is Error). First: {}",
+                "{} unresolved path conflict{} (collision policy is Error). First: {}",
                 conflicts.len(),
                 if conflicts.len() == 1 { "" } else { "s" },
                 sample
@@ -198,13 +201,40 @@ fn resolve_winners(
     Ok(owners
         .iter()
         .map(|(path, idxs)| {
-            let winner = match policy {
-                CollisionPolicy::FirstWins | CollisionPolicy::Error => *idxs.first().unwrap(),
-                CollisionPolicy::LastWins => *idxs.last().unwrap(),
+            let winner = if let Some(&idx) = overrides.get(path) {
+                idx
+            } else {
+                match policy {
+                    CollisionPolicy::FirstWins | CollisionPolicy::Error => *idxs.first().unwrap(),
+                    CollisionPolicy::LastWins => *idxs.last().unwrap(),
+                }
             };
             (path.clone(), winner)
         })
         .collect())
+}
+
+fn validate_overrides(
+    owners: &BTreeMap<String, Vec<usize>>,
+    overrides: &HashMap<String, usize>,
+    input_count: usize,
+) -> Result<()> {
+    for (path, &idx) in overrides {
+        if idx >= input_count {
+            anyhow::bail!(
+                "override for {path} points at input index {idx} but only {input_count} inputs were given"
+            );
+        }
+        let Some(idxs) = owners.get(path) else {
+            anyhow::bail!("override path {path} does not exist in any input");
+        };
+        if !idxs.contains(&idx) {
+            anyhow::bail!(
+                "override for {path} points at input index {idx} which does not contain that path"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn reject_output_equals_input<P: AsRef<Path>>(inputs: &[P], output: &Path) -> Result<()> {
@@ -311,6 +341,7 @@ mod tests {
         let fx = two_inputs()?;
         let opts = MergeOptions {
             collision_policy: CollisionPolicy::FirstWins,
+            ..Default::default()
         };
         merge(&[&fx.a, &fx.b], &fx.out, &opts)?;
         assert_eq!(read_entry(&fx.out, "shared/file.txt")?, b"from a");
@@ -322,11 +353,84 @@ mod tests {
         let fx = two_inputs()?;
         let opts = MergeOptions {
             collision_policy: CollisionPolicy::Error,
+            ..Default::default()
         };
         let result = merge(&[&fx.a, &fx.b], &fx.out, &opts);
         assert!(result.is_err(), "expected error policy to reject");
         let msg = format!("{:#}", result.unwrap_err());
         assert!(msg.contains("conflict"), "msg = {msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn override_beats_policy() -> Result<()> {
+        // LastWins would pick B; override forces A.
+        let fx = two_inputs()?;
+        let mut overrides = HashMap::new();
+        overrides.insert("shared/file.txt".to_string(), 0);
+        let opts = MergeOptions {
+            collision_policy: CollisionPolicy::LastWins,
+            overrides,
+        };
+        merge(&[&fx.a, &fx.b], &fx.out, &opts)?;
+        assert_eq!(read_entry(&fx.out, "shared/file.txt")?, b"from a");
+        Ok(())
+    }
+
+    #[test]
+    fn override_resolves_strict_conflict() -> Result<()> {
+        // Error policy normally rejects; override resolves the only conflict.
+        let fx = two_inputs()?;
+        let mut overrides = HashMap::new();
+        overrides.insert("shared/file.txt".to_string(), 0);
+        let opts = MergeOptions {
+            collision_policy: CollisionPolicy::Error,
+            overrides,
+        };
+        merge(&[&fx.a, &fx.b], &fx.out, &opts)?;
+        assert_eq!(read_entry(&fx.out, "shared/file.txt")?, b"from a");
+        Ok(())
+    }
+
+    #[test]
+    fn override_pointing_at_non_owner_errors() -> Result<()> {
+        // only_a/file.txt is in input 0; pointing the override at input 1 must fail.
+        let fx = two_inputs()?;
+        let mut overrides = HashMap::new();
+        overrides.insert("only_a/file.txt".to_string(), 1);
+        let opts = MergeOptions {
+            overrides,
+            ..Default::default()
+        };
+        let err = merge(&[&fx.a, &fx.b], &fx.out, &opts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not contain"), "msg = {msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn override_for_nonexistent_path_errors() -> Result<()> {
+        let fx = two_inputs()?;
+        let mut overrides = HashMap::new();
+        overrides.insert("nope/missing.txt".to_string(), 0);
+        let opts = MergeOptions {
+            overrides,
+            ..Default::default()
+        };
+        let err = merge(&[&fx.a, &fx.b], &fx.out, &opts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not exist"), "msg = {msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_reports_size() -> Result<()> {
+        let tmp = tempdir()?;
+        let p = tmp.path().join("x_dir.vpk");
+        make_vpk(&p, &[("a.txt", b"hi")])?;
+        let info = inspect(&p)?;
+        assert!(info.size_bytes > 0, "size_bytes should be populated");
+        assert_eq!(info.size_bytes, std::fs::metadata(&p)?.len());
         Ok(())
     }
 

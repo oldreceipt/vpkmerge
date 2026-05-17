@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
@@ -7,6 +8,7 @@ struct ModInfo {
     path: String,
     name: String,
     file_count: usize,
+    size_bytes: u64,
     file_paths: Vec<String>,
 }
 
@@ -16,7 +18,23 @@ impl From<vpkmerge_core::ModInfo> for ModInfo {
             path: m.path.to_string_lossy().into_owned(),
             name: m.name,
             file_count: m.file_count,
+            size_bytes: m.size_bytes,
             file_paths: m.file_paths,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct Conflict {
+    path: String,
+    owner_indices: Vec<usize>,
+}
+
+impl From<vpkmerge_core::Conflict> for Conflict {
+    fn from(c: vpkmerge_core::Conflict) -> Self {
+        Conflict {
+            path: c.path,
+            owner_indices: c.owner_indices,
         }
     }
 }
@@ -72,14 +90,32 @@ async fn add_mod(path: String) -> Result<ModInfo, String> {
 }
 
 #[tauri::command]
+async fn detect_conflicts(ordered_paths: Vec<String>) -> Result<Vec<Conflict>, String> {
+    vpkmerge_core::detect_conflicts(&ordered_paths)
+        .map(|cs| cs.into_iter().map(Into::into).collect())
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
 async fn merge_vpks(
     ordered_paths: Vec<String>,
     output_path: String,
+    policy: Option<String>,
+    overrides: Option<HashMap<String, usize>>,
 ) -> Result<MergeReport, String> {
+    let collision_policy = match policy.as_deref() {
+        None | Some("last_wins") => vpkmerge_core::CollisionPolicy::LastWins,
+        Some("first_wins") => vpkmerge_core::CollisionPolicy::FirstWins,
+        Some("strict") => vpkmerge_core::CollisionPolicy::Error,
+        Some(other) => return Err(format!("unknown policy: {other}")),
+    };
     vpkmerge_core::merge(
         &ordered_paths,
         &output_path,
-        &vpkmerge_core::MergeOptions::default(),
+        &vpkmerge_core::MergeOptions {
+            collision_policy,
+            overrides: overrides.unwrap_or_default(),
+        },
     )
     .map(Into::into)
     .map_err(|e| format!("{e:#}"))
@@ -121,6 +157,7 @@ pub fn run() {
             pick_vpk_files,
             pick_output_path,
             add_mod,
+            detect_conflicts,
             merge_vpks,
             path_exists,
             reveal_in_folder
