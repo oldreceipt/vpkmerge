@@ -1,5 +1,7 @@
+use base64::Engine;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Cursor;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
@@ -126,6 +128,77 @@ async fn path_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
+#[derive(Serialize)]
+struct TexturePreview {
+    /// `data:image/png;base64,...` URL, ready to drop into `<img :src>`.
+    data_url: String,
+    /// Displayed (post-downscale) dimensions.
+    width: u32,
+    height: u32,
+    /// Original texture dimensions before any downscale.
+    orig_width: u32,
+    orig_height: u32,
+    /// `VTexFormat` name (e.g. "BC7", "RGBA8888").
+    format: String,
+}
+
+#[tauri::command]
+async fn preview_texture(
+    vpk_path: String,
+    entry: String,
+    max_dim: Option<u32>,
+) -> Result<TexturePreview, String> {
+    let cap = max_dim.unwrap_or(256).max(16);
+    let vpk = valve_pak::open(&vpk_path).map_err(|e| format!("open vpk: {e}"))?;
+    let mut vf = vpk
+        .get_file(&entry)
+        .map_err(|e| format!("entry not found: {e}"))?;
+    let bytes = vf.read_all().map_err(|e| format!("read entry: {e}"))?;
+
+    let info = morphic::inspect(&bytes).map_err(|e| format!("inspect: {e}"))?;
+    let img = match morphic::decode(&bytes) {
+        Ok(img) => img,
+        Err(morphic::DecodeError::Unimplemented(fmt)) => {
+            return Err(format!("preview not supported for format: {}", fmt.name()));
+        }
+        Err(e) => return Err(format!("decode: {e}")),
+    };
+
+    let raw_rgba = match img.data {
+        morphic::ImageData::Rgba8(buf) => buf,
+        morphic::ImageData::Rgba16F(_) => {
+            return Err("HDR texture preview not yet supported".into());
+        }
+    };
+    let buffer: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+        image::ImageBuffer::from_raw(img.width, img.height, raw_rgba)
+            .ok_or_else(|| "decoded buffer size mismatch".to_string())?;
+
+    let dyn_img = image::DynamicImage::ImageRgba8(buffer);
+    let (orig_w, orig_h) = (img.width, img.height);
+    let downscaled = if orig_w > cap || orig_h > cap {
+        dyn_img.resize(cap, cap, image::imageops::FilterType::Triangle)
+    } else {
+        dyn_img
+    };
+
+    let (w, h) = (downscaled.width(), downscaled.height());
+    let mut png_bytes: Vec<u8> = Vec::new();
+    downscaled
+        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("png encode: {e}"))?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok(TexturePreview {
+        data_url: format!("data:image/png;base64,{b64}"),
+        width: w,
+        height: h,
+        orig_width: orig_w,
+        orig_height: orig_h,
+        format: info.format.name().to_string(),
+    })
+}
+
 #[tauri::command]
 async fn reveal_in_folder(path: String) -> Result<(), String> {
     use std::process::Command;
@@ -160,7 +233,8 @@ pub fn run() {
             detect_conflicts,
             merge_vpks,
             path_exists,
-            reveal_in_folder
+            reveal_in_folder,
+            preview_texture
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
