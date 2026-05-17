@@ -1,9 +1,12 @@
 [package]
 name = "vpkmerge-core"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Core VPK merging logic shared by the vpkmerge CLI and GUI."
+description = "Core VPK merging and splitting logic shared by the vpkmerge CLI and GUI."
 license = "MIT"
+repository = "https://github.com/Slush97/vpkmerge"
+keywords = ["vpk", "valve", "source2", "deadlock", "modding"]
+categories = ["game-development", "filesystem"]
 
 [dependencies]
 anyhow = "1"

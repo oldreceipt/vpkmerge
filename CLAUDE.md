@@ -9,9 +9,9 @@ Published at https://github.com/Slush97/vpkmerge (MIT).
 Rust Cargo workspace:
 
 ```
-vpkmerge-core/        pure-Rust merge engine (lib, v0.2.0)
-  src/lib.rs          public API: inspect / detect_conflicts / merge
-vpkmerge-cli/         CLI binary `vpkmerge` on top of core (v0.1.0)
+vpkmerge-core/        pure-Rust merge engine (lib, v0.3.0)
+  src/lib.rs          public API: inspect / detect_conflicts / merge / split
+vpkmerge-cli/         CLI binary `vpkmerge` on top of core (v0.2.0)
 gui/
   src/                Vue 3 + Vite + Tailwind 4 frontend
   src-tauri/          Tauri v2 desktop app wrapping the same engine

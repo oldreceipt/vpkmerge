@@ -1,9 +1,12 @@
 [package]
 name = "vpkmerge-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Command-line tool to combine Valve Pak (VPK) files."
+description = "Command-line tool to combine and split Valve Pak (VPK) files."
+repository = "https://github.com/Slush97/vpkmerge"
+keywords = ["vpk", "valve", "source2", "deadlock", "modding"]
+categories = ["command-line-utilities", "game-development"]
 
 [[bin]]
 name = "vpkmerge"
@@ -14,7 +17,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-vpkmerge-core = { path = "../vpkmerge-core" }
+vpkmerge-core = { path = "../vpkmerge-core", version = "0.3" }
 
 [lints]
 workspace = true
