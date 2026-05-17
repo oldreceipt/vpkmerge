@@ -165,6 +165,16 @@ const mergeBlockedReason = computed(() => {
   return '';
 });
 
+const mergeSummary = computed(() => {
+  if (mods.value.length === 0) return '';
+  const parts = [`${mods.value.length} mod${mods.value.length === 1 ? '' : 's'}`];
+  if (conflicts.value.length) {
+    parts.push(`${conflicts.value.length} conflict${conflicts.value.length === 1 ? '' : 's'}`);
+  }
+  parts.push(POLICY_LABELS[policy.value].toLowerCase());
+  return parts.join(' · ');
+});
+
 function setStatus(text, kind = '') {
   status.value = { text, kind };
 }
@@ -463,7 +473,7 @@ onBeforeUnmount(() => {
            below the title bar carries the same tiled doodles. -->
       <div class="doodle-overlay flex-1 min-h-0 flex flex-col">
       <div class="flex-1 min-h-0 overflow-y-auto">
-        <div class="min-h-full flex flex-col p-3 sm:p-4 md:p-8 pb-24">
+        <div class="min-h-full flex flex-col p-3 sm:p-4 md:p-8">
 
           <!-- Empty state -->
           <div v-if="mods.length === 0" class="flex-1 w-full flex items-center justify-center px-2 py-4">
@@ -609,50 +619,69 @@ onBeforeUnmount(() => {
                 <span v-else>Refuse to merge if any path collides. Resolve manually via "view conflicts".</span>
               </p>
             </div>
+
+            <!-- Merge -->
+            <div class="paper-card rounded-md p-4">
+              <div class="flex items-baseline justify-between mb-3">
+                <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">
+                  Merge
+                </h4>
+                <span class="text-[10px] italic font-serif text-ink-500 dark:text-ink-300 truncate ml-2">
+                  {{ mergeSummary }}
+                </span>
+              </div>
+
+              <div
+                class="flex items-center gap-2 mb-3 min-h-[1.25rem]"
+                aria-live="polite"
+              >
+                <svg
+                  v-if="busy"
+                  class="shrink-0 w-4 h-4 animate-spin text-accent-700 dark:text-accent-300"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.25" />
+                  <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+                <span
+                  class="text-xs font-serif italic truncate flex-1"
+                  :class="{
+                    'text-ink-500 dark:text-ink-300': !status.kind,
+                    'text-green-700 dark:text-green-400 not-italic font-sans': status.kind === 'success',
+                    'text-red-700 dark:text-red-400 not-italic font-sans': status.kind === 'error',
+                  }"
+                >
+                  {{ status.text || (mods.length >= 2 ? 'Ready when you are' : mods.length === 1 ? 'Add one more VPK to merge' : 'Drop a VPK to start') }}
+                </span>
+                <button
+                  v-if="conflicts.length"
+                  @click="showConflictsModal = true"
+                  class="text-xs flex items-center gap-1.5 shrink-0 text-accent-700 dark:text-accent-300 hover:underline italic font-serif focus-visible:outline-none focus-visible:underline rounded"
+                >
+                  <span class="bg-accent-600 text-surface-0 font-bold rounded-full px-2 py-0.5 tracking-wider text-[10px] not-italic font-sans">{{ conflicts.length }}</span>
+                  view conflicts
+                </button>
+              </div>
+
+              <button
+                :disabled="!canMerge"
+                :title="mergeBlockedReason || 'Merge the listed VPKs'"
+                class="merge-button w-full h-12 rounded-md font-medium text-base bg-accent-600 hover:!bg-accent-700 text-surface-0 disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-0 dark:focus-visible:ring-offset-surface-950"
+                @click="doMerge"
+              >Merge VPKs</button>
+
+              <p
+                v-if="mergeBlockedReason"
+                class="text-[11px] font-serif italic text-red-700 dark:text-red-400 mt-2"
+              >
+                {{ mergeBlockedReason }}
+              </p>
+            </div>
           </div>
         </div>
       </div>
-
-      <!-- Bottom bar -->
-      <footer class="px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-        <div class="flex items-center gap-3 min-w-0 flex-1">
-          <svg
-            v-if="busy"
-            class="shrink-0 w-4 h-4 animate-spin text-accent-700 dark:text-accent-300"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.25" />
-            <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
-          <span
-            class="text-xs font-serif italic truncate"
-            :class="{
-              'text-ink-500 dark:text-ink-300': !status.kind,
-              'text-green-700 dark:text-green-400 not-italic font-sans': status.kind === 'success',
-              'text-red-700 dark:text-red-400 not-italic font-sans': status.kind === 'error',
-            }"
-            aria-live="polite"
-          >
-            {{ status.text || (mods.length ? 'Ready when you are' : 'Drop a VPK to start') }}
-          </span>
-          <button
-            v-if="conflicts.length"
-            @click="showConflictsModal = true"
-            class="text-xs flex items-center gap-1.5 shrink-0 text-accent-700 dark:text-accent-300 hover:underline italic font-serif focus-visible:outline-none focus-visible:underline rounded"
-          >
-            <span class="bg-accent-600 text-surface-0 font-bold rounded-full px-2 py-0.5 tracking-wider text-[10px] not-italic font-sans">{{ conflicts.length }}</span>
-            view conflicts
-          </button>
-        </div>
-        <button
-          :disabled="!canMerge"
-          :title="mergeBlockedReason || 'Merge the listed VPKs'"
-          class="btn bg-accent-600 hover:!bg-accent-700 text-surface-0 px-6 py-2 disabled:opacity-40 disabled:cursor-not-allowed shrink-0 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 focus-visible:ring-offset-2 focus-visible:ring-offset-surface-0 dark:focus-visible:ring-offset-surface-950"
-          @click="doMerge"
-        >Merge VPKs</button>
-      </footer>
       </div>
 
       <!-- Warm vignette: a soft candle-light glow. Toggled by html[data-candle="on"]. -->
