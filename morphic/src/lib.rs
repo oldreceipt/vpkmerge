@@ -1,0 +1,61 @@
+//! Pure-Rust Source 2 `.vtex_c` texture decoder.
+//!
+//! The decoder is built up format-by-format; the supported list lives in
+//! [`TextureFormat`]. Unimplemented formats return [`DecodeError::Unimplemented`]
+//! rather than panicking, so callers can probe with [`inspect`] before
+//! committing to a decode.
+//!
+//! ```no_run
+//! let bytes = std::fs::read("hero_diffuse.vtex_c").unwrap();
+//! let info = morphic::inspect(&bytes).unwrap();
+//! println!("{:?} {}x{}", info.format, info.width, info.height);
+//! ```
+
+use std::path::Path;
+
+mod error;
+mod kv3;
+mod resource;
+mod texture;
+
+pub use error::DecodeError;
+pub use texture::{
+    decode::decode_image,
+    format::{TextureFlags, TextureFormat},
+    parse_texture_header, Image, ImageData, TextureInfo,
+};
+
+/// Decode options for [`decode_at`]. Defaults select mip 0, slice 0, face 0.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DecodeOptions {
+    pub mip: u8,
+    pub slice: u16,
+    pub face: u8,
+}
+
+/// Cheap header read: parses the resource container and the texture binary
+/// header without touching pixel data.
+pub fn inspect(bytes: &[u8]) -> Result<TextureInfo, DecodeError> {
+    let resource = resource::Resource::parse(bytes)?;
+    let data = resource.data_block()?;
+    parse_texture_header(data)
+}
+
+/// Decode the top mip of the first slice/face. Convenience entry point.
+pub fn decode(bytes: &[u8]) -> Result<Image, DecodeError> {
+    decode_at(bytes, &DecodeOptions::default())
+}
+
+/// Decode a specific mip/slice/face.
+pub fn decode_at(bytes: &[u8], opts: &DecodeOptions) -> Result<Image, DecodeError> {
+    let resource = resource::Resource::parse(bytes)?;
+    let data = resource.data_block()?;
+    let info = parse_texture_header(data)?;
+    let pixels = texture::pixel_data(&resource, &info)?;
+    decode_image(&info, pixels, opts)
+}
+
+/// Open a VPK and decode the given entry. Convenience for the GUI preview path.
+pub fn decode_from_vpk<P: AsRef<Path>>(_vpk: P, _entry: &str) -> Result<Image, DecodeError> {
+    Err(DecodeError::Unimplemented(TextureFormat::Unknown))
+}

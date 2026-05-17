@@ -4,6 +4,7 @@ members = [
     "vpkmerge-core",
     "vpkmerge-cli",
     "gui/src-tauri",
+    "morphic",
 ]
 
 [workspace.lints.clippy]

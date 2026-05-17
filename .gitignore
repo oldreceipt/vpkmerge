@@ -13,3 +13,6 @@ gui/dist/
 
 # Build artifacts
 *.vpk
+
+# morphic: gitignored extended corpus (committed canonical corpus lives next to it)
+morphic/fixtures/_local/

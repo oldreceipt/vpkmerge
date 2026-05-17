@@ -1,0 +1,18 @@
+{
+  "format": "BC7",
+  "width": 128,
+  "height": 64,
+  "actual_width": 128,
+  "actual_height": 64,
+  "depth": 1,
+  "mip_count": 1,
+  "flags": [
+    "0"
+  ],
+  "source_sha256": "f73ffea1cfa9997ec5a45d64f91a7247ccc9b784c77b2a86705e0977c289b7b6",
+  "vrf_version": "19.1.0.0",
+  "tolerance": {
+    "kind": "mae_u8",
+    "epsilon": 3
+  }
+}

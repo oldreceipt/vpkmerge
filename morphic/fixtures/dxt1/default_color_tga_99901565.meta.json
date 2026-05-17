@@ -1,0 +1,18 @@
+{
+  "format": "DXT1",
+  "width": 4,
+  "height": 4,
+  "actual_width": 1,
+  "actual_height": 1,
+  "depth": 1,
+  "mip_count": 1,
+  "flags": [
+    "0"
+  ],
+  "source_sha256": "3238c82365d3b547718028c825832591ed5b9feededf6c29c522eea1e75c7d2f",
+  "vrf_version": "19.1.0.0",
+  "tolerance": {
+    "kind": "mae_u8",
+    "epsilon": 2
+  }
+}

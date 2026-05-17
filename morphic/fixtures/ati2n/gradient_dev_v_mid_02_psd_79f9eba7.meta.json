@@ -1,0 +1,18 @@
+{
+  "format": "ATI2N",
+  "width": 256,
+  "height": 256,
+  "actual_width": 256,
+  "actual_height": 256,
+  "depth": 1,
+  "mip_count": 7,
+  "flags": [
+    "0"
+  ],
+  "source_sha256": "c7357dafb1200fb36cf514515bdb83ff54c75c7179eeb0a620f97be08f2c7f56",
+  "vrf_version": "19.1.0.0",
+  "tolerance": {
+    "kind": "mae_u8",
+    "epsilon": 2
+  }
+}
