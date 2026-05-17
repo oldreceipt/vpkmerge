@@ -200,6 +200,26 @@ async fn preview_texture(
 }
 
 #[tauri::command]
+async fn save_text_file(
+    app: AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .blocking_save_file()
+        .and_then(|p| p.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&path, content.as_bytes())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
 async fn reveal_in_folder(path: String) -> Result<(), String> {
     use std::process::Command;
     let result = if cfg!(target_os = "linux") {
@@ -234,7 +254,8 @@ pub fn run() {
             merge_vpks,
             path_exists,
             reveal_in_folder,
-            preview_texture
+            preview_texture,
+            save_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

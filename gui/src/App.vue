@@ -4,8 +4,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSettings } from './composables/useSettings.js';
+import { useLogs } from './composables/useLogs.js';
 
 const { settings, setTheme, setDoodleTheme, setCandleEnabled, THEMES, DOODLE_THEMES } = useSettings();
+const { log: logInfo, warn: logWarn, error: logError, formatExport: formatLogsExport } = useLogs();
 const showSettingsModal = ref(false);
 const settingsModalRef = ref(null);
 const DOODLE_LABELS = {
@@ -192,6 +194,7 @@ async function loadPaths(paths) {
   const vpks = paths.filter((p) => p.toLowerCase().endsWith('.vpk'));
   if (vpks.length === 0) {
     setStatus('No .vpk files in that drop', 'error');
+    logWarn(`drop ignored: no .vpk in ${paths.length} path(s)`);
     return;
   }
   for (const path of vpks) {
@@ -199,8 +202,10 @@ async function loadPaths(paths) {
     try {
       const mod = await invoke('add_mod', { path });
       mods.value.push(mod);
+      logInfo(`added mod: ${mod.name} (${mod.file_count} files, ${formatBytes(mod.size_bytes || 0)})`);
     } catch (e) {
       setStatus(`Failed to load ${path}: ${e}`, 'error');
+      logError(`failed to load ${path}: ${e}`);
     }
   }
   if (mods.value.length > 0 && !outputPath.value) {
@@ -238,6 +243,7 @@ async function doMerge() {
   }
   busy.value = true;
   setStatus('Merging...');
+  logInfo(`merge started: ${mods.value.length} inputs, policy=${policy.value}, overrides=${overrides.value.size}`);
   try {
     const overridesObj = {};
     for (const [path, idx] of overrides.value) overridesObj[path] = idx;
@@ -250,10 +256,29 @@ async function doMerge() {
     lastReport.value = report;
     showMergedModal.value = true;
     setStatus(`Wrote ${report.total_entries} entries`, 'success');
+    logInfo(`merge completed: ${report.total_entries} entries to ${report.output_path}`);
   } catch (e) {
     setStatus(`Merge failed: ${e}`, 'error');
+    logError(`merge failed: ${e}`);
   } finally {
     busy.value = false;
+  }
+}
+
+async function exportLogs() {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const savedTo = await invoke('save_text_file', {
+      defaultName: `vpkmerge-${stamp}.log`,
+      content: formatLogsExport(),
+    });
+    if (savedTo) {
+      setStatus(`Logs saved to ${savedTo}`, 'success');
+      logInfo(`logs exported to ${savedTo}`);
+    }
+  } catch (e) {
+    setStatus(`Could not save logs: ${e}`, 'error');
+    logError(`logs export failed: ${e}`);
   }
 }
 
@@ -387,6 +412,7 @@ watch([showConflictsModal, showMergedModal, showSettingsModal], async ([cv, mv, 
 let unlistenResize = null;
 let unlistenDragDrop = null;
 onMounted(async () => {
+  logInfo(`vpkmerge 0.2.0 session start; theme=${settings.theme}, doodle=${settings.doodleTheme}, candle=${settings.candleEnabled}`);
   await refreshMaximized();
   unlistenResize = await getCurrentWindow().onResized(() => refreshMaximized());
   unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
@@ -949,6 +975,18 @@ onBeforeUnmount(() => {
                   @change="setCandleEnabled($event.target.checked)"
                 />
               </label>
+            </div>
+
+            <div>
+              <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium mb-2">
+                Diagnostics
+              </h4>
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-sm font-serif text-ink-800 dark:text-ink-100">
+                  Export session log
+                </span>
+                <button class="btn" @click="exportLogs">Export</button>
+              </div>
             </div>
           </div>
 

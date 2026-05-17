@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  draft:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Render release notes
+        id: notes
+        run: |
+          {
+            echo 'body<<EOF'
+            awk -v tag="$GITHUB_REF_NAME" '
+              $0 ~ "^## " tag "$" { found=1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md
+            echo
+            echo "Built from \`${GITHUB_SHA}\`."
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft
+        id: create
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: vpkmerge ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.body }}
+          draft: true
+          prerelease: false
+
+  cli:
+    name: CLI (${{ matrix.target }})
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  asset: vpkmerge-linux-x86_64,    bin: vpkmerge,     ext: ''     }
+          - { os: macos-13,       target: x86_64-apple-darwin,       asset: vpkmerge-macos-x86_64,    bin: vpkmerge,     ext: ''     }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      asset: vpkmerge-macos-aarch64,   bin: vpkmerge,     ext: ''     }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    asset: vpkmerge-windows-x86_64,  bin: vpkmerge,     ext: '.exe' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --locked -p vpkmerge-cli --target ${{ matrix.target }}
+
+      - name: stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}${{ matrix.ext }}" \
+             "dist/${{ matrix.asset }}${{ matrix.ext }}"
+
+      - name: upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: dist/${{ matrix.asset }}${{ matrix.ext }}
+
+  gui:
+    name: GUI (${{ matrix.target }})
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: macos-13,       target: x86_64-apple-darwin      }
+          - { os: macos-latest,   target: aarch64-apple-darwin     }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc   }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux system deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            gui/src-tauri
+            .
+          key: gui-${{ matrix.target }}
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: gui/pnpm-lock.yaml
+
+      - name: install frontend
+        working-directory: gui
+        run: pnpm install --frozen-lockfile
+
+      - name: build + upload via tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  publish:
+    name: Publish release
+    needs: [cli, gui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Mark release as published
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
