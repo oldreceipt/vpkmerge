@@ -4018,6 +4018,7 @@ name = "vpkmerge-gui"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "half",
  "image",
  "morphic",
  "serde",
