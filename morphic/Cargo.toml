@@ -13,9 +13,14 @@ workspace = true
 bitflags = "2"
 byteorder = "1"
 thiserror = "1"
-half = "2"
+half = { version = "2", features = ["bytemuck"] }
+bytemuck = "1"
 # Safe, pure-Rust port of bcdec.h. Covers BC1..BC5, BC6H, BC7.
 bcdec_rs = "0.2"
+# Intel ISPC texture compressor: BC1/3/4/5/6H/7 encoders. Default build uses
+# prebuilt ISPC object files (no toolchain needed). The `ispc` feature would
+# rebuild from .ispc sources at build time; we leave it off.
+intel_tex_2 = "0.5"
 # Inline PNG / JPEG / WebP pass-through: VTexFormat::PNG_* / JPEG_* / WEBP_*
 # textures store the payload as a literal compressed image inside the DATA
 # block's pixel region. `image` parses just what it needs.

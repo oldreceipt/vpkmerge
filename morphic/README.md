@@ -135,10 +135,22 @@ recolor workflows ("decode → edit externally → re-encode → repack into VPK
 |-------|-----------------------------------------|--------|
 | E1    | Uncompressed encoders (RGBA8888 / BGRA8888) | Done |
 | E1    | `replace_face_mip` splice (same length, same format) | Done |
-| E2    | Block-compressed encoders (DXT1/3/5, BC4/5, BC7) | Pending (needs `texpresso` + BC7 crate) |
-| E2    | BC6H HDR encoder                         | Pending (HDR encoders are rare) |
+| E2    | Block-compressed LDR encoders (DXT1/DXT5, BC4/5, BC7) | Done (via `intel_tex_2`) |
+| E2    | BC6H HDR encoder (unsigned UF16, matches decoder) | Done (via `intel_tex_2`) |
 | E3    | Mip-chain regeneration on splice         | Pending |
 | E3    | VPK entry replace (in vpkmerge-cli/GUI)  | Pending |
+
+`intel_tex_2` (Intel ISPC texture compressor) handles all the BCn encoders.
+Default build uses prebuilt ISPC object files: no ISPC toolchain required.
+The ASTC kernel in those objects depends on C++ exception handling
+(`__gxx_personality_v0`), so `morphic/build.rs` links libstdc++ on Linux
+and libc++ on macOS to satisfy that.
+
+The Phase 2 splice is still deliberately narrow: same dimensions, same
+format, same byte length, and only the one face/mip slot. Multi-mip
+textures retain stale mips after splicing mip 0; multi-face cubemaps
+retain stale faces. Mip-chain regeneration (re-resize + re-encode each
+level) and same-resource-different-bytes-region rewriting come in Phase 3.
 
 ## Attribution
 
