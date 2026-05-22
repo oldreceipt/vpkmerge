@@ -13,14 +13,17 @@
 
 use std::path::Path;
 
+mod edit;
 mod error;
 mod kv3;
 mod resource;
 mod texture;
 
-pub use error::DecodeError;
+pub use edit::{replace_face0_mip0, replace_face_mip};
+pub use error::{DecodeError, EncodeError};
 pub use texture::{
     decode::decode_image,
+    encode::encode_image,
     format::{TextureFlags, TextureFormat},
     parse_texture_header, Image, ImageData, TextureInfo,
 };

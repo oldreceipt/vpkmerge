@@ -27,6 +27,7 @@
 //! largest, so mip0 sits at the *end* of the resource.
 
 pub mod decode;
+pub mod encode;
 pub mod format;
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -121,7 +122,21 @@ fn format_from_id(id: u8) -> Result<TextureFormat, DecodeError> {
     })
 }
 
-/// Locate the pixel bytes for the requested face of mip 0.
+/// Locate the pixel bytes for the requested face of the requested mip.
+///
+/// Thin convenience wrapper over [`face_mip_byte_range`]: slices the
+/// resource's raw bytes at the returned range.
+pub fn pixel_data<'a>(
+    resource: &Resource<'a>,
+    info: &TextureInfo,
+    opts: crate::DecodeOptions,
+) -> Result<&'a [u8], DecodeError> {
+    let range = face_mip_byte_range(resource, info, opts)?;
+    Ok(&resource.raw()[range])
+}
+
+/// Compute the absolute byte range (within the original resource) of one
+/// face of one mip.
 ///
 /// Source 2 stores mips smallest-first, so mip 0 is at the *end* of the
 /// pixel-data region that lives just past the DATA block. Cubemaps split
@@ -129,11 +144,14 @@ fn format_from_id(id: u8) -> Result<TextureFormat, DecodeError> {
 /// non-cubemap textures have a single face. For inline PNG/JPEG/WebP
 /// formats there is no mip chain at all; the payload is a literal
 /// compressed image and the full remainder is returned.
-pub fn pixel_data<'a>(
-    resource: &Resource<'a>,
+///
+/// The splice path in [`crate::encode`] uses the same arithmetic; sharing
+/// this helper keeps decode and edit in lockstep on offsets.
+pub fn face_mip_byte_range(
+    resource: &Resource<'_>,
     info: &TextureInfo,
     opts: crate::DecodeOptions,
-) -> Result<&'a [u8], DecodeError> {
+) -> Result<core::ops::Range<usize>, DecodeError> {
     let data_block = resource.data_block_meta()?;
     let start = data_block
         .offset
@@ -147,7 +165,7 @@ pub fn pixel_data<'a>(
             had: raw.len(),
         });
     }
-    let all = &raw[start..];
+    let all_len = raw.len() - start;
     if is_inline_format(info.format) {
         // Inline payloads don't have faces / mips. Reject anything but the
         // default target so callers get a clear error.
@@ -158,7 +176,7 @@ pub fn pixel_data<'a>(
                 face: opts.face,
             });
         }
-        return Ok(all);
+        return Ok(start..start + all_len);
     }
     let is_cube = info.flags.contains(TextureFlags::CUBE_TEXTURE);
     let face_count: usize = if is_cube { 6 } else { 1 };
@@ -192,17 +210,17 @@ pub fn pixel_data<'a>(
     let needed = after_target
         .checked_add(target_mip_total)
         .ok_or(DecodeError::BadResource("pixel offset overflow"))?;
-    if needed > all.len() {
+    if needed > all_len {
         return Err(DecodeError::Truncated {
             offset: start as u64,
             needed,
-            had: all.len(),
+            had: all_len,
         });
     }
-    let target_end = all.len() - after_target;
+    let target_end = (start + all_len) - after_target;
     let target_mip_start = target_end - target_mip_total;
     let face_start = target_mip_start + usize::from(opts.face) * target_face_size;
-    Ok(&all[face_start..face_start + target_face_size])
+    Ok(face_start..face_start + target_face_size)
 }
 
 /// Dimensions of a given mip level. Each successive mip halves both
@@ -226,7 +244,11 @@ fn is_inline_format(fmt: TextureFormat) -> bool {
 }
 
 /// Bytes occupied by one face of one mip at the given dimensions.
-fn face_size_bytes(fmt: TextureFormat, width: u16, height: u16) -> Result<usize, DecodeError> {
+pub(crate) fn face_size_bytes(
+    fmt: TextureFormat,
+    width: u16,
+    height: u16,
+) -> Result<usize, DecodeError> {
     let w = usize::from(width);
     let h = usize::from(height);
     if let Some(bytes_per_pixel) = uncompressed_bytes_per_pixel(fmt) {

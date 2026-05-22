@@ -34,6 +34,32 @@ let img = morphic::decode_at(&bytes, &DecodeOptions { mip: 0, slice: 0, face: 0 
 `Image::data` is either `Rgba8(Vec<u8>)` for LDR formats or `Rgba16F(Vec<f16>)`
 for HDR formats (BC6H, RGBA16161616F). Top-left origin, row-major.
 
+### Edit (Phase 1)
+
+`morphic::encode_image` is the inverse of `decode_image`, producing wire
+bytes for one face/mip of a chosen format. `morphic::replace_face0_mip0`
+splices those bytes back into an existing `.vtex_c`, returning a fresh
+owned copy.
+
+```rust
+use morphic::{decode, encode_image, inspect, replace_face0_mip0};
+
+let bytes = std::fs::read("hero_albedo.vtex_c")?;
+let info = inspect(&bytes)?;
+
+// Decode mip 0 face 0, hand the pixels off to an external editor, then:
+let img = decode(&bytes)?;
+let new_payload = encode_image(&img, info.format)?;
+let modified = replace_face0_mip0(&bytes, &new_payload)?;
+std::fs::write("hero_albedo.modified.vtex_c", &modified)?;
+```
+
+Phase 1 keeps the splice deliberately narrow: same dimensions, same format,
+same byte length. Only the uncompressed formats (`Rgba8888`, `Bgra8888`)
+encode today, and inline `PngRgba8888` can be encoded but not spliced
+(re-encoded PNG payloads almost never match the original length). Block
+compression and full mip-chain regeneration land in Phase 2.
+
 ## Layout
 
 | Module               | What it does                                                |
@@ -99,6 +125,20 @@ expanded to RGBA with alpha = 1.0). For HDR fixtures the oracle dumps a
 `.f32` sibling (raw `RgbaF32` bytes, little-endian, ActualW × ActualH × 16
 bytes) and the harness diffs the decoder's f16 output against it in float
 space using a per-channel `|a - e| <= abs OR |a - e| <= rel * |e|` rule.
+
+## Encoder milestones
+
+The encode + splice path is being built alongside the decoder to support
+recolor workflows ("decode → edit externally → re-encode → repack into VPK").
+
+| #     | Capability                              | Status |
+|-------|-----------------------------------------|--------|
+| E1    | Uncompressed encoders (RGBA8888 / BGRA8888) | Done |
+| E1    | `replace_face_mip` splice (same length, same format) | Done |
+| E2    | Block-compressed encoders (DXT1/3/5, BC4/5, BC7) | Pending (needs `texpresso` + BC7 crate) |
+| E2    | BC6H HDR encoder                         | Pending (HDR encoders are rare) |
+| E3    | Mip-chain regeneration on splice         | Pending |
+| E3    | VPK entry replace (in vpkmerge-cli/GUI)  | Pending |
 
 ## Attribution
 

@@ -39,3 +39,46 @@ pub enum DecodeError {
     #[error("inline image decode failed: {0}")]
     InlineImage(String),
 }
+
+#[derive(thiserror::Error, Debug)]
+pub enum EncodeError {
+    #[error("encoder not yet implemented for {0:?}")]
+    Unimplemented(TextureFormat),
+
+    /// The supplied [`crate::Image`] held the wrong pixel kind for the target
+    /// format (e.g. `Rgba16F` pixels for an LDR format, or `Rgba8` pixels
+    /// for an HDR format).
+    #[error("wrong pixel kind for {format:?}: {reason}")]
+    WrongPixelKind {
+        format: TextureFormat,
+        reason: &'static str,
+    },
+
+    /// The image dimensions don't match the buffer length, or the buffer
+    /// doesn't match what the format requires for those dims.
+    #[error(
+        "size mismatch for {format:?} at {width}x{height}: expected {expected} bytes, got {got}"
+    )]
+    SizeMismatch {
+        format: TextureFormat,
+        width: u32,
+        height: u32,
+        expected: usize,
+        got: usize,
+    },
+
+    /// The splice target's pixel-data region didn't match the new payload.
+    /// Editing an existing `.vtex_c` requires the re-encoded bytes to slot
+    /// into the exact byte range the original face/mip occupied.
+    #[error("splice length mismatch: target region is {expected} bytes, replacement is {got}")]
+    SpliceLengthMismatch { expected: usize, got: usize },
+
+    /// Resource parsing failed during a splice. Wraps the underlying decode
+    /// error so callers don't have to convert between error families.
+    #[error("resource decode while preparing splice: {0}")]
+    Decode(#[from] DecodeError),
+
+    /// Inline PNG encoding failed.
+    #[error("inline image encode failed: {0}")]
+    InlineImage(String),
+}
