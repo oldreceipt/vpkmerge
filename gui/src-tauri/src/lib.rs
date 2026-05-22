@@ -140,6 +140,10 @@ struct TexturePreview {
     orig_height: u32,
     /// `VTexFormat` name (e.g. "BC7", "RGBA8888").
     format: String,
+    /// True if the texture has the `CUBE_TEXTURE` flag; callers may then
+    /// re-invoke with `face` in `1..=5` to see other faces. Face ordering
+    /// is `[+X, -X, +Y, -Y, +Z, -Z]`; default (no face arg) is `+X`.
+    is_cubemap: bool,
 }
 
 #[tauri::command]
@@ -147,8 +151,10 @@ async fn preview_texture(
     vpk_path: String,
     entry: String,
     max_dim: Option<u32>,
+    face: Option<u8>,
 ) -> Result<TexturePreview, String> {
     let cap = max_dim.unwrap_or(256).max(16);
+    let face = face.unwrap_or(0);
     let vpk = valve_pak::open(&vpk_path).map_err(|e| format!("open vpk: {e}"))?;
     let mut vf = vpk
         .get_file(&entry)
@@ -156,7 +162,15 @@ async fn preview_texture(
     let bytes = vf.read_all().map_err(|e| format!("read entry: {e}"))?;
 
     let info = morphic::inspect(&bytes).map_err(|e| format!("inspect: {e}"))?;
-    let img = match morphic::decode(&bytes) {
+    let is_cubemap = info.flags.contains(morphic::TextureFlags::CUBE_TEXTURE);
+    let img = match morphic::decode_at(
+        &bytes,
+        &morphic::DecodeOptions {
+            mip: 0,
+            slice: 0,
+            face,
+        },
+    ) {
         Ok(img) => img,
         Err(morphic::DecodeError::Unimplemented(fmt)) => {
             return Err(format!("preview not supported for format: {}", fmt.name()));
@@ -194,6 +208,7 @@ async fn preview_texture(
         orig_width: orig_w,
         orig_height: orig_h,
         format: info.format.name().to_string(),
+        is_cubemap,
     })
 }
 

@@ -121,16 +121,18 @@ fn format_from_id(id: u8) -> Result<TextureFormat, DecodeError> {
     })
 }
 
-/// Locate mip 0's pixel bytes for a texture.
+/// Locate the pixel bytes for the requested face of mip 0.
 ///
 /// Source 2 stores mips smallest-first, so mip 0 is at the *end* of the
-/// pixel-data region that lives just past the DATA block. For inline
-/// PNG/JPEG/WebP formats there is no mip chain at all; the payload is a
-/// literal compressed image, so we return the full remainder and let the
-/// image decoder consume only what it needs.
+/// pixel-data region that lives just past the DATA block. Cubemaps split
+/// each mip into 6 contiguous faces in `[+X, -X, +Y, -Y, +Z, -Z]` order;
+/// non-cubemap textures have a single face. For inline PNG/JPEG/WebP
+/// formats there is no mip chain at all; the payload is a literal
+/// compressed image and the full remainder is returned.
 pub fn pixel_data<'a>(
     resource: &Resource<'a>,
     info: &TextureInfo,
+    opts: crate::DecodeOptions,
 ) -> Result<&'a [u8], DecodeError> {
     let data_block = resource.data_block_meta()?;
     let start = data_block
@@ -147,19 +149,27 @@ pub fn pixel_data<'a>(
     }
     let all = &raw[start..];
     if is_inline_format(info.format) {
+        // Inline payloads don't have faces / mips. Reject anything but the
+        // default target so callers get a clear error.
+        if opts.face != 0 || opts.slice != 0 || opts.mip != 0 {
+            return Err(DecodeError::InvalidTarget {
+                mip: opts.mip,
+                slice: opts.slice,
+                face: opts.face,
+            });
+        }
         return Ok(all);
     }
     let face_size = mip0_size_bytes(info)?;
-    // VRF lays out cubemap mip 0 as 6 contiguous faces in order
-    // [PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ].
-    // Mips themselves are smallest-to-largest, so mip 0's 6 faces sit at the
-    // very end. We hand back face 0 (PositiveX) for now; full face/slice
-    // selection is M10.
-    let face_count = if info.flags.contains(TextureFlags::CUBE_TEXTURE) {
-        6
-    } else {
-        1
-    };
+    let is_cube = info.flags.contains(TextureFlags::CUBE_TEXTURE);
+    let face_count: usize = if is_cube { 6 } else { 1 };
+    if usize::from(opts.face) >= face_count {
+        return Err(DecodeError::InvalidTarget {
+            mip: opts.mip,
+            slice: opts.slice,
+            face: opts.face,
+        });
+    }
     let mip0_total = face_size
         .checked_mul(face_count)
         .ok_or(DecodeError::BadResource("mip0 size overflow"))?;
@@ -170,8 +180,9 @@ pub fn pixel_data<'a>(
             had: all.len(),
         });
     }
-    let face0_start = all.len() - mip0_total;
-    Ok(&all[face0_start..face0_start + face_size])
+    let mip0_start = all.len() - mip0_total;
+    let face_start = mip0_start + usize::from(opts.face) * face_size;
+    Ok(&all[face_start..face_start + face_size])
 }
 
 fn is_inline_format(fmt: TextureFormat) -> bool {

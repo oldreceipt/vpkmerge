@@ -4,16 +4,17 @@ Pure-Rust Source 2 `.vtex_c` texture decoder. Built for the vpkmerge GUI's
 conflict-modal texture preview so two mods that touch the same texture can be
 compared visually without shipping a .NET runtime.
 
-Status: M1-M7, M9, M11 (PNG/JPEG path) are in. Morphic decodes RGBA8888,
-BGRA8888, DXT1, DXT5, ATI1N, ATI2N, BC7, BC6H (Rgba16F output), and inline
-PNG_RGBA8888 / PNG_DXT5 / JPEG_DXT5, covering ~86% of Deadlock's `.vtex_c`
-corpus by count. M9 (mip 0 selection) and a sliver of M10 (cubemap face 0)
-are wired so cubemap BC6H sky textures decode end-to-end. RGBA16161616F
-and inline WebP return `DecodeError::Unimplemented`. The golden harness
-diffs LDR formats against a PNG (mae or byte_exact) and HDR formats against
-a raw `.f32` sibling using per-channel `abs + rel` tolerance. Real decoder
-regressions fail the build; formats still PENDING (RGBA16F, WebP, non-face-0
-cubemap slices, 3D textures, arrays) print but stay non-blocking.
+Status: M1-M7, M9, partial M10 (cubemap faces), M11 (PNG/JPEG path) are in.
+Morphic decodes RGBA8888, BGRA8888, DXT1, DXT5, ATI1N, ATI2N, BC7, BC6H
+(Rgba16F output), and inline PNG_RGBA8888 / PNG_DXT5 / JPEG_DXT5, covering
+~86% of Deadlock's `.vtex_c` corpus by count. Cubemap face selection via
+`DecodeOptions::face` (0..=5) works for any format; 3D depth slices and
+texture arrays are still pending. RGBA16161616F and inline WebP return
+`DecodeError::Unimplemented`. The golden harness diffs LDR formats against
+a PNG (mae or byte_exact) and HDR formats against a raw `.f32` sibling
+using per-channel `abs + rel` tolerance. Real decoder regressions fail the
+build; formats still PENDING (RGBA16F, WebP, depth, arrays) print but stay
+non-blocking.
 
 ## API
 
@@ -89,7 +90,7 @@ See `fixtures/README.md` for the per-fixture provenance log.
 | M7    | BC6H            | Done (`bcdec_rs::bc6h_half` unsigned; oracle dumps `.f32`, harness does `hdr_eps` diff) |
 | M8    | RGBA16161616F   | Pending (HDR uncompressed; reuses M7's `.f32` oracle + diff path) |
 | M9    | Mip 0 selection | Done (slices from end of pixel data) |
-| M10   | Cubemaps / arrays / 3D | Partial: face 0 of mip 0 for cubemaps. Faces 1-5, slices, depth, and arrays still pending |
+| M10   | Cubemaps / arrays / 3D | Partial: all 6 cubemap faces selectable via `DecodeOptions::face` (0..=5). 3D depth slices and texture arrays still pending |
 | M11   | Inline PNG / JPEG / WebP | Partial (PNG + JPEG OK; WebP pending) |
 
 `bcdec_rs` covers M3-M7 (BC1, BC2, BC3, BC4, BC5, BC6H, BC7) under one safe

@@ -17,7 +17,10 @@ pub fn decode_image(
     pixels: &[u8],
     opts: &DecodeOptions,
 ) -> Result<Image, DecodeError> {
-    if opts.mip != 0 || opts.slice != 0 || opts.face != 0 {
+    // face is validated and sliced in pixel_data; mip and slice are still
+    // M9-only here. Lower-mip selection (M9 follow-up) and 3D/array slices
+    // (M10 remainder) are pending.
+    if opts.mip != 0 || opts.slice != 0 {
         return Err(DecodeError::InvalidTarget {
             mip: opts.mip,
             slice: opts.slice,

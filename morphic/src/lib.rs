@@ -51,7 +51,7 @@ pub fn decode_at(bytes: &[u8], opts: &DecodeOptions) -> Result<Image, DecodeErro
     let resource = resource::Resource::parse(bytes)?;
     let data = resource.data_block()?;
     let info = parse_texture_header(data)?;
-    let pixels = texture::pixel_data(&resource, &info)?;
+    let pixels = texture::pixel_data(&resource, &info, *opts)?;
     decode_image(&info, pixels, opts)
 }
 
