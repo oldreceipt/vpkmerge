@@ -160,29 +160,62 @@ pub fn pixel_data<'a>(
         }
         return Ok(all);
     }
-    let face_size = mip0_size_bytes(info)?;
     let is_cube = info.flags.contains(TextureFlags::CUBE_TEXTURE);
     let face_count: usize = if is_cube { 6 } else { 1 };
-    if usize::from(opts.face) >= face_count {
+    if usize::from(opts.face) >= face_count || opts.mip >= info.mip_count {
         return Err(DecodeError::InvalidTarget {
             mip: opts.mip,
             slice: opts.slice,
             face: opts.face,
         });
     }
-    let mip0_total = face_size
+    // Mips are stored smallest-first, so mip 0 sits at the very end and mips
+    // with smaller index (larger dims) live after the target mip in the file.
+    // To find mip M's start from the end of the pixel-data region, skip past
+    // mips 0..M-1 (each contributing face_count faces).
+    let mut after_target = 0usize;
+    for i in 0..opts.mip {
+        let (mw, mh) = mip_dims(info.width, info.height, i);
+        let face_size_i = face_size_bytes(info.format, mw, mh)?;
+        let mip_total = face_size_i
+            .checked_mul(face_count)
+            .ok_or(DecodeError::BadResource("mip total overflow"))?;
+        after_target = after_target
+            .checked_add(mip_total)
+            .ok_or(DecodeError::BadResource("pixel offset overflow"))?;
+    }
+    let (tw, th) = mip_dims(info.width, info.height, opts.mip);
+    let target_face_size = face_size_bytes(info.format, tw, th)?;
+    let target_mip_total = target_face_size
         .checked_mul(face_count)
-        .ok_or(DecodeError::BadResource("mip0 size overflow"))?;
-    if mip0_total > all.len() {
+        .ok_or(DecodeError::BadResource("mip total overflow"))?;
+    let needed = after_target
+        .checked_add(target_mip_total)
+        .ok_or(DecodeError::BadResource("pixel offset overflow"))?;
+    if needed > all.len() {
         return Err(DecodeError::Truncated {
             offset: start as u64,
-            needed: mip0_total,
+            needed,
             had: all.len(),
         });
     }
-    let mip0_start = all.len() - mip0_total;
-    let face_start = mip0_start + usize::from(opts.face) * face_size;
-    Ok(&all[face_start..face_start + face_size])
+    let target_end = all.len() - after_target;
+    let target_mip_start = target_end - target_mip_total;
+    let face_start = target_mip_start + usize::from(opts.face) * target_face_size;
+    Ok(&all[face_start..face_start + target_face_size])
+}
+
+/// Dimensions of a given mip level. Each successive mip halves both
+/// dimensions, never dropping below 1.
+#[must_use]
+pub fn mip_dims(width: u16, height: u16, mip: u8) -> (u16, u16) {
+    let shift = u32::from(mip);
+    let w = (u32::from(width) >> shift).max(1);
+    let h = (u32::from(height) >> shift).max(1);
+    // shift up to 16 of a u16: result still fits in u16 (worst case 1).
+    #[allow(clippy::cast_possible_truncation)]
+    let (w, h) = (w as u16, h as u16);
+    (w, h)
 }
 
 fn is_inline_format(fmt: TextureFormat) -> bool {
@@ -192,16 +225,15 @@ fn is_inline_format(fmt: TextureFormat) -> bool {
     )
 }
 
-/// Bytes occupied by mip level 0 (largest mip) for the given texture.
-fn mip0_size_bytes(info: &TextureInfo) -> Result<usize, DecodeError> {
-    let w = usize::from(info.width);
-    let h = usize::from(info.height);
-    let block_bytes = block_bytes_per_format(info.format)?;
-    if let Some(bytes_per_pixel) = uncompressed_bytes_per_pixel(info.format) {
+/// Bytes occupied by one face of one mip at the given dimensions.
+fn face_size_bytes(fmt: TextureFormat, width: u16, height: u16) -> Result<usize, DecodeError> {
+    let w = usize::from(width);
+    let h = usize::from(height);
+    if let Some(bytes_per_pixel) = uncompressed_bytes_per_pixel(fmt) {
         Ok(w * h * bytes_per_pixel)
     } else {
         let blocks = w.div_ceil(4) * h.div_ceil(4);
-        Ok(blocks * block_bytes)
+        Ok(blocks * block_bytes_per_format(fmt)?)
     }
 }
 

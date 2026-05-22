@@ -57,17 +57,26 @@ pub fn decode_bc4(info: &TextureInfo, pixels: &[u8]) -> Result<Image, DecodeErro
 pub fn decode_bc6h(info: &TextureInfo, pixels: &[u8]) -> Result<Image, DecodeError> {
     let (w, h) = check(info, pixels, BC6H_BLOCK_BYTES)?;
     let (wu, hu) = (usize::from(w), usize::from(h));
-    // bcdec_rs writes 3 channels (RGB) of f16 as raw u16 bits.
     let mut rgb_bits = vec![0u16; wu * hu * 3];
     let pitch = wu * 3;
     let blocks_x = wu.div_ceil(4);
     let blocks_y = hu.div_ceil(4);
+    let scratch_pitch = 4 * 3;
+    let mut scratch = vec![0u16; scratch_pitch * 4];
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let block_idx = by * blocks_x + bx;
             let block = &pixels[block_idx * BC6H_BLOCK_BYTES..(block_idx + 1) * BC6H_BLOCK_BYTES];
-            let dst_offset = (by * 4) * pitch + (bx * 4) * 3;
-            bcdec_rs::bc6h_half(block, &mut rgb_bits[dst_offset..], pitch, false);
+            bcdec_rs::bc6h_half(block, &mut scratch, scratch_pitch, false);
+            let rows = (hu - by * 4).min(4);
+            let cols = (wu - bx * 4).min(4);
+            let row_u16s = cols * 3;
+            for y in 0..rows {
+                let dst_offset = (by * 4 + y) * pitch + (bx * 4) * 3;
+                let src_offset = y * scratch_pitch;
+                rgb_bits[dst_offset..dst_offset + row_u16s]
+                    .copy_from_slice(&scratch[src_offset..src_offset + row_u16s]);
+            }
         }
     }
     Ok(rgb_f16_to_rgba_f16(w, h, &rgb_bits))
@@ -136,6 +145,11 @@ fn check(info: &TextureInfo, pixels: &[u8], block_bytes: usize) -> Result<(u16, 
     Ok((info.width, info.height))
 }
 
+// BCn block decoders always emit a full 4x4 region. For mip levels (or
+// future non-multiple-of-4 textures) where the destination is smaller than
+// the block grid, we decode into a 4x4 scratch buffer and copy only the
+// valid sub-block into the output. The scratch alloc is one-per-call;
+// negligible compared to the decode work itself.
 fn iter_blocks_into(
     width: usize,
     height: usize,
@@ -148,12 +162,22 @@ fn iter_blocks_into(
     let pitch = width * bytes_per_pixel;
     let blocks_x = width.div_ceil(4);
     let blocks_y = height.div_ceil(4);
+    let scratch_pitch = 4 * bytes_per_pixel;
+    let mut scratch = vec![0u8; scratch_pitch * 4];
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let block_idx = by * blocks_x + bx;
             let block = &pixels[block_idx * block_bytes..(block_idx + 1) * block_bytes];
-            let dst_offset = (by * 4) * pitch + (bx * 4) * bytes_per_pixel;
-            decode_block(block, &mut dst[dst_offset..], pitch);
+            decode_block(block, &mut scratch, scratch_pitch);
+            let rows = (height - by * 4).min(4);
+            let cols = (width - bx * 4).min(4);
+            let row_bytes = cols * bytes_per_pixel;
+            for y in 0..rows {
+                let dst_offset = (by * 4 + y) * pitch + (bx * 4) * bytes_per_pixel;
+                let src_offset = y * scratch_pitch;
+                dst[dst_offset..dst_offset + row_bytes]
+                    .copy_from_slice(&scratch[src_offset..src_offset + row_bytes]);
+            }
         }
     }
 }

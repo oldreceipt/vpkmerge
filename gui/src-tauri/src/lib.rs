@@ -144,6 +144,9 @@ struct TexturePreview {
     /// re-invoke with `face` in `1..=5` to see other faces. Face ordering
     /// is `[+X, -X, +Y, -Y, +Z, -Z]`; default (no face arg) is `+X`.
     is_cubemap: bool,
+    /// Number of mip levels the source texture has. Callers may pass `mip`
+    /// in `0..mip_count` to see lower-detail versions.
+    mip_count: u8,
 }
 
 #[tauri::command]
@@ -152,9 +155,11 @@ async fn preview_texture(
     entry: String,
     max_dim: Option<u32>,
     face: Option<u8>,
+    mip: Option<u8>,
 ) -> Result<TexturePreview, String> {
     let cap = max_dim.unwrap_or(256).max(16);
     let face = face.unwrap_or(0);
+    let mip = mip.unwrap_or(0);
     let vpk = valve_pak::open(&vpk_path).map_err(|e| format!("open vpk: {e}"))?;
     let mut vf = vpk
         .get_file(&entry)
@@ -163,10 +168,11 @@ async fn preview_texture(
 
     let info = morphic::inspect(&bytes).map_err(|e| format!("inspect: {e}"))?;
     let is_cubemap = info.flags.contains(morphic::TextureFlags::CUBE_TEXTURE);
+    let mip_count = info.mip_count;
     let img = match morphic::decode_at(
         &bytes,
         &morphic::DecodeOptions {
-            mip: 0,
+            mip,
             slice: 0,
             face,
         },
@@ -209,6 +215,7 @@ async fn preview_texture(
         orig_height: orig_h,
         format: info.format.name().to_string(),
         is_cubemap,
+        mip_count,
     })
 }
 

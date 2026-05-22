@@ -7,7 +7,7 @@ mod inline;
 mod rgba8;
 
 use crate::error::DecodeError;
-use crate::texture::{Image, TextureInfo};
+use crate::texture::{mip_dims, Image, TextureInfo};
 use crate::DecodeOptions;
 
 use super::format::TextureFormat;
@@ -17,16 +17,27 @@ pub fn decode_image(
     pixels: &[u8],
     opts: &DecodeOptions,
 ) -> Result<Image, DecodeError> {
-    // face is validated and sliced in pixel_data; mip and slice are still
-    // M9-only here. Lower-mip selection (M9 follow-up) and 3D/array slices
-    // (M10 remainder) are pending.
-    if opts.mip != 0 || opts.slice != 0 {
+    // face and mip are validated and sliced in pixel_data. 3D depth / array
+    // slices (rest of M10) are still pending; reject any non-zero slice here.
+    if opts.slice != 0 {
         return Err(DecodeError::InvalidTarget {
             mip: opts.mip,
             slice: opts.slice,
             face: opts.face,
         });
     }
+    // Decoders work in terms of width/height; pass them the mip-adjusted
+    // dims rather than the texture's mip-0 dims.
+    let (mw, mh) = mip_dims(info.width, info.height, opts.mip);
+    let mip_info = TextureInfo {
+        format: info.format,
+        width: mw,
+        height: mh,
+        depth: info.depth,
+        mip_count: info.mip_count,
+        flags: info.flags,
+    };
+    let info = &mip_info;
     match info.format {
         TextureFormat::Rgba8888 => rgba8::decode_rgba(info, pixels),
         TextureFormat::Bgra8888 => rgba8::decode_bgra(info, pixels),

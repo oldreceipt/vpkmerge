@@ -7,14 +7,14 @@ compared visually without shipping a .NET runtime.
 Status: M1-M7, M9, partial M10 (cubemap faces), M11 (PNG/JPEG path) are in.
 Morphic decodes RGBA8888, BGRA8888, DXT1, DXT5, ATI1N, ATI2N, BC7, BC6H
 (Rgba16F output), and inline PNG_RGBA8888 / PNG_DXT5 / JPEG_DXT5, covering
-~86% of Deadlock's `.vtex_c` corpus by count. Cubemap face selection via
-`DecodeOptions::face` (0..=5) works for any format; 3D depth slices and
-texture arrays are still pending. RGBA16161616F and inline WebP return
-`DecodeError::Unimplemented`. The golden harness diffs LDR formats against
-a PNG (mae or byte_exact) and HDR formats against a raw `.f32` sibling
-using per-channel `abs + rel` tolerance. Real decoder regressions fail the
-build; formats still PENDING (RGBA16F, WebP, depth, arrays) print but stay
-non-blocking.
+~86% of Deadlock's `.vtex_c` corpus by count. `DecodeOptions` exposes
+`mip` (any level in `0..mip_count`) and `face` (0..=5 for cubemaps). 3D
+depth slices and texture arrays are still pending. RGBA16161616F and
+inline WebP return `DecodeError::Unimplemented`. The golden harness diffs
+LDR formats against a PNG (mae or byte_exact) and HDR formats against a
+raw `.f32` sibling using per-channel `abs + rel` tolerance. Real decoder
+regressions fail the build; formats still PENDING (RGBA16F, WebP, depth,
+arrays) print but stay non-blocking.
 
 ## API
 
@@ -89,7 +89,7 @@ See `fixtures/README.md` for the per-fixture provenance log.
 | M6    | BC7             | Done (via `bcdec_rs`) |
 | M7    | BC6H            | Done (`bcdec_rs::bc6h_half` unsigned; oracle dumps `.f32`, harness does `hdr_eps` diff) |
 | M8    | RGBA16161616F   | Pending (HDR uncompressed; reuses M7's `.f32` oracle + diff path) |
-| M9    | Mip 0 selection | Done (slices from end of pixel data) |
+| M9    | Mip selection | Done (any `mip` in `0..mip_count` via `DecodeOptions::mip`; smaller-than-block mips handled via 4x4 scratch buffer) |
 | M10   | Cubemaps / arrays / 3D | Partial: all 6 cubemap faces selectable via `DecodeOptions::face` (0..=5). 3D depth slices and texture arrays still pending |
 | M11   | Inline PNG / JPEG / WebP | Partial (PNG + JPEG OK; WebP pending) |
 
