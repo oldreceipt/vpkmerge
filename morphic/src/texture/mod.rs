@@ -149,15 +149,29 @@ pub fn pixel_data<'a>(
     if is_inline_format(info.format) {
         return Ok(all);
     }
-    let mip0_size = mip0_size_bytes(info)?;
-    if mip0_size > all.len() {
+    let face_size = mip0_size_bytes(info)?;
+    // VRF lays out cubemap mip 0 as 6 contiguous faces in order
+    // [PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ].
+    // Mips themselves are smallest-to-largest, so mip 0's 6 faces sit at the
+    // very end. We hand back face 0 (PositiveX) for now; full face/slice
+    // selection is M10.
+    let face_count = if info.flags.contains(TextureFlags::CUBE_TEXTURE) {
+        6
+    } else {
+        1
+    };
+    let mip0_total = face_size
+        .checked_mul(face_count)
+        .ok_or(DecodeError::BadResource("mip0 size overflow"))?;
+    if mip0_total > all.len() {
         return Err(DecodeError::Truncated {
             offset: start as u64,
-            needed: mip0_size,
+            needed: mip0_total,
             had: all.len(),
         });
     }
-    Ok(&all[all.len() - mip0_size..])
+    let face0_start = all.len() - mip0_total;
+    Ok(&all[face0_start..face0_start + face_size])
 }
 
 fn is_inline_format(fmt: TextureFormat) -> bool {

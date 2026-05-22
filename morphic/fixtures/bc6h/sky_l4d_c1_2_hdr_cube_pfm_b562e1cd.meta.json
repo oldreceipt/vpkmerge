@@ -1,0 +1,19 @@
+{
+  "format": "BC6H",
+  "width": 128,
+  "height": 128,
+  "actual_width": 128,
+  "actual_height": 128,
+  "depth": 1,
+  "mip_count": 6,
+  "flags": [
+    "CUBE_TEXTURE"
+  ],
+  "source_sha256": "3ac587dadca53eb04c70656ef6d77695a7d1e8c39dd6246613834792cbb44d10",
+  "vrf_version": "19.1.0.0",
+  "tolerance": {
+    "kind": "hdr_eps",
+    "abs": 0.000977,
+    "rel": 0.005
+  }
+}

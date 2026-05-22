@@ -132,6 +132,23 @@ internal static class Program
         var png = TextureExtract.ToPngImage(bitmap);
         File.WriteAllBytes(pngPath, png);
 
+        // For HDR formats, the .png is tone-mapped and useless for bit-level
+        // comparison. Dump the raw RgbaF32 bitmap bytes as a sibling .f32 so
+        // the Rust harness can diff in float space. Bitmap dims are already
+        // ActualWidth x ActualHeight (VRF crops NonPow2 textures), so the
+        // file is exactly Width * Height * 16 bytes, row-major LE.
+        var f32Path = Path.ChangeExtension(vtexPath, ".f32");
+        if (texture.IsHighDynamicRange && bitmap.ColorType == SkiaSharp.SKColorType.RgbaF32)
+        {
+            File.WriteAllBytes(f32Path, bitmap.GetPixelSpan().ToArray());
+        }
+        else if (File.Exists(f32Path))
+        {
+            // A previous run dumped a .f32 (e.g. format changed during dev).
+            // Remove it so the Rust harness doesn't load stale data.
+            File.Delete(f32Path);
+        }
+
         var meta = new Meta
         {
             Format = texture.Format.ToString(),

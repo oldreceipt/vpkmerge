@@ -31,6 +31,7 @@ pub fn decode_image(
         TextureFormat::Dxt5 => bcn::decode_bc3(info, pixels),
         TextureFormat::Ati1n => bcn::decode_bc4(info, pixels),
         TextureFormat::Ati2n => bcn::decode_bc5(info, pixels),
+        TextureFormat::Bc6h => bcn::decode_bc6h(info, pixels),
         TextureFormat::Bc7 => bcn::decode_bc7(info, pixels),
         TextureFormat::PngRgba8888 | TextureFormat::PngDxt5 | TextureFormat::JpegDxt5 => {
             inline::decode_inline(info, pixels)

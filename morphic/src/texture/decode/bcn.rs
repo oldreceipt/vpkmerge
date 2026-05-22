@@ -11,6 +11,7 @@ const BC1_BLOCK_BYTES: usize = 8;
 const BC3_BLOCK_BYTES: usize = 16;
 const BC4_BLOCK_BYTES: usize = 8;
 const BC5_BLOCK_BYTES: usize = 16;
+const BC6H_BLOCK_BYTES: usize = 16;
 const BC7_BLOCK_BYTES: usize = 16;
 
 /// BC1 (DXT1): RGBA output, 8 bytes/block.
@@ -47,6 +48,29 @@ pub fn decode_bc4(info: &TextureInfo, pixels: &[u8]) -> Result<Image, DecodeErro
         },
     );
     Ok(splat_r_to_rgba(w, h, &r))
+}
+
+/// BC6H (unsigned half-float): RGB f16 output, 16 bytes/block. Source 2
+/// always uses the unsigned variant (UF16); the signed BC6H format id is not
+/// present in `VTexFormat`. Expanded to RGBA by appending alpha = 1.0 per
+/// pixel so the rest of the pipeline can stay RGBA-shaped.
+pub fn decode_bc6h(info: &TextureInfo, pixels: &[u8]) -> Result<Image, DecodeError> {
+    let (w, h) = check(info, pixels, BC6H_BLOCK_BYTES)?;
+    let (wu, hu) = (usize::from(w), usize::from(h));
+    // bcdec_rs writes 3 channels (RGB) of f16 as raw u16 bits.
+    let mut rgb_bits = vec![0u16; wu * hu * 3];
+    let pitch = wu * 3;
+    let blocks_x = wu.div_ceil(4);
+    let blocks_y = hu.div_ceil(4);
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let block_idx = by * blocks_x + bx;
+            let block = &pixels[block_idx * BC6H_BLOCK_BYTES..(block_idx + 1) * BC6H_BLOCK_BYTES];
+            let dst_offset = (by * 4) * pitch + (bx * 4) * 3;
+            bcdec_rs::bc6h_half(block, &mut rgb_bits[dst_offset..], pitch, false);
+        }
+    }
+    Ok(rgb_f16_to_rgba_f16(w, h, &rgb_bits))
 }
 
 /// BC5 (ATI2N): R + G, 16 bytes/block. Output as RGBA with B = 0, A = 255
@@ -164,5 +188,83 @@ fn rg_to_rgba(w: u16, h: u16, rg: &[u8]) -> Image {
         width: u32::from(w),
         height: u32::from(h),
         data: ImageData::Rgba8(rgba),
+    }
+}
+
+fn rgb_f16_to_rgba_f16(w: u16, h: u16, rgb_bits: &[u16]) -> Image {
+    let n = usize::from(w) * usize::from(h);
+    let alpha = half::f16::ONE;
+    let mut rgba = vec![half::f16::ZERO; n * 4];
+    for i in 0..n {
+        rgba[i * 4] = half::f16::from_bits(rgb_bits[i * 3]);
+        rgba[i * 4 + 1] = half::f16::from_bits(rgb_bits[i * 3 + 1]);
+        rgba[i * 4 + 2] = half::f16::from_bits(rgb_bits[i * 3 + 2]);
+        rgba[i * 4 + 3] = alpha;
+    }
+    Image {
+        width: u32::from(w),
+        height: u32::from(h),
+        data: ImageData::Rgba16F(rgba),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::texture::format::{TextureFlags, TextureFormat};
+
+    fn info(fmt: TextureFormat, w: u16, h: u16) -> TextureInfo {
+        TextureInfo {
+            format: fmt,
+            width: w,
+            height: h,
+            depth: 1,
+            mip_count: 1,
+            flags: TextureFlags::empty(),
+        }
+    }
+
+    // 8x8 BC6H = 2x2 blocks. Cheap test that doesn't need an oracle: assert
+    // dims, Rgba16F output, alpha=1.0 everywhere, finite channels, and that
+    // the top-right block's pixels match a standalone decode of that 16-byte
+    // block. Catches pitch and block-iteration bugs in the morphic wrapper.
+    #[test]
+    fn bc6h_wiring_matches_standalone_block_decode() {
+        let mut input = [0u8; 64];
+        for b in 0u8..4 {
+            input[usize::from(b) * 16] = b * 0x11;
+        }
+        let img = decode_bc6h(&info(TextureFormat::Bc6h, 8, 8), &input).unwrap();
+        assert_eq!((img.width, img.height), (8, 8));
+        let pixels = match &img.data {
+            ImageData::Rgba16F(p) => p,
+            ImageData::Rgba8(_) => panic!("expected Rgba16F, got Rgba8"),
+        };
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        for px in pixels.chunks_exact(4) {
+            assert_eq!(px[3], half::f16::ONE, "alpha must be 1.0");
+            for c in &px[..3] {
+                assert!(c.is_finite(), "channel must be finite, got {c}");
+            }
+        }
+        let mut standalone = [0u16; 4 * 4 * 3];
+        bcdec_rs::bc6h_half(&input[16..32], &mut standalone, 4 * 3, false);
+        for y in 0..4_usize {
+            for x in 0..4_usize {
+                let p = (y * 8 + (4 + x)) * 4;
+                let s = (y * 4 + x) * 3;
+                assert_eq!(pixels[p].to_bits(), standalone[s], "R top-right ({x},{y})");
+                assert_eq!(
+                    pixels[p + 1].to_bits(),
+                    standalone[s + 1],
+                    "G top-right ({x},{y})"
+                );
+                assert_eq!(
+                    pixels[p + 2].to_bits(),
+                    standalone[s + 2],
+                    "B top-right ({x},{y})"
+                );
+            }
+        }
     }
 }

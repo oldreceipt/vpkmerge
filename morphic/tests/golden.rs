@@ -45,12 +45,9 @@ struct Tolerance {
     kind: String,
     #[serde(default)]
     epsilon: Option<f64>,
-    // Reserved for HDR comparison (M7/M8). Wired up when those land.
     #[serde(default)]
-    #[allow(dead_code)]
     abs: Option<f64>,
     #[serde(default)]
-    #[allow(dead_code)]
     rel: Option<f64>,
 }
 
@@ -219,15 +216,99 @@ fn run_one(vtex_path: &Path) -> Result<(), String> {
         ));
     }
 
-    let actual_rgba_full: &[u8] = match &img.data {
-        ImageData::Rgba8(b) => b.as_slice(),
-        ImageData::Rgba16F(_) => {
-            return Err("Rgba16F decode not yet compared (HDR tolerance path TODO)".to_string());
+    // HDR path: decoder gave f16 output. Diff against the .f32 sibling the
+    // oracle emits for IsHighDynamicRange textures. If the sibling isn't
+    // there yet (older fixture set), fall back to PENDING.
+    if let ImageData::Rgba16F(pixels) = &img.data {
+        let f32_path = vtex_path.with_extension("f32");
+        if !f32_path.exists() {
+            return Err(
+                "[stub] HDR (Rgba16F) oracle sibling .f32 missing; run 'just goldens-force'"
+                    .to_string(),
+            );
         }
+        let f32_bytes = std::fs::read(&f32_path).map_err(|e| format!("read f32: {e}"))?;
+        return diff_rgba16f(
+            pixels,
+            meta.width,
+            cmp_w,
+            cmp_h,
+            &f32_bytes,
+            &meta.tolerance,
+        );
+    }
+
+    let ImageData::Rgba8(actual_rgba_full) = &img.data else {
+        unreachable!("Rgba16F handled above");
     };
     let cropped = crop_rgba8(actual_rgba_full, meta.width, cmp_w, cmp_h);
 
     diff_rgba8(&cropped, expected.as_raw(), &meta.tolerance)
+}
+
+/// HDR diff: take the f16 decoder output, crop to ActualWidth/Height (matching
+/// what the oracle's bitmap dimensions are), promote to f32, and compare
+/// against the raw `RgbaF32` bytes the oracle dumped. Per-channel pass condition
+/// is `|a - e| <= abs OR |a - e| <= rel * |e|`, which lets small values be
+/// gated by `abs` and large values by `rel`.
+fn diff_rgba16f(
+    decoded: &[half::f16],
+    stride_px: u16,
+    cmp_w: u16,
+    cmp_h: u16,
+    expected_f32_bytes: &[u8],
+    tol: &Tolerance,
+) -> Result<(), String> {
+    if tol.kind != "hdr_eps" {
+        return Err(format!(
+            "tolerance kind {:?} does not apply to HDR (expected hdr_eps)",
+            tol.kind
+        ));
+    }
+    let abs = tol.abs.unwrap_or(0.000_977);
+    let rel = tol.rel.unwrap_or(0.005);
+
+    let expected_floats = expected_f32_bytes.len() / 4;
+    let expected_pixels = expected_floats / 4;
+    let needed_pixels = usize::from(cmp_w) * usize::from(cmp_h);
+    if expected_pixels != needed_pixels {
+        return Err(format!(
+            "f32 sibling pixel count mismatch: file={expected_pixels}, meta actual={needed_pixels} ({cmp_w}x{cmp_h})"
+        ));
+    }
+
+    let stride = usize::from(stride_px);
+    let mut first_fail: Option<(usize, usize, f32, f32, f32)> = None;
+    let mut count = 0usize;
+    for y in 0..usize::from(cmp_h) {
+        for x in 0..usize::from(cmp_w) {
+            for c in 0..4 {
+                let a = decoded[(y * stride + x) * 4 + c].to_f32();
+                let cmp_idx = (y * usize::from(cmp_w) + x) * 4 + c;
+                let e_bytes: [u8; 4] = expected_f32_bytes[cmp_idx * 4..cmp_idx * 4 + 4]
+                    .try_into()
+                    .unwrap();
+                let e = f32::from_le_bytes(e_bytes);
+                let diff = (a - e).abs();
+                #[allow(clippy::cast_possible_truncation)]
+                let abs_f32 = abs as f32;
+                #[allow(clippy::cast_possible_truncation)]
+                let rel_f32 = rel as f32;
+                if !(diff <= abs_f32 || diff <= rel_f32 * e.abs()) && first_fail.is_none() {
+                    first_fail = Some((x, y, a, e, diff));
+                }
+                count += 1;
+            }
+        }
+    }
+
+    if let Some((x, y, a, e, diff)) = first_fail {
+        Err(format!(
+            "hdr_eps mismatch at ({x},{y}): actual={a}, expected={e}, |diff|={diff} (abs={abs}, rel={rel}, {count} channels checked)"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Take the upper-left `w x h` region of an RGBA8 buffer that's `stride`
