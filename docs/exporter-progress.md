@@ -1,6 +1,6 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Resume point: **M3**. Scope
+Live handoff state for the model exporter work. Resume point: **M4**. Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -20,9 +20,28 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `aed2240` | Oracle | `model` (golden .glb via VRF GltfModelExporter, animations ON so skeleton/skin is present) + `kv3-dump`; committed hornet KV3 fixtures. |
 | `0efe633` | M1 | KV3 v5 binary parser (`morphic/src/kv3/`). Validated byte-exact vs oracle. |
 | `2e9c0c3` | M2 | Pure-Rust meshopt vertex+index decoders (`morphic/src/meshopt/`). Validated byte-exact vs VRF. |
+| `d7cb3ba` | M3 | Mesh assembly + skeleton + skin (`morphic/src/model/`): in-memory `Model`. Validated vs oracle `model-meta` golden. |
 
-Remaining: **M3** mesh assembly + skeleton + skin, then **M4** materials, **M5**
-GLB writer, **M6** CLI + core orchestration + refreshed bundled binary.
+Remaining: **M4** materials, **M5** GLB writer, **M6** CLI + core orchestration +
+refreshed bundled binary.
+
+- M3 detail: `model::decode(&[u8]) -> Model` reads the 62-bone model skeleton
+  (`skeleton.rs`, from `DATA m_modelSkeleton`; local bind = `fromQuat(rot) *
+  translate(pos)`, scale ignored per VRF; global bind chained, inverse-bind via
+  `math.rs`), the LOD0 meshes (`mesh.rs`: CTRL embedded-mesh registry, LOD filter
+  via `DATA m_refLODGroupMasks`, MDAT draw calls -> primitives, MVTX/MIDX via the
+  M2 codecs), and deinterleaves attributes per the CTRL input layout (`vbib.rs` +
+  `dxgi.rs`, ports of VRF `VBIB.cs`: position/uv/normal-tangent incl. both
+  compressed encodings, blend indices + remap, blend weights). Joints are remapped
+  to model bone indices via `DATA m_remappingTable[Starts]`. Materials/textures
+  are NOT resolved yet (M4); no `.glb` written yet (M5). Structural readers parse
+  bone/layout/draw-call structure from KV3 alone, so committed `model::tests`
+  validate them without the multi-MB buffers; the gated `tests/model_local.rs`
+  decodes the real hornet end to end against the same golden.
+- M3 numbers (hornet LOD0, vs oracle): 62 bones, 3 meshes (body/gun/ghost_glow),
+  7 primitives, 78111 unique vertices (248808 summed per-primitive, the figure
+  the old brief quoted), 426927 indices, 7 materials. `gun` carries BLENDINDICES
+  but no BLENDWEIGHT (VRF defaults weights at GLB-write time; replicate in M5).
 
 - M1 detail: ported from VRF `BinaryKV3.cs` KV3_V5 path; LZ4 via `lz4_flex`;
   `parse()` is crate-private. v1-v4 / ZSTD / binary-blob sections return errors
@@ -36,9 +55,13 @@ The handoff says vertex/index count, stride, and layout come from the MDAT KV3.
 They do NOT. Reality:
 
 - The **`CTRL` block is the buffer registry**. Its root has `embedded_meshes[]`
-  (10 for hornet = LOD groups: `body`, `body_lod1..3`, `gun`, `gun_lod1..3`,
-  `ghost_glow`, `ghost_glow_lod1`). Each entry: `m_Name`, `m_nDataBlock` (the
-  MDAT block index), `m_vertexBuffers[]`, `m_indexBuffers[]`. Each buffer
+  (10 for hornet). VERIFIED order (the earlier guess was wrong): `body`, `gun`,
+  `ghost_glow`, `body_lod1`, `gun_lod1`, `ghost_glow_lod1`, `body_lod2`,
+  `gun_lod2`, `body_lod3`, `gun_lod3`. `m_refLODGroupMasks` (in `DATA`, same
+  order) = `[1,1,1,2,2,2,4,4,8,8]`, so LOD0 = `mask & 1` = indices {0,1,2} =
+  body/gun/ghost_glow (3 meshes, matching the golden). Each entry: `m_Name`,
+  `m_nMeshIndex`, `m_nDataBlock` (the MDAT block index), `m_vertexBuffers[]`,
+  `m_indexBuffers[]`. Each buffer
   descriptor: `m_nElementCount`, `m_nElementSizeInBytes` (vertex stride, or index
   size 2|4), `m_inputLayoutFields[]` (`m_pSemanticName`, `m_nSemanticIndex`,
   `m_Format` = DXGI_FORMAT int, `m_nOffset`), `m_nBlockIndex` (the MVTX/MIDX
@@ -64,18 +87,27 @@ calls index `vbib.VertexBuffers[m_hBuffer]` / `IndexBuffers[...]`.
 stride 56, attrs POSITION / TEXCOORD / NORMAL / TANGENT / BLENDINDICES /
 blendweight.
 
-## M3 to-dos
+## M3 to-dos (DONE in `d7cb3ba`)
 
-- Fetch VRF `DXGI_FORMAT` enum (seen `m_Format` ints: 2, 6, 16, 28, 30).
-- Deinterleave the decoded vertex stream per `m_inputLayoutFields`.
-- Port VRF `VBIB.cs` helpers: `GetNormalTangentArray` (compressed-normal formats
-  R8G8B8A8_UNORM and R32_UINT), `GetBlendIndicesArray` + bone remap table,
-  `GetBlendWeightsArray`.
-- Map draw calls to glTF primitives (index range + material index).
-- Read `m_skeleton`: bone names, parent hierarchy, bind pose, inverse-bind
-  matrices. Map per-vertex BLENDINDICES to global bone indices.
-- Validate: joint count and the SET of bone names match the golden skin (bone
-  names are the load-bearing retarget key for Grimoire's shared clips).
+All landed in `morphic/src/model/`: DXGI subset (`dxgi.rs`), deinterleave +
+the `VBIB.cs` helper ports (`vbib.rs`: `GetNormalTangentArray` both compressed
+encodings, `GetBlendIndicesArray` + remap, `GetBlendWeightsArray`), draw-call ->
+primitive mapping (`mesh.rs`), and the model skeleton with bind / inverse-bind
+matrices (`skeleton.rs` + `math.rs`). Validated: joint count + sorted bone-name
+set match the golden, and the full decode (positions/normals/joints/totals/bbox)
+matches the oracle `model-meta` golden on the real hornet.
+
+Note for M4/M5 (carry forward):
+- The skeleton stores `inverse_bind` and local pos/rot per bone; M5 must apply
+  the source->glTF axis transform (VRF `TRANSFORMSOURCETOGLTF`) and emit the
+  glTF `skin`. VRF also runs `FixZeroLengthVectors` (normals/tangents) and
+  `FixDuplicateJoints` at GLB-write time, and defaults weights when a mesh has
+  joints but no `BLENDWEIGHT` (e.g. hornet `gun`); morphic defers all three to
+  the GLB writer. The body `vb1` carries a `COLOR` attribute morphic currently
+  ignores (not in the M3 attribute set).
+- Materials (M4): draw call `m_material` paths are already on each `Primitive`.
+  Resolve `.vmat_c` (KV3) -> texture params -> `.vtex_c` via the cross-VPK
+  loader, decode with the existing `morphic::texture` path.
 
 ## Validation method + oracle
 
@@ -91,8 +123,10 @@ blendweight.
   `IO/GltfModelExporter.Mesh.cs`. Find paths via the repo git tree API.
 - Oracle subcommands: `model --vpk --entry [--base] --out`,
   `kv3-dump --vpk --entry --block FOURCC [--nth N] --out [--raw]`,
-  `mesh-buffers --vpk --entry --out-dir`. Justfile: `just model-golden <entry>
-  <out>`, `just kv3-goldens`, `just mesh-buffers`.
+  `mesh-buffers --vpk --entry --out-dir`, `model-meta --vpk --entry --out`
+  (compact M3 golden). Justfile: `just model-golden <entry> <out>`,
+  `just kv3-goldens` (now also dumps `CTRL`), `just mesh-buffers`,
+  `just model-meta`.
 - Test data: entry `models/heroes_staging/hornet_v3/hornet.vmdl_c` in
   `~/.local/share/Steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk`
   (archive parts `_000.._019` present). Regenerate the golden GLB to
@@ -125,15 +159,30 @@ C build deps).
   Int(i64) / UInt(u64) / Double(f64) / String / Binary(Vec<u8>) / Array /
   Object(BTreeMap).
 - `meshopt::{decode_vertex_buffer, decode_index_buffer}(count, size, &[u8])`.
-- `Resource::parse`, `find_block([u8;4]) -> Option<&[u8]>`, `blocks()`. M3 needs
-  block-by-global-index for `m_nBlockIndex`; add a `get_block_by_index(n)`
-  accessor if missing.
-- `DecodeError` variants: `Kv3(&str)`, `Meshopt(&str)`,
+- `Resource::parse`, `find_block([u8;4]) -> Option<&[u8]>`, `blocks()`,
+  `get_block_by_index(n)` (added in M3 for `m_nDataBlock` / `m_nBlockIndex`).
+- `Value` accessors added in M3: `as_str`, `as_array`, `as_object`, `as_uint`,
+  `as_f64`, `as_bool`, `get_f64` (alongside the existing `get` / `as_int`).
+- `model::decode(&[u8]) -> Model` (M3). `Model { skeleton, meshes }`,
+  `MeshPart { vertex_buffers, primitives, .. }`, `VertexBuffer`
+  (positions/normals/tangents/texcoords/joints/weights), `Skeleton`/`Bone`.
+  Helpers: `total_vertices` (unique), `gltf_vertex_total` (per-primitive sum),
+  `total_indices`, `materials`, `position_bounds`. `decode_skeleton` is the cheap
+  bone-name-only path.
+- `DecodeError` variants: `Kv3(&str)`, `Meshopt(&str)`, `Model(&str)`,
   `Truncated{offset,needed,had}`, `UnsupportedKv3(u32)`.
 - Texture decode (`morphic::decode` / `decode_at`) is done and reused for M4
   materials. Mirror `vpkmerge-core/src/portrait.rs` for M6 orchestration.
 
-## Open question for the user (from the M2 checkpoint)
+## Open questions for the user
 
-Whether to fold the "CTRL is the buffer registry" correction into
-`vmdl-glb-exporter-handoff.md`.
+- (from M2, still open) Whether to fold the "CTRL is the buffer registry"
+  correction (and the verified `embedded_meshes` ordering above) into the scope
+  authority `vmdl-glb-exporter-handoff.md`. Left untouched pending greenlight
+  since that doc is the scope authority; this file has the correction.
+- (M3) The committed CI test validates the buffer-free structure (skeleton,
+  layouts, draw calls, scene bounds) against the golden; the byte-level mesh
+  decode (positions/normals/joints) is validated only in the gated local test
+  (the buffers are multi-MB, not committed) and will be re-confirmed by the M5
+  GLB semantic diff. Acceptable, or do you want a committed end-to-end assembly
+  test built from the small LOD3 buffers already in `fixtures/meshopt/`?
