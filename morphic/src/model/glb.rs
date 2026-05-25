@@ -503,8 +503,9 @@ impl Builder {
         }
 
         // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
+        // Skip the 4x4 default_normal placeholder (a flat normal is a no-op).
         if let Some(p) = pbr.normal {
-            if let Some((w, h, rgba)) = decode_slot(files, p) {
+            if let Some((w, h, rgba)) = decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4) {
                 if let Some(t) = self.texture_png(&normal_png(w, h, &rgba)) {
                     material.normal_texture = Some(json::material::NormalTexture {
                         index: t,
@@ -549,13 +550,19 @@ impl Builder {
         }
     }
 
-    /// Resolves + decodes a `.vtex` slot and embeds it verbatim as a glTF texture.
+    /// Resolves + decodes a `.vtex` slot and embeds it verbatim as a glTF
+    /// texture. Skips Source's 4x4 `default_*` placeholders (used by occlusion +
+    /// emissive, where a placeholder is a no-op or, for the solid-white default
+    /// self-illum mask, actively harmful).
     fn texture_from(
         &mut self,
         files: &dyn FileResolver,
         vtex_path: &str,
     ) -> Option<json::Index<json::Texture>> {
         let (w, h, rgba) = decode_slot(files, vtex_path)?;
+        if w.min(h) <= 4 {
+            return None;
+        }
         let png = png_encode(w, h, &rgba)?;
         self.texture_png(&png)
     }
@@ -677,16 +684,13 @@ fn tex_info(index: json::Index<json::Texture>) -> json::texture::Info {
 }
 
 /// Resolves a `.vtex` slot (+ `_c`), decodes its top mip, and returns
-/// `(width, height, RGBA8)`. Skips HDR textures (no PBR slot we read is HDR) and
-/// Source 2's tiny placeholder textures (the 4x4 `default_*` masks a material
-/// binds when a slot is unused). The default self-illum mask in particular is
-/// solid white; binding it as emissive would make the whole surface glow.
+/// `(width, height, RGBA8)`. Skips HDR textures (no PBR slot we read is HDR).
+/// Tiny `4x4` placeholders are kept here (a flat base color is a real albedo,
+/// e.g. Deadlock body skin); callers that must reject placeholders (occlusion,
+/// emissive, normal) filter by size themselves.
 fn decode_slot(files: &dyn FileResolver, vtex_path: &str) -> Option<(u32, u32, Vec<u8>)> {
     let bytes = files.resolve(&compiled(vtex_path))?;
     let img = crate::decode(&bytes).ok()?;
-    if img.width.min(img.height) <= 4 {
-        return None;
-    }
     match img.data {
         crate::ImageData::Rgba8(d) => Some((img.width, img.height, d)),
         crate::ImageData::Rgba16F(_) => None,

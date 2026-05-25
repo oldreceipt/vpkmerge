@@ -75,6 +75,64 @@ impl morphic::model::FileResolver for VpkResolver {
     }
 }
 
+/// Diagnostic: per material, report its base-color slot's resolve + decode
+/// result (dims, or why it is missing). Gated on `MORPHIC_DIAG_VPK`
+/// (+ optional `MORPHIC_DIAG_BASE`, `MORPHIC_DIAG_ENTRY`).
+#[test]
+fn diagnose_textures() {
+    use morphic::model::FileResolver as _;
+
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_DIAG_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+    let model = morphic::model::decode(&bytes).expect("decode");
+
+    let mut vpks = vec![vpk];
+    if let Ok(base) = std::env::var("MORPHIC_DIAG_BASE") {
+        vpks.push(valve_pak::open(&base).expect("base"));
+    }
+    let resolver = VpkResolver { vpks };
+    let compiled = |p: &str| {
+        if p.ends_with("_c") {
+            p.to_string()
+        } else {
+            format!("{p}_c")
+        }
+    };
+
+    for mat_path in model.materials() {
+        let name = mat_path.rsplit('/').next().unwrap_or(&mat_path).to_string();
+        let Some(vmat) = resolver.resolve(&compiled(&mat_path)) else {
+            eprintln!("MAT {name}: vmat UNRESOLVED");
+            continue;
+        };
+        let mat = morphic::material::parse(&vmat).expect("parse vmat");
+        let Some(base) = mat.pbr().base_color else {
+            eprintln!("MAT {name} [{}]: no base_color slot", mat.shader_name);
+            continue;
+        };
+        let status = match resolver.resolve(&compiled(base)) {
+            None => "UNRESOLVED".to_string(),
+            Some(b) => match morphic::decode(&b) {
+                Err(e) => format!("decode-err: {e}"),
+                Ok(img) => format!("{}x{}", img.width, img.height),
+            },
+        };
+        eprintln!(
+            "MAT {name} [{}]: base_color {} -> {status}",
+            mat.shader_name,
+            base.rsplit('/').next().unwrap_or(base)
+        );
+    }
+}
+
 /// Gated textured GLB export of an arbitrary VPK entry (no golden diff): set
 /// `MORPHIC_EXPORT_VPK` (+ optional `MORPHIC_EXPORT_ENTRY`, `MORPHIC_EXPORT_OUT`,
 /// and `MORPHIC_EXPORT_BASE` for the base pak that skins reference). Decodes the
