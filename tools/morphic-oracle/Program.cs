@@ -54,6 +54,7 @@ internal static class Program
                 "kv3-dump" => Kv3Dump(args[1..]),
                 "mesh-buffers" => MeshBuffers(args[1..]),
                 "model-meta" => ModelMeta(args[1..]),
+                "material-meta" => MaterialMeta(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -792,6 +793,68 @@ internal static class Program
     private static float[] Finite(float[] v) =>
         float.IsFinite(v[0]) ? v : new float[] { 0f, 0f, 0f };
 
+    // ---------- material-meta (M4 validation) ----------
+
+    // Dumps a compiled material's shader name + parameter tables (as VRF's
+    // Material parses them) for the morphic material parser to diff against.
+    // The .vmat_c itself is committed as a fixture; this is the golden.
+    private static int MaterialMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"material-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("material-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Material mat)
+        {
+            return Fail("material-meta: resource is not a material");
+        }
+
+        var meta = new MaterialMeta_t
+        {
+            Name = mat.Name,
+            ShaderName = mat.ShaderName,
+            TextureParams = new SortedDictionary<string, string>(mat.TextureParams, StringComparer.Ordinal),
+            IntParams = new SortedDictionary<string, long>(mat.IntParams, StringComparer.Ordinal),
+            FloatParams = mat.FloatParams
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .ToDictionary(kv => kv.Key, kv => (double)kv.Value),
+            VectorParams = mat.VectorParams
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .ToDictionary(kv => kv.Key, kv => new[] { kv.Value.X, kv.Value.Y, kv.Value.Z, kv.Value.W }),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote material meta for {entry} -> {outFull}");
+        Console.WriteLine($"  shader={meta.ShaderName} textures={meta.TextureParams.Count} " +
+            $"int={meta.IntParams.Count} float={meta.FloatParams.Count} vector={meta.VectorParams.Count}");
+        return 0;
+    }
+
     // ---------- helpers ----------
 
     private static string TryReadKv3Magic(byte[] resourceBytes, Resource resource)
@@ -860,6 +923,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
         Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
         Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle material-meta --vpk PATH --entry NAME --out JSON");
         return 0;
     }
 
@@ -965,5 +1029,16 @@ internal static class Program
         [JsonPropertyName("vertex_count")]  public int VertexCount { get; init; }
         [JsonPropertyName("index_count")]   public int IndexCount { get; init; }
         [JsonPropertyName("material")]      public string Material { get; init; } = "";
+    }
+
+    private sealed class MaterialMeta_t
+    {
+        [JsonPropertyName("name")]           public string Name { get; init; } = "";
+        [JsonPropertyName("shader_name")]    public string ShaderName { get; init; } = "";
+        [JsonPropertyName("texture_params")] public IDictionary<string, string> TextureParams { get; init; } = new SortedDictionary<string, string>();
+        [JsonPropertyName("int_params")]     public IDictionary<string, long> IntParams { get; init; } = new SortedDictionary<string, long>();
+        [JsonPropertyName("float_params")]   public IDictionary<string, double> FloatParams { get; init; } = new Dictionary<string, double>();
+        [JsonPropertyName("vector_params")]  public IDictionary<string, float[]> VectorParams { get; init; } = new Dictionary<string, float[]>();
+        [JsonPropertyName("vrf_version")]    public string VrfVersion { get; init; } = "";
     }
 }

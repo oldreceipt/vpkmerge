@@ -16,6 +16,7 @@ use std::path::Path;
 mod edit;
 mod error;
 mod kv3;
+pub mod material;
 mod meshopt;
 pub mod model;
 mod resource;

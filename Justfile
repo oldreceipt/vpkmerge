@@ -60,6 +60,18 @@ model-meta:
       --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
       --out ../../morphic/fixtures/kv3/hornet_model_meta.json
 
+# Re-bless the material golden (shader + parameter tables) the M4 material parser
+# diffs against. Re-extracts the .vmat_c fixture too. Small; committed.
+material-meta:
+    cd tools/morphic-oracle && dotnet run -- extract \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c \
+      --out ../../morphic/fixtures/material
+    cd tools/morphic-oracle && dotnet run -- material-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c \
+      --out ../../morphic/fixtures/material/vindicta_headv2.material.json
+
 # Re-dump the meshopt buffer goldens (raw MVTX/MIDX + decoded SHA/metadata) for
 # every embedded mesh in hornet. Copy the small ones into morphic/fixtures/meshopt/.
 mesh-buffers:
