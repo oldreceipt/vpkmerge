@@ -36,6 +36,11 @@ hornet's `DATA` (model skeleton + remap tables + LOD masks), `MDAT[0]` (the
 body mesh's draw calls + scene bounds), and `CTRL` (the embedded-mesh buffer
 registry: vertex/index layouts + meshopt flags).
 
+The `material/` tier holds a full committed `.vmat_c` resource (not a sliced
+block) plus a `*.material.json` golden from `morphic-oracle material-meta` (VRF's
+shader name + int/float/vector/texture parameter tables). `morphic::material::parse`
+is diffed against it. Re-bless with `just material-meta`.
+
 `kv3/hornet_model_meta.json` is a higher-level golden (not a raw block): the
 compact model summary the M3 mesh/skeleton decoder is diffed against, produced
 by `morphic-oracle model-meta`. It holds the sorted bone-name set, per-LOD0-mesh
@@ -61,6 +66,7 @@ and both index buffers. Re-bless with `just mesh-buffers`.
 | `kv3/hornet_mdat0.kv3bin`                     | `MDAT[0]` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`   |
 | `kv3/hornet_ctrl.kv3bin`                      | `CTRL` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`      |
 | `kv3/hornet_model_meta.json`                  | `model-meta` summary of `models/heroes_staging/hornet_v3/hornet.vmdl_c` |
+| `material/vindicta_headv2.vmat_c`             | `models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c`  |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the

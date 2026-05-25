@@ -1,6 +1,6 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Resume point: **M4**. Scope
+Live handoff state for the model exporter work. Resume point: **M5**. Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -21,9 +21,22 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `0efe633` | M1 | KV3 v5 binary parser (`morphic/src/kv3/`). Validated byte-exact vs oracle. |
 | `2e9c0c3` | M2 | Pure-Rust meshopt vertex+index decoders (`morphic/src/meshopt/`). Validated byte-exact vs VRF. |
 | `d7cb3ba` | M3 | Mesh assembly + skeleton + skin (`morphic/src/model/`): in-memory `Model`. Validated vs oracle `model-meta` golden. |
+| `70e97d8` | M4 | Material (`.vmat_c`) parsing (`morphic/src/material/`): shader + param tables + name-based PBR slots. Validated vs oracle `material-meta` golden. |
 
-Remaining: **M4** materials, **M5** GLB writer, **M6** CLI + core orchestration +
-refreshed bundled binary.
+Remaining: **M5** GLB writer (+ cross-VPK texture resolution/decode/embed),
+**M6** CLI + core orchestration + refreshed bundled binary.
+
+- M4 detail: `material::parse(&[u8]) -> Material` reads a compiled material's
+  `DATA` KV3 (shader name + `m_intParams`/`m_floatParams`/`m_vectorParams`/
+  `m_textureParams`), mirroring VRF `Material.Read`. `Material::pbr()` is a
+  best-effort, NAME-based slot map (`g_tColor`->base color,
+  `g_tNormal`/`g_tNormalRoughness`->normal, `g_tAmbientOcclusion`->occlusion,
+  `g_tSelfIllumMask`->emissive, plus roughness/metalness when a dedicated slot
+  exists); `alpha_mode()` from `F_TRANSLUCENT`/`F_ALPHA_TEST`. Pure: no texture
+  resolution/decode here. NOT done in M4 (deferred to M5/M6, where the loader +
+  GLB writer live): VRF's shader-aware channel split + ORM packing, resolving
+  `.vtex` paths across VPKs, decoding (via `morphic::decode`), and embedding as
+  glTF images. The hornet draw-call materials are `pbr.vfx` with 7 texture slots.
 
 - M3 detail: `model::decode(&[u8]) -> Model` reads the 62-bone model skeleton
   (`skeleton.rs`, from `DATA m_modelSkeleton`; local bind = `fromQuat(rot) *
@@ -124,9 +137,9 @@ Note for M4/M5 (carry forward):
 - Oracle subcommands: `model --vpk --entry [--base] --out`,
   `kv3-dump --vpk --entry --block FOURCC [--nth N] --out [--raw]`,
   `mesh-buffers --vpk --entry --out-dir`, `model-meta --vpk --entry --out`
-  (compact M3 golden). Justfile: `just model-golden <entry> <out>`,
-  `just kv3-goldens` (now also dumps `CTRL`), `just mesh-buffers`,
-  `just model-meta`.
+  (compact M3 golden), `material-meta --vpk --entry --out` (M4 golden). Justfile:
+  `just model-golden <entry> <out>`, `just kv3-goldens` (now also dumps `CTRL`),
+  `just mesh-buffers`, `just model-meta`, `just material-meta`.
 - Test data: entry `models/heroes_staging/hornet_v3/hornet.vmdl_c` in
   `~/.local/share/Steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk`
   (archive parts `_000.._019` present). Regenerate the golden GLB to
@@ -171,8 +184,12 @@ C build deps).
   bone-name-only path.
 - `DecodeError` variants: `Kv3(&str)`, `Meshopt(&str)`, `Model(&str)`,
   `Truncated{offset,needed,had}`, `UnsupportedKv3(u32)`.
-- Texture decode (`morphic::decode` / `decode_at`) is done and reused for M4
-  materials. Mirror `vpkmerge-core/src/portrait.rs` for M6 orchestration.
+- `material::parse(&[u8]) -> Material` (M4). `Material { name, shader_name,
+  texture_params, int_params, float_params, vector_params }`, `Material::pbr()`
+  -> `PbrSlots`, `alpha_mode()`, `alpha_cutoff()`, `texture(slot)`.
+- Texture decode (`morphic::decode` / `decode_at`) is done; M5 reuses it to turn
+  the `PbrSlots` `.vtex` paths (append `_c`) into glTF images. Mirror
+  `vpkmerge-core/src/portrait.rs` for the M5/M6 cross-VPK loader + orchestration.
 
 ## Decisions / notes
 
