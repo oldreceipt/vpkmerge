@@ -30,12 +30,12 @@ impl morphic::model::FileResolver for VpkResolver {
     }
 }
 
-/// Decode a `.vmdl_c` from a VPK and write it as a textured binary glTF.
+/// Decode a `.vmdl_c` and write it as a textured binary glTF.
 ///
-/// `vpk` is where the model entry lives (a skin VPK or the base pak); `base`, if
-/// given, is the base `pak01_dir.vpk` that materials/textures resolve against
-/// when the skin does not ship them. The mesh + skeleton + skin come from the
-/// model entry; materials are textured via the cross-VPK resolver.
+/// `vpk` is searched first, then `base` (the base `pak01_dir.vpk`), for both the
+/// model entry and its materials/textures. A mesh skin ships its own model in
+/// `vpk`; a texture-only skin ships no model, so the entry is read from `base`
+/// while the skin's overriding textures (in `vpk`) still win on resolution.
 pub fn export_model(
     vpk: impl AsRef<Path>,
     entry: &str,
@@ -45,21 +45,24 @@ pub fn export_model(
     let vpk_path = vpk.as_ref();
     let out = out.as_ref();
 
-    let skin =
-        valve_pak::open(vpk_path).with_context(|| format!("opening {}", vpk_path.display()))?;
-    let mut vf = skin
-        .get_file(entry)
-        .with_context(|| format!("locating {entry} in {}", vpk_path.display()))?;
-    let bytes = vf.read_all().with_context(|| format!("reading {entry}"))?;
-
-    let model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
-
-    let mut vpks = vec![skin];
+    // Resolution priority: the given VPK first (a skin's overrides win), then
+    // the base pak.
+    let mut vpks =
+        vec![valve_pak::open(vpk_path).with_context(|| format!("opening {}", vpk_path.display()))?];
     if let Some(base) = base {
         vpks.push(valve_pak::open(base).with_context(|| format!("opening {}", base.display()))?);
     }
-    let resolver = VpkResolver { vpks };
 
+    let bytes = read_entry(&vpks, entry).with_context(|| {
+        format!(
+            "model entry {entry} not found in {}{}",
+            vpk_path.display(),
+            base.map_or_else(String::new, |b| format!(" or {}", b.display())),
+        )
+    })?;
+    let model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
+
+    let resolver = VpkResolver { vpks };
     let glb = morphic::model::to_glb_textured(&model, &resolver)
         .with_context(|| format!("writing glb for {entry}"))?;
 
@@ -69,6 +72,18 @@ pub fn export_model(
     }
     std::fs::write(out, &glb).with_context(|| format!("writing {}", out.display()))?;
     Ok(())
+}
+
+/// Reads a VPK entry from the first of `vpks` that contains it.
+fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
+    for vpk in vpks {
+        if let Ok(mut vf) = vpk.get_file(entry) {
+            if let Ok(bytes) = vf.read_all() {
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 /// A compiled model found inside a VPK, with its structural summary.
