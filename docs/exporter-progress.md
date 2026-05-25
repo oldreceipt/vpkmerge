@@ -1,6 +1,7 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Resume point: **M5**. Scope
+Live handoff state for the model exporter work. Resume point: **M5b** (textures)
+once a maintainer confirms the M5a `.glb` skins + retargets in a viewer. Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -22,9 +23,30 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `2e9c0c3` | M2 | Pure-Rust meshopt vertex+index decoders (`morphic/src/meshopt/`). Validated byte-exact vs VRF. |
 | `d7cb3ba` | M3 | Mesh assembly + skeleton + skin (`morphic/src/model/`): in-memory `Model`. Validated vs oracle `model-meta` golden. |
 | `70e97d8` | M4 | Material (`.vmat_c`) parsing (`morphic/src/material/`): shader + param tables + name-based PBR slots. Validated vs oracle `material-meta` golden. |
+| `18d2f39` | M5a | GLB writer (`morphic/src/model/glb.rs`): geometry + skeleton + skin, untextured. Round-trips through the `gltf` reader; pending maintainer eyeball. |
 
-Remaining: **M5** GLB writer (+ cross-VPK texture resolution/decode/embed),
-**M6** CLI + core orchestration + refreshed bundled binary.
+Remaining: **M5b** cross-VPK texture resolution + decode + embed (orchestration
++ writer), **M6** CLI + core orchestration + refreshed bundled binary.
+
+- M5a detail: `model::to_glb(&Model) -> Vec<u8>` (new dep `gltf-json`, pure-Rust;
+  GLB container framed by hand). Emits POSITION/NORMAL/TANGENT/TEXCOORD_0/
+  JOINTS_0/WEIGHTS_0 accessors over one packed BIN buffer, the model skin (bone
+  node hierarchy + IBM accessor), and untextured default-PBR materials named by
+  draw-call path. Coordinate handling mirrors VRF (positions + bone locals in
+  Source space; `TRANSFORMSOURCETOGLTF` on the skeleton wrapper + mesh nodes; IBM
+  = Source-space `inverse(globalBind)` from M3). morphic's row-major `Mat4` maps
+  to glTF column-major verbatim (`Mat4.m` emitted as-is). Replicates VRF's
+  default-weight spread (hornet `gun`: joints, no weights) + `FixDuplicateJoints`.
+  NOT done (M5b): texture images. Materials reference no textures yet; the GLB
+  renders untextured (white default PBR). `FixZeroLengthVectors` for degenerate
+  normals/tangents is also deferred (the `gltf` reader accepts the current output).
+- M5a validation gap: the writer is structurally validated (committed synthetic
+  round-trip + gated hornet round-trip through the `gltf` reader: 3 meshes / 7
+  prims / 62 named joints / valid skin). The "looks right + skins + accepts
+  `hornet_idle.glb` clips" check needs a maintainer + a viewer/Grimoire (no GUI
+  here). Regenerate the file: `MORPHIC_MODEL_VPK=<pak01_dir.vpk> cargo test -p
+  morphic --test model_local -- --nocapture` (writes `/tmp/hornet.glb`, override
+  with `MORPHIC_GLB_OUT`).
 
 - M4 detail: `material::parse(&[u8]) -> Material` reads a compiled material's
   `DATA` KV3 (shader name + `m_intParams`/`m_floatParams`/`m_vectorParams`/
@@ -187,6 +209,10 @@ C build deps).
 - `material::parse(&[u8]) -> Material` (M4). `Material { name, shader_name,
   texture_params, int_params, float_params, vector_params }`, `Material::pbr()`
   -> `PbrSlots`, `alpha_mode()`, `alpha_cutoff()`, `texture(slot)`.
+- `model::to_glb(&Model) -> Result<Vec<u8>, DecodeError>` (M5a). Pure: Model in,
+  GLB bytes out. `math.rs` now has `Mat4::from_scale` + `Quat::from_yaw_pitch_roll`
+  for the axis transform; `MeshPart::bone_weight_count` is stored for default
+  weights.
 - Texture decode (`morphic::decode` / `decode_at`) is done; M5 reuses it to turn
   the `PbrSlots` `.vtex` paths (append `_c`) into glTF images. Mirror
   `vpkmerge-core/src/portrait.rs` for the M5/M6 cross-VPK loader + orchestration.
