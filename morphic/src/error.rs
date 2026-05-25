@@ -27,6 +27,9 @@ pub enum DecodeError {
     #[error("meshopt decode error: {0}")]
     Meshopt(&'static str),
 
+    #[error("model decode error: {0}")]
+    Model(&'static str),
+
     #[error("texture header missing field: {0}")]
     MissingField(&'static str),
 

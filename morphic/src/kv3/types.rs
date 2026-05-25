@@ -62,4 +62,58 @@ impl Value {
             _ => None,
         }
     }
+
+    pub fn as_uint(&self) -> Option<u64> {
+        match self {
+            Self::UInt(u) => Some(*u),
+            Self::Int(i) => u64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+
+    /// Reads a numeric leaf as `f64`. KV3 stores `FLOAT`/`DOUBLE` as
+    /// [`Value::Double`]; integers widen (lossy past 2^53, which model data
+    /// never reaches for the numeric fields we read this way).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Double(d) => Some(*d),
+            Self::Int(i) => Some(*i as f64),
+            Self::UInt(u) => Some(*u as f64),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Self::Array(a) => Some(a.as_slice()),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&BTreeMap<String, Value>> {
+        match self {
+            Self::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Convenience: a child value looked up by key, returned as `f64`.
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get(key).and_then(Value::as_f64)
+    }
 }

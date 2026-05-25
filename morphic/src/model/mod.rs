@@ -6,9 +6,156 @@
 //! whether it carries embedded geometry vs. only material overrides. Full
 //! mesh decode (meshoptimizer `MVTX`/`MIDX` + KV3 `MDAT`) lands in a later
 //! milestone; see `vpkmerge/docs/vmdl-glb-exporter.md`.
+//!
+//! [`decode`] performs the full M3 read: skeleton (from `DATA`), LOD0 mesh
+//! assembly (from `CTRL` + `MDAT` + `MVTX`/`MIDX`), and per-vertex skin
+//! weights remapped onto the model skeleton. Materials/textures (M4) and the
+//! `.glb` writer (M5) build on the [`Model`] this returns.
+
+mod dxgi;
+mod math;
+mod mesh;
+mod skeleton;
+mod vbib;
+
+#[cfg(test)]
+mod tests;
+
+pub use math::{Mat4, Quat, Vec3};
+pub use mesh::{MeshPart, Primitive, VertexBuffer};
+pub use skeleton::{Bone, Skeleton};
 
 use crate::error::DecodeError;
 use crate::resource::Resource;
+
+const CTRL: [u8; 4] = *b"CTRL";
+
+/// An axis-aligned bounding box in the model's source coordinate space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aabb {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+/// A fully decoded model: the skin skeleton plus the LOD0 meshes.
+#[derive(Debug, Clone)]
+pub struct Model {
+    pub skeleton: Skeleton,
+    pub meshes: Vec<MeshPart>,
+}
+
+impl Model {
+    /// Total unique vertices across all LOD0 vertex buffers (matches the `glTF`
+    /// accessor vertex total, since primitives index into shared buffers).
+    #[must_use]
+    pub fn total_vertices(&self) -> usize {
+        self.meshes
+            .iter()
+            .flat_map(|m| &m.vertex_buffers)
+            .map(|vb| vb.element_count)
+            .sum()
+    }
+
+    /// Per-primitive vertex total: each primitive contributes its whole source
+    /// vertex buffer's element count. This is what a glTF tool reports when it
+    /// sums `POSITION` accessor counts across primitives (buffers shared by
+    /// several primitives are counted once per primitive), so it is larger than
+    /// [`Model::total_vertices`].
+    #[must_use]
+    pub fn gltf_vertex_total(&self) -> usize {
+        self.meshes
+            .iter()
+            .flat_map(|m| {
+                m.primitives
+                    .iter()
+                    .map(move |p| m.vertex_buffers[p.vertex_buffer].element_count)
+            })
+            .sum()
+    }
+
+    /// Total primitive indices across all LOD0 draw calls.
+    #[must_use]
+    pub fn total_indices(&self) -> usize {
+        self.meshes
+            .iter()
+            .flat_map(|m| &m.primitives)
+            .map(|p| p.indices.len())
+            .sum()
+    }
+
+    /// Sorted, de-duplicated material paths referenced by LOD0 primitives.
+    #[must_use]
+    pub fn materials(&self) -> Vec<String> {
+        let mut mats: Vec<String> = self
+            .meshes
+            .iter()
+            .flat_map(|m| &m.primitives)
+            .map(|p| p.material.clone())
+            .collect();
+        mats.sort();
+        mats.dedup();
+        mats
+    }
+
+    /// Source-space bounds over every decoded LOD0 position, or `None` when the
+    /// model carries no positions.
+    #[must_use]
+    pub fn position_bounds(&self) -> Option<Aabb> {
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        let mut seen = false;
+        for vb in self.meshes.iter().flat_map(|m| &m.vertex_buffers) {
+            for p in &vb.positions {
+                seen = true;
+                for i in 0..3 {
+                    min[i] = min[i].min(p[i]);
+                    max[i] = max[i].max(p[i]);
+                }
+            }
+        }
+        seen.then_some(Aabb { min, max })
+    }
+}
+
+impl mesh::BlockSource for Resource<'_> {
+    fn block(&self, index: usize) -> Option<&[u8]> {
+        self.get_block_by_index(index)
+    }
+}
+
+/// Decodes a `.vmdl_c` into an in-memory [`Model`]: the model skeleton and the
+/// LOD0 meshes with positions/normals/uv/joints/weights. Does not resolve
+/// materials/textures (M4) or write a `.glb` (M5).
+pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
+    let resource = Resource::parse(bytes)?;
+
+    let data = crate::kv3::parse(resource.data_block()?)?;
+    let ctrl_bytes = resource
+        .find_block(CTRL)
+        .ok_or(DecodeError::Model("model has no CTRL block"))?;
+    let ctrl = crate::kv3::parse(ctrl_bytes)?;
+
+    let skeleton = Skeleton::from_model_data(&data)?;
+    let embedded = mesh::EmbeddedMesh::parse_all(&ctrl)?;
+    let lod0 = mesh::lod0_indices(&data, &embedded)?;
+
+    let mut meshes = Vec::with_capacity(lod0.len());
+    for i in lod0 {
+        let em = &embedded[i];
+        let remap = skeleton::remap_table(&data, em.mesh_index);
+        meshes.push(mesh::assemble(em, &resource, remap.as_deref())?);
+    }
+
+    Ok(Model { skeleton, meshes })
+}
+
+/// Parses just the model skeleton from a `.vmdl_c`. Cheap relative to [`decode`]
+/// (no buffer decode); useful for bone-name retarget checks.
+pub fn decode_skeleton(bytes: &[u8]) -> Result<Skeleton, DecodeError> {
+    let resource = Resource::parse(bytes)?;
+    let data = crate::kv3::parse(resource.data_block()?)?;
+    Skeleton::from_model_data(&data)
+}
 
 /// One entry in a model's block table.
 #[derive(Debug, Clone)]

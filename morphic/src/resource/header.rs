@@ -94,6 +94,20 @@ impl<'a> Resource<'a> {
     pub fn find_block_meta(&self, kind: [u8; 4]) -> Option<Block> {
         self.blocks.iter().find(|b| b.kind == kind).copied()
     }
+
+    /// Returns the bytes of the block at global declaration index `n`. Source 2
+    /// model control data references mesh/buffer blocks by this index
+    /// (`m_nDataBlock`, `m_nBlockIndex`), not by FOURCC, so the model decoder
+    /// resolves them positionally.
+    pub fn get_block_by_index(&self, n: usize) -> Option<&'a [u8]> {
+        let b = self.blocks.get(n)?;
+        let start = b.offset as usize;
+        let end = start.checked_add(b.size as usize)?;
+        if end > self.bytes.len() {
+            return None;
+        }
+        Some(&self.bytes[start..end])
+    }
 }
 
 fn read_u16(bytes: &[u8], pos: &mut usize) -> Result<u16, DecodeError> {

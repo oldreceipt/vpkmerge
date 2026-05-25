@@ -44,6 +44,21 @@ kv3-goldens:
       --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block MDAT --nth 0 \
       --out ../../morphic/fixtures/kv3/hornet_mdat0.kv3.json \
       --raw ../../morphic/fixtures/kv3/hornet_mdat0.kv3bin
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block CTRL \
+      --out ../../morphic/fixtures/kv3/hornet_ctrl.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_ctrl.kv3bin
+
+# Re-bless the compact model-meta golden (sorted bone names, per-LOD0-mesh
+# layouts + draw calls + materials, vertex/index totals, source-space bbox) the
+# M3 model decoder diffs against. Small JSON; committed. Re-run after a game
+# update changes the model schema; diff before committing.
+model-meta:
+    cd tools/morphic-oracle && dotnet run -- model-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out ../../morphic/fixtures/kv3/hornet_model_meta.json
 
 # Re-dump the meshopt buffer goldens (raw MVTX/MIDX + decoded SHA/metadata) for
 # every embedded mesh in hornet. Copy the small ones into morphic/fixtures/meshopt/.

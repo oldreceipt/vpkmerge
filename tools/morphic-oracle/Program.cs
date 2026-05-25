@@ -53,6 +53,7 @@ internal static class Program
                 "model"    => ModelExport(args[1..]),
                 "kv3-dump" => Kv3Dump(args[1..]),
                 "mesh-buffers" => MeshBuffers(args[1..]),
+                "model-meta" => ModelMeta(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -610,6 +611,187 @@ internal static class Program
         }
     }
 
+    // ---------- model-meta (M3 validation) ----------
+
+    // Emits a compact, buffer-free-comparable summary of a model's LOD0 geometry
+    // and skin: sorted bone names, per-mesh vertex-buffer layouts + draw calls +
+    // materials + scene bounds, vertex/index totals, and a source-space position
+    // bbox. morphic's `model::decode` reproduces every field; the committed CI
+    // test checks the parts derivable from the committed CTRL/DATA/MDAT[0]
+    // fixtures, the gated local test checks the whole thing against a real VPK.
+    private static int ModelMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"model-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("model-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Model model)
+        {
+            return Fail("model-meta: resource is not a model");
+        }
+
+        var meta = new ModelMeta_t
+        {
+            BoneNames = model.Skeleton.Bones
+                .Select(b => b.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray(),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+        meta.BoneCount = meta.BoneNames.Length;
+
+        var meshes = new List<MeshMeta_t>();
+        var bbMin = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+        var bbMax = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+        var materials = new SortedSet<string>(StringComparer.Ordinal);
+        var uniqueVerts = 0;
+        var gltfVerts = 0;
+        var totalIndices = 0;
+
+        foreach (var (mesh, meshIndex, name, lodMask) in model.GetEmbeddedMeshesAndLoD())
+        {
+            if ((lodMask & 1) == 0)
+            {
+                continue; // LOD0 only
+            }
+
+            var vbib = mesh.VBIB;
+            var vbMetas = new List<VbMeta_t>();
+            foreach (var vb in vbib.VertexBuffers)
+            {
+                uniqueVerts += (int)vb.ElementCount;
+                vbMetas.Add(new VbMeta_t
+                {
+                    ElementCount = (int)vb.ElementCount,
+                    ElementSize = (int)vb.ElementSizeInBytes,
+                    Fields = vb.InputLayoutFields.Select(f => new FieldMeta_t
+                    {
+                        Semantic = f.SemanticName,
+                        SemanticIndex = f.SemanticIndex,
+                        Format = (int)f.Format,
+                        Offset = (int)f.Offset,
+                    }).ToArray(),
+                });
+
+                var posField = vb.InputLayoutFields.FirstOrDefault(f => f.SemanticName == "POSITION");
+                if (posField.SemanticName == "POSITION")
+                {
+                    foreach (var p in VBIB.GetVector3AttributeArray(vb, posField))
+                    {
+                        bbMin[0] = MathF.Min(bbMin[0], p.X);
+                        bbMin[1] = MathF.Min(bbMin[1], p.Y);
+                        bbMin[2] = MathF.Min(bbMin[2], p.Z);
+                        bbMax[0] = MathF.Max(bbMax[0], p.X);
+                        bbMax[1] = MathF.Max(bbMax[1], p.Y);
+                        bbMax[2] = MathF.Max(bbMax[2], p.Z);
+                    }
+                }
+            }
+
+            var ibMetas = vbib.IndexBuffers.Select(ib => new IbMeta_t
+            {
+                ElementCount = (int)ib.ElementCount,
+                ElementSize = (int)ib.ElementSizeInBytes,
+            }).ToArray();
+
+            var prims = new List<PrimMeta_t>();
+            var sceneMin = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+            var sceneMax = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+
+            foreach (var so in mesh.Data.GetArray("m_sceneObjects"))
+            {
+                AggregateBounds(so, "m_vMinBounds", sceneMin, isMin: true);
+                AggregateBounds(so, "m_vMaxBounds", sceneMax, isMin: false);
+
+                foreach (var dc in so.GetArray("m_drawCalls"))
+                {
+                    var vbIdx = dc.GetArray("m_vertexBuffers")[0].GetInt32Property("m_hBuffer");
+                    var indexCount = dc.GetInt32Property("m_nIndexCount");
+                    var material = dc.GetStringProperty("m_material");
+
+                    prims.Add(new PrimMeta_t
+                    {
+                        VertexBuffer = vbIdx,
+                        VertexCount = dc.GetInt32Property("m_nVertexCount"),
+                        IndexCount = indexCount,
+                        Material = material,
+                    });
+
+                    gltfVerts += (int)vbib.VertexBuffers[vbIdx].ElementCount;
+                    totalIndices += indexCount;
+                    materials.Add(material);
+                }
+            }
+
+            meshes.Add(new MeshMeta_t
+            {
+                Name = name,
+                MeshIndex = meshIndex,
+                SceneMin = Finite(sceneMin),
+                SceneMax = Finite(sceneMax),
+                VertexBuffers = vbMetas.ToArray(),
+                IndexBuffers = ibMetas,
+                Primitives = prims.ToArray(),
+            });
+        }
+
+        meta.Meshes = meshes.ToArray();
+        meta.UniqueVertices = uniqueVerts;
+        meta.GltfVertices = gltfVerts;
+        meta.TotalIndices = totalIndices;
+        meta.Materials = materials.ToArray();
+        meta.MaterialCount = materials.Count;
+        meta.BboxMin = Finite(bbMin);
+        meta.BboxMax = Finite(bbMax);
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote model meta for {entry} -> {outFull}");
+        Console.WriteLine($"  bones={meta.BoneCount} meshes={meta.Meshes.Length} " +
+            $"unique_verts={uniqueVerts} gltf_verts={gltfVerts} indices={totalIndices} materials={materials.Count}");
+        return 0;
+    }
+
+    private static void AggregateBounds(KVObject sceneObject, string key, float[] acc, bool isMin)
+    {
+        if (!sceneObject.ContainsKey(key))
+        {
+            return;
+        }
+        var v = sceneObject.GetSubCollection(key).ToVector3();
+        var comps = new[] { v.X, v.Y, v.Z };
+        for (var i = 0; i < 3; i++)
+        {
+            acc[i] = isMin ? MathF.Min(acc[i], comps[i]) : MathF.Max(acc[i], comps[i]);
+        }
+    }
+
+    private static float[] Finite(float[] v) =>
+        float.IsFinite(v[0]) ? v : new float[] { 0f, 0f, 0f };
+
     // ---------- helpers ----------
 
     private static string TryReadKv3Magic(byte[] resourceBytes, Resource resource)
@@ -677,6 +859,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle model    --vpk PATH --entry NAME [--base PATH] --out GLB [--no-materials]");
         Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
         Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
+        Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
         return 0;
     }
 
@@ -727,5 +910,60 @@ internal static class Program
         [JsonPropertyName("compressed_size")] public int CompressedSize { get; init; }
         [JsonPropertyName("decoded_len")]     public int DecodedLen { get; init; }
         [JsonPropertyName("sha256")]          public string Sha256 { get; init; } = "";
+    }
+
+    private sealed class ModelMeta_t
+    {
+        [JsonPropertyName("bone_count")]      public int BoneCount { get; set; }
+        [JsonPropertyName("bone_names")]      public string[] BoneNames { get; set; } = Array.Empty<string>();
+        [JsonPropertyName("meshes")]          public MeshMeta_t[] Meshes { get; set; } = Array.Empty<MeshMeta_t>();
+        [JsonPropertyName("unique_vertices")] public int UniqueVertices { get; set; }
+        [JsonPropertyName("gltf_vertices")]   public int GltfVertices { get; set; }
+        [JsonPropertyName("total_indices")]   public int TotalIndices { get; set; }
+        [JsonPropertyName("material_count")]  public int MaterialCount { get; set; }
+        [JsonPropertyName("materials")]       public string[] Materials { get; set; } = Array.Empty<string>();
+        [JsonPropertyName("bbox_min")]        public float[] BboxMin { get; set; } = Array.Empty<float>();
+        [JsonPropertyName("bbox_max")]        public float[] BboxMax { get; set; } = Array.Empty<float>();
+        [JsonPropertyName("vrf_version")]     public string VrfVersion { get; set; } = "";
+    }
+
+    private sealed class MeshMeta_t
+    {
+        [JsonPropertyName("name")]           public string Name { get; init; } = "";
+        [JsonPropertyName("mesh_index")]     public int MeshIndex { get; init; }
+        [JsonPropertyName("scene_min")]      public float[] SceneMin { get; init; } = Array.Empty<float>();
+        [JsonPropertyName("scene_max")]      public float[] SceneMax { get; init; } = Array.Empty<float>();
+        [JsonPropertyName("vertex_buffers")] public VbMeta_t[] VertexBuffers { get; init; } = Array.Empty<VbMeta_t>();
+        [JsonPropertyName("index_buffers")]  public IbMeta_t[] IndexBuffers { get; init; } = Array.Empty<IbMeta_t>();
+        [JsonPropertyName("primitives")]     public PrimMeta_t[] Primitives { get; init; } = Array.Empty<PrimMeta_t>();
+    }
+
+    private sealed class VbMeta_t
+    {
+        [JsonPropertyName("element_count")] public int ElementCount { get; init; }
+        [JsonPropertyName("element_size")]  public int ElementSize { get; init; }
+        [JsonPropertyName("fields")]        public FieldMeta_t[] Fields { get; init; } = Array.Empty<FieldMeta_t>();
+    }
+
+    private sealed class IbMeta_t
+    {
+        [JsonPropertyName("element_count")] public int ElementCount { get; init; }
+        [JsonPropertyName("element_size")]  public int ElementSize { get; init; }
+    }
+
+    private sealed class FieldMeta_t
+    {
+        [JsonPropertyName("semantic")]       public string Semantic { get; init; } = "";
+        [JsonPropertyName("semantic_index")] public int SemanticIndex { get; init; }
+        [JsonPropertyName("format")]         public int Format { get; init; }
+        [JsonPropertyName("offset")]         public int Offset { get; init; }
+    }
+
+    private sealed class PrimMeta_t
+    {
+        [JsonPropertyName("vertex_buffer")] public int VertexBuffer { get; init; }
+        [JsonPropertyName("vertex_count")]  public int VertexCount { get; init; }
+        [JsonPropertyName("index_count")]   public int IndexCount { get; init; }
+        [JsonPropertyName("material")]      public string Material { get; init; } = "";
     }
 }
