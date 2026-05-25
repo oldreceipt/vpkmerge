@@ -174,15 +174,15 @@ C build deps).
 - Texture decode (`morphic::decode` / `decode_at`) is done and reused for M4
   materials. Mirror `vpkmerge-core/src/portrait.rs` for M6 orchestration.
 
-## Open questions for the user
+## Decisions / notes
 
-- (from M2, still open) Whether to fold the "CTRL is the buffer registry"
-  correction (and the verified `embedded_meshes` ordering above) into the scope
-  authority `vmdl-glb-exporter-handoff.md`. Left untouched pending greenlight
-  since that doc is the scope authority; this file has the correction.
-- (M3) The committed CI test validates the buffer-free structure (skeleton,
-  layouts, draw calls, scene bounds) against the golden; the byte-level mesh
-  decode (positions/normals/joints) is validated only in the gated local test
-  (the buffers are multi-MB, not committed) and will be re-confirmed by the M5
-  GLB semantic diff. Acceptable, or do you want a committed end-to-end assembly
-  test built from the small LOD3 buffers already in `fixtures/meshopt/`?
+- RESOLVED: the "CTRL is the buffer registry" correction + verified
+  `embedded_meshes` ordering are now folded into `vmdl-glb-exporter-handoff.md`
+  (its M3 section), so the scope authority is no longer misleading.
+- Validation split (kept as-is): committed CI tests validate buffer-free
+  structure (skeleton, layouts, draw calls, scene bounds); byte-level mesh decode
+  is validated by the gated `tests/model_local.rs` (buffers are multi-MB, not
+  committed) and will be re-confirmed by the M5 GLB semantic diff. A committed
+  end-to-end assembly test is feasible from `gun_lod3` (the one complete small
+  mesh already in `fixtures/meshopt/`) if we later want CI to exercise the actual
+  deinterleave; deferred as optional hardening.

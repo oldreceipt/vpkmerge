@@ -127,14 +127,19 @@ Each milestone ends green against the oracle golden before the next starts.
 - Vertex count/stride, index count, index width (2 or 4) come from the `MDAT` KV3.
 - Validate: decoded vertex/index counts equal the oracle GLB's accessor counts.
 
-### M3 - mesh assembly + skeleton + skin
-- From `MDAT`: vertex attribute layout (which stride bytes are POSITION / NORMAL /
-  TANGENT / TEXCOORD / BLENDINDICES / BLENDWEIGHT, and component formats),
-  deinterleave per layout; draw calls -> (index range, material index); material
-  groups = skins (pick group 0 / default).
-- From `DATA` (and `AGRP` if the skeleton lives there in this format): bone
-  hierarchy, bind pose transforms, **bone names**, and compute inverse-bind
-  matrices. Map per-vertex `BLENDINDICES` to global bone indices.
+### M3 - mesh assembly + skeleton + skin  (DONE; see `exporter-progress.md`)
+- CORRECTION (verified during M3): the vertex/index **buffer registry and
+  attribute layout live in `CTRL` (`embedded_meshes[]`), not `MDAT`**. `CTRL`
+  gives per-mesh `m_vertexBuffers`/`m_indexBuffers` with `m_inputLayoutFields`
+  (semantic, DXGI `m_Format`, `m_nOffset`), stride, count, and `m_nBlockIndex`
+  (the MVTX/MIDX block). `MDAT` gives the draw calls (counts, start/base, and
+  `m_material`) and scene bounds. LOD0 = `DATA m_refLODGroupMasks[i] & 1`.
+- From `MDAT`: draw calls -> (index range, material index), deinterleaved per the
+  CTRL layout above.
+- From `DATA m_modelSkeleton` (not `AGRP` for Deadlock heroes): bone hierarchy,
+  bind pose (`fromQuat(rot) * translate(pos)`, scale ignored per VRF), **bone
+  names**, inverse-bind matrices. Map per-vertex `BLENDINDICES` to model bone
+  indices via `DATA m_remappingTable[Starts]`.
 - Build an in-memory model: meshes/primitives with positions/normals/uv/joints/
   weights + a skeleton.
 - Validate: joint count and the **set of bone names** match the oracle GLB's skin
