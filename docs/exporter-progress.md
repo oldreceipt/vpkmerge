@@ -1,8 +1,11 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Resume point: **M6** (CLI +
-core orchestration + refreshed bundled binary). M3..M5 are done and visually
-confirmed (hornet + bunnysuit render fully textured, verified in Blender). Scope
+Live handoff state for the model exporter work. Status: **M1..M6 COMPLETE**. The
+exporter is done: `vpkmerge model export` turns a `.vmdl_c` (base or skin VPK)
+into a textured, skinned `.glb`. Remaining work is Grimoire-side only (wire the
+IPC that runs the exporter on an installed skin + load the `.glb` in the Locker;
+confirm it accepts the bundled `hornet_idle.glb` clips retargeted by bone name
+in three.js). Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -26,8 +29,24 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `70e97d8` | M4 | Material (`.vmat_c`) parsing (`morphic/src/material/`): shader + param tables + name-based PBR slots. Validated vs oracle `material-meta` golden. |
 | `18d2f39` | M5a | GLB writer (`morphic/src/model/glb.rs`): geometry + skeleton + skin, untextured. Round-trips through the `gltf` reader. |
 | `47ef9ef` | M5b | Textured GLB (`to_glb_textured` + `FileResolver`): base color / normal / roughness / occlusion / emissive. Confirmed fully textured in Blender. |
+| `9ef786f` | M6 | `model export` CLI + `vpkmerge-core::export_model` (cross-VPK resolver) + refreshed bundled binary. |
 
-Remaining: **M6** CLI + core orchestration + refreshed bundled binary.
+Remaining: Grimoire-side integration only (separate repo): an IPC that runs
+`vpkmerge model export` on the installed skin VPK and loads the `.glb` in the
+Locker, and confirming the skeleton retargets the shared `hornet_idle.glb` clips
+by bone name in three.js. `heroModels.ts` / `HeroModelViewer.tsx` already exist
+as the home for that.
+
+- M6 detail: `vpkmerge model export --vpk <vpk> --entry <path.vmdl_c> [--base
+  <pak01_dir.vpk>] --out <file.glb>`. The bare `vpkmerge model <vpk>` inspect
+  form is unchanged. `vpkmerge-core::export_model` opens the VPK(s), reads the
+  entry, `model::decode` + `model::to_glb_textured` with a `VpkResolver` (skin
+  first, base second). The bundled binary
+  `../grimoire/resources/vpkmerge/vpkmerge-linux-x86_64` (gitignored) is rebuilt
+  with `cargo build --release -p vpkmerge-cli` + copied. Windows: cross-build
+  + copy the `.exe` target when packaging for Windows (not done here).
+  Validated: exports both the base hornet (from pak01) and the bunnysuit skin
+  VPK to fully-textured `.glb` (eyeballed in Blender).
 
 - M5b detail: `to_glb_textured(&Model, &dyn FileResolver) -> Vec<u8>`. The caller
   implements `FileResolver` (compiled path -> bytes; skin VPK first, base pak
