@@ -7,13 +7,18 @@
 //   generate --fixtures DIR [--force]
 //   extract  --vpk PATH --entry NAME --out DIR
 //   survey   --vpk PATH --out CSV
+//   model    --vpk PATH --entry NAME [--base PATH] --out GLB   (golden glTF)
+//   kv3-dump --vpk PATH --entry NAME --block FOURCC --out JSON (M1 KV3 golden)
 
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Threading;
 using SteamDatabase.ValvePak;
+using ValveKeyValue;
 using ValveResourceFormat;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.ResourceTypes;
@@ -43,6 +48,8 @@ internal static class Program
                 "generate" => Generate(args[1..]),
                 "extract"  => Extract(args[1..]),
                 "survey"   => Survey(args[1..]),
+                "model"    => ModelExport(args[1..]),
+                "kv3-dump" => Kv3Dump(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -276,6 +283,227 @@ internal static class Program
         return 0;
     }
 
+    // ---------- model (golden .glb) ----------
+
+    // Produces the golden glTF the Rust exporter is diffed against. Mirrors the
+    // arg shape of `vpkmerge model export`: --vpk is where the .vmdl_c lives,
+    // --base is the package external refs (materials/textures/skeleton) resolve
+    // against. For a base hero model the two are the same pak01_dir.vpk.
+    private static int ModelExport(string[] args)
+    {
+        string? vpk = null, entry = null, basePak = null, outPath = null;
+        var noMaterials = false;
+        var noAnimations = false;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":           vpk          = args[++i]; break;
+                case "--entry":         entry        = args[++i]; break;
+                case "--base":          basePak      = args[++i]; break;
+                case "--out":           outPath      = args[++i]; break;
+                case "--no-materials":  noMaterials  = true; break;
+                case "--no-animations": noAnimations = true; break;
+                default: return Fail($"model: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outPath is null)
+        {
+            return Fail("model: --vpk, --entry, and --out are required");
+        }
+        basePak ??= vpk;
+
+        using var pak = new Package();
+        pak.Read(basePak);
+        var loader = new GameFileLoader(pak, basePak);
+
+        // If the model lives in a separate (skin) VPK, search it first so its
+        // overrides win over the base pak.
+        Package? skinPak = null;
+        if (!string.Equals(Path.GetFullPath(vpk), Path.GetFullPath(basePak), StringComparison.Ordinal))
+        {
+            skinPak = new Package();
+            skinPak.Read(vpk);
+            loader.AddPackageToSearch(skinPak);
+        }
+
+        var sourcePak = skinPak ?? pak;
+        var packageEntry = sourcePak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        sourcePak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource();
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+        resource.FileName = entry;
+
+        var exporter = new GltfModelExporter(loader)
+        {
+            ProgressReporter = new Progress<string>(s => Console.Error.WriteLine($"  {s}")),
+            ExportMaterials = !noMaterials,
+            // Keep animations on so the golden carries the full skeleton + skin
+            // (joints, inverse-bind matrices, bone names). morphic only needs to
+            // match the skin; it emits no animation samplers, but M3 validates
+            // joint count + bone-name set against this golden's skin, so the
+            // skeleton must be present. With animations off VRF drops it.
+            ExportAnimations = !noAnimations,
+        };
+
+        var outFull = Path.GetFullPath(outPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        exporter.Export(resource, outFull, CancellationToken.None);
+        Console.WriteLine($"exported {entry} -> {outFull}");
+        skinPak?.Dispose();
+        return 0;
+    }
+
+    // ---------- kv3-dump (M1 validation) ----------
+
+    // Dumps a single KV3 block (DATA, MDAT, CTRL, AGRP, ...) of a resource as
+    // canonical JSON for diffing against morphic's kv3 parser, and optionally
+    // writes the raw block bytes (a self-contained KV3 document) for committing
+    // as a morphic fixture.
+    private static int Kv3Dump(string[] args)
+    {
+        string? vpk = null, entry = null, blockName = null, outJson = null, rawOut = null;
+        var nth = 0;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk       = args[++i]; break;
+                case "--entry": entry     = args[++i]; break;
+                case "--block": blockName = args[++i]; break;
+                case "--nth":   nth       = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
+                case "--out":   outJson   = args[++i]; break;
+                case "--raw":   rawOut    = args[++i]; break;
+                default: return Fail($"kv3-dump: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || blockName is null || outJson is null)
+        {
+            return Fail("kv3-dump: --vpk, --entry, --block, and --out are required");
+        }
+        if (!Enum.TryParse<BlockType>(blockName, ignoreCase: false, out var blockType))
+        {
+            return Fail($"kv3-dump: unknown block type {blockName}");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource();
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        var matches = resource.Blocks.Where(b => b.Type == blockType).ToList();
+        if (matches.Count == 0)
+        {
+            return Fail($"kv3-dump: no {blockName} block in {entry}");
+        }
+        if (nth < 0 || nth >= matches.Count)
+        {
+            return Fail($"kv3-dump: --nth {nth} out of range ({matches.Count} {blockName} blocks)");
+        }
+
+        var block = matches[nth];
+        // VRF wraps a KV3 block either as a raw BinaryKV3 or, for blocks it
+        // recognizes (DATA -> Model, MDAT -> Mesh, ...), as a KeyValuesOrNTRO
+        // subclass. Both expose the parsed tree as a KVObject.
+        var kvData = block switch
+        {
+            BinaryKV3 b => b.Data,
+            KeyValuesOrNTRO knv => knv.Data,
+            _ => null,
+        };
+        if (kvData is null)
+        {
+            return Fail($"kv3-dump: {blockName}[{nth}] is not KV3 (got {block.GetType().Name})");
+        }
+
+        var json = KvToJson(kvData);
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, (json?.ToJsonString(JsonOpts) ?? "null") + "\n");
+        Console.WriteLine($"dumped {blockName}[{nth}] of {entry} -> {outFull}");
+
+        if (rawOut is not null)
+        {
+            // Offset/Size are absolute within the resource file (same convention
+            // the survey path already relies on). The slice is a complete KV3
+            // document: magic + header + (LZ4) payload.
+            var raw = new byte[block.Size];
+            Array.Copy(data, (int)block.Offset, raw, 0, (int)block.Size);
+            var rawFull = Path.GetFullPath(rawOut);
+            Directory.CreateDirectory(Path.GetDirectoryName(rawFull)!);
+            File.WriteAllBytes(rawFull, raw);
+            Console.WriteLine($"  raw block -> {rawFull} ({raw.Length} bytes)");
+        }
+        return 0;
+    }
+
+    // Canonical JSON encoding of a KV3 tree. The encoding is chosen so morphic's
+    // Value tree maps to the exact same JSON, and the Rust comparator can match
+    // it without float-formatting ambiguity:
+    //   - ints / uints  -> JSON number
+    //   - floats (f32 widened, f64) -> {"$f64":"0xHEXBITS"} (IEEE-754 bit pattern)
+    //   - binary blobs  -> {"$bin":{"len":N,"sha256":"..."}}
+    //   - collections   -> JSON object (compared by key, order-insensitive)
+    private static JsonNode? KvToJson(KVObject o)
+    {
+        switch (o.ValueType)
+        {
+            case KVValueType.Null:
+                return null;
+            case KVValueType.Boolean:
+                return JsonValue.Create((bool)o);
+            case KVValueType.Int16:
+            case KVValueType.Int32:
+            case KVValueType.Int64:
+                return JsonValue.Create((long)o);
+            case KVValueType.UInt16:
+            case KVValueType.UInt32:
+            case KVValueType.UInt64:
+                return JsonValue.Create((ulong)o);
+            case KVValueType.FloatingPoint:
+            case KVValueType.FloatingPoint64:
+                return FloatNode((double)o);
+            case KVValueType.String:
+                return JsonValue.Create((string)o);
+            case KVValueType.BinaryBlob:
+                return BlobNode((byte[])o);
+            case KVValueType.Array:
+            {
+                var arr = new JsonArray();
+                for (var i = 0; i < o.Count; i++)
+                {
+                    arr.Add(KvToJson(o[i]));
+                }
+                return arr;
+            }
+            case KVValueType.Collection:
+            {
+                var obj = new JsonObject();
+                foreach (var key in o.Keys)
+                {
+                    obj[key] = KvToJson(o[key]);
+                }
+                return obj;
+            }
+            default:
+                throw new NotSupportedException($"kv3-dump: KV3 value type {o.ValueType} not handled");
+        }
+    }
+
+    private static JsonObject FloatNode(double d) =>
+        new() { ["$f64"] = $"0x{BitConverter.DoubleToUInt64Bits(d):X16}" };
+
+    private static JsonObject BlobNode(byte[] blob) =>
+        new() { ["$bin"] = new JsonObject { ["len"] = blob.Length, ["sha256"] = Sha256Hex(blob) } };
+
     // ---------- helpers ----------
 
     private static string TryReadKv3Magic(byte[] resourceBytes, Resource resource)
@@ -340,6 +568,8 @@ internal static class Program
         Console.WriteLine("  morphic-oracle generate --fixtures DIR [--force]");
         Console.WriteLine("  morphic-oracle extract  --vpk PATH --entry NAME --out DIR");
         Console.WriteLine("  morphic-oracle survey   --vpk PATH --out CSV");
+        Console.WriteLine("  morphic-oracle model    --vpk PATH --entry NAME [--base PATH] --out GLB [--no-materials]");
+        Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
         return 0;
     }
 

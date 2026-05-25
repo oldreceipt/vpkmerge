@@ -23,8 +23,14 @@ fixtures/
   bc7/                    (M6)
   bc6h/                   (M7)
   rgba16f/                (M8)
+  kv3/                    raw KV3 blocks + .kv3.json goldens (model exporter M1)
   _local/                 gitignored, oracle-populated stress corpus
 ```
+
+The `kv3/` tier differs from the texture tiers: each `*.kv3bin` is a raw KV3
+block sliced out of a `.vmdl_c`, and its sibling `*.kv3.json` is the canonical
+JSON the morphic KV3 parser is diffed against (see `tools/morphic-oracle`,
+`kv3-dump`). Re-bless with `just kv3-goldens`.
 
 ## Provenance
 
@@ -32,6 +38,8 @@ fixtures/
 |-----------------------------------------------|----------------------------------------------------------------------|
 | `rgba8/minimap_circle.vtex_c`                 | `materials/minimap/minimap_circle.vtex_c`                            |
 | `dxt1/default_color_tga_99901565.vtex_c`      | `materials/default/default_color_tga_99901565.vtex_c`                |
+| `kv3/hornet_data.kv3bin`                      | `DATA` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`      |
+| `kv3/hornet_mdat0.kv3bin`                     | `MDAT[0]` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`   |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the

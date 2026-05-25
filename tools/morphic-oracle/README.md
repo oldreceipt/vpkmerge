@@ -39,7 +39,23 @@ Or invoke `dotnet run` directly from this directory:
 dotnet run -- generate --fixtures ../../morphic/fixtures [--force]
 dotnet run -- extract  --vpk PATH --entry NAME --out DIR
 dotnet run -- survey   --vpk PATH --out CSV
+dotnet run -- model    --vpk PATH --entry NAME [--base PATH] --out GLB
+dotnet run -- kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]
 ```
+
+`model` and `kv3-dump` exist for the `.vmdl_c -> .glb` exporter work (see
+`docs/vmdl-glb-exporter-handoff.md`):
+
+- `model` writes a golden glTF via VRF's `GltfModelExporter` (animations on, so
+  the skeleton/skin is present for bone-name diffing). The Rust exporter is
+  semantically diffed against it. GLBs are large and not committed; regenerate
+  with `just model-golden`.
+- `kv3-dump` serializes one KV3 block (`DATA`, `MDAT`, ...) to canonical JSON
+  for the M1 KV3 parser to diff against, and with `--raw` writes the raw block
+  bytes as a committed `morphic/fixtures/kv3/*.kv3bin` fixture. Floats are
+  emitted as `{"$f64":"0xHEXBITS"}` (IEEE-754 bit pattern) and blobs as
+  `{"$bin":{"len":N,"sha256":"..."}}` so the Rust side matches exactly without
+  float-formatting ambiguity. Re-bless with `just kv3-goldens`.
 
 ## Why .NET in this repo
 

@@ -31,6 +31,29 @@ fixture entry subdir:
       --out "../../morphic/fixtures/{{subdir}}"
     just goldens
 
+# Re-bless the committed KV3 goldens (.kv3.json + raw .kv3bin) from the local
+# install. Run after a game update changes the KV3 schema; diff before committing.
+kv3-goldens:
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block DATA \
+      --out ../../morphic/fixtures/kv3/hornet_data.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_data.kv3bin
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block MDAT --nth 0 \
+      --out ../../morphic/fixtures/kv3/hornet_mdat0.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_mdat0.kv3bin
+
+# Export a golden .glb for one model entry, for the M3+ semantic diff. The GLB
+# is large and not committed; regenerate on demand. Usage: just model-golden <entry> <out.glb>
+model-golden entry out:
+    cd tools/morphic-oracle && dotnet run -- model \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry "{{entry}}" \
+      --base "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --out "{{out}}"
+
 # Resurvey every .vtex_c format in Deadlock pak01. Writes tools/format-counts.csv.
 survey:
     cd tools/morphic-oracle && dotnet run -- survey \
