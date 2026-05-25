@@ -22,7 +22,7 @@ mod vbib;
 #[cfg(test)]
 mod tests;
 
-pub use glb::to_glb;
+pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};
 pub use skeleton::{Bone, Skeleton};

@@ -320,3 +320,58 @@ fn glb_writes_and_reloads() {
     assert!(prim.get(&gltf::Semantic::Weights(0)).is_some(), "WEIGHTS_0");
     assert!(prim.indices().is_some(), "indices");
 }
+
+/// A [`super::FileResolver`] backed by committed fixtures: any `.vmat_c` request
+/// returns the hornet head material, any `.vtex_c` returns a real BC7 texture.
+struct FixtureResolver {
+    vmat: Vec<u8>,
+    vtex: Vec<u8>,
+}
+
+impl super::FileResolver for FixtureResolver {
+    fn resolve(&self, compiled_path: &str) -> Option<Vec<u8>> {
+        if compiled_path.ends_with(".vmat_c") {
+            Some(self.vmat.clone())
+        } else if compiled_path.ends_with(".vtex_c") {
+            Some(self.vtex.clone())
+        } else {
+            None
+        }
+    }
+}
+
+#[test]
+fn glb_textured_embeds_resolved_images() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let resolver = FixtureResolver {
+        vmat: std::fs::read(root.join("fixtures/material/vindicta_headv2.vmat_c"))
+            .expect("vmat fixture"),
+        // 128x64 BC7, comfortably above the 4x4 placeholder cutoff.
+        vtex: std::fs::read(root.join("fixtures/bc7/generic_sleep_icon.vtex_c"))
+            .expect("vtex fixture"),
+    };
+
+    let glb = super::to_glb_textured(&synthetic_model(), &resolver).expect("textured glb");
+    let g = gltf::Gltf::from_slice(&glb).expect("re-read glb");
+    let doc = &g.document;
+
+    assert!(doc.images().count() > 0, "embedded images present");
+    assert!(doc.textures().count() > 0, "textures present");
+    let mat = doc.materials().next().expect("a material");
+    assert!(
+        mat.pbr_metallic_roughness().base_color_texture().is_some(),
+        "base color texture wired"
+    );
+    // pbr.vfx exposes g_tNormalRoughness, so a normal map is wired too.
+    assert!(mat.normal_texture().is_some(), "normal texture wired");
+}
+
+#[test]
+fn outline_materials_are_detected() {
+    assert!(super::glb::is_outline_material(
+        "models/heroes_staging/hornet_v3/materials/vindicta_outline.vmat"
+    ));
+    assert!(!super::glb::is_outline_material(
+        "models/heroes_staging/hornet_v3/materials/skinmaterial.vmat"
+    ));
+}

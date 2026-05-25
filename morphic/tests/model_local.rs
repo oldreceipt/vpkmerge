@@ -55,10 +55,30 @@ fn approx3(a: [f32; 3], b: [f32; 3], what: &str) {
     }
 }
 
-/// Gated GLB export of an arbitrary VPK entry (no golden diff): set
-/// `MORPHIC_EXPORT_VPK` (+ optional `MORPHIC_EXPORT_ENTRY`, `MORPHIC_EXPORT_OUT`)
-/// to decode any model and write its `.glb` for eyeballing. A standin for the
-/// M6 `model export` CLI; useful for skins whose numbers differ from the golden.
+/// Resolves compiled resource paths across VPKs: the model's own VPK first,
+/// then any fallbacks (the base `pak01_dir.vpk` for materials/textures a skin
+/// references but does not ship). The caller-side I/O `to_glb_textured` needs.
+struct VpkResolver {
+    vpks: Vec<valve_pak::VPK>,
+}
+
+impl morphic::model::FileResolver for VpkResolver {
+    fn resolve(&self, compiled_path: &str) -> Option<Vec<u8>> {
+        for vpk in &self.vpks {
+            if let Ok(mut vf) = vpk.get_file(compiled_path) {
+                if let Ok(bytes) = vf.read_all() {
+                    return Some(bytes);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Gated textured GLB export of an arbitrary VPK entry (no golden diff): set
+/// `MORPHIC_EXPORT_VPK` (+ optional `MORPHIC_EXPORT_ENTRY`, `MORPHIC_EXPORT_OUT`,
+/// and `MORPHIC_EXPORT_BASE` for the base pak that skins reference). Decodes the
+/// model and writes a textured `.glb`. A stand-in for the M6 `model export` CLI.
 #[test]
 fn export_glb_from_env() {
     let Ok(vpk_path) = std::env::var("MORPHIC_EXPORT_VPK") else {
@@ -72,9 +92,16 @@ fn export_glb_from_env() {
     let vpk = valve_pak::open(&vpk_path).expect("open vpk");
     let mut vf = vpk.get_file(&entry).expect("locate entry");
     let bytes = vf.read_all().expect("read entry");
-
     let model = morphic::model::decode(&bytes).expect("decode model");
-    let glb = morphic::model::to_glb(&model).expect("write glb");
+
+    // Resolver: the model's VPK first, then the base pak (if given).
+    let mut vpks = vec![vpk];
+    if let Ok(base) = std::env::var("MORPHIC_EXPORT_BASE") {
+        vpks.push(valve_pak::open(&base).expect("open base pak"));
+    }
+    let resolver = VpkResolver { vpks };
+
+    let glb = morphic::model::to_glb_textured(&model, &resolver).expect("write glb");
     std::fs::write(&out, &glb).expect("write glb file");
     eprintln!(
         "exported {entry} -> {out} ({} bytes): {} bones, {} meshes, {} unique verts, {} materials",

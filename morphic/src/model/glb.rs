@@ -48,8 +48,28 @@ fn transform_source_to_gltf() -> Mat4 {
     Mat4::from_scale(0.0254).mul(&rot)
 }
 
-/// Writes `model` as a binary glTF (`.glb`) byte stream.
+/// Resolves a compiled resource path (e.g. `models/.../foo.vtex_c`) to its
+/// bytes. Implemented by the caller, which owns the VPK I/O (skin VPK first,
+/// base pak second). Keeps `morphic` free of file/VPK access.
+pub trait FileResolver {
+    fn resolve(&self, compiled_path: &str) -> Option<Vec<u8>>;
+}
+
+/// Writes `model` as a binary glTF (`.glb`) byte stream, untextured (named
+/// default-PBR materials only).
 pub fn to_glb(model: &Model) -> Result<Vec<u8>, DecodeError> {
+    build(model, None)
+}
+
+/// Writes `model` as a `.glb` with materials textured from the resolved
+/// `.vmat_c` / `.vtex_c` files: base color, normal, metallic-roughness
+/// (roughness split out of the packed normal texture), occlusion, and emissive.
+/// Materials that fail to resolve fall back to a named default.
+pub fn to_glb_textured(model: &Model, files: &dyn FileResolver) -> Result<Vec<u8>, DecodeError> {
+    build(model, Some(files))
+}
+
+fn build(model: &Model, files: Option<&dyn FileResolver>) -> Result<Vec<u8>, DecodeError> {
     let mut b = Builder::default();
     b.root.asset.generator = Some("morphic".to_owned());
 
@@ -65,7 +85,9 @@ pub fn to_glb(model: &Model) -> Result<Vec<u8>, DecodeError> {
     }
 
     for part in &model.meshes {
-        let mesh = b.add_mesh(part, &mut mat_index);
+        let Some(mesh) = b.add_mesh(part, &mut mat_index, files) else {
+            continue; // every primitive was an outline shell
+        };
         let node = b.root.push(json::Node {
             mesh: Some(mesh),
             skin: skin.as_ref().map(|s| s.skin),
@@ -92,6 +114,8 @@ pub fn to_glb(model: &Model) -> Result<Vec<u8>, DecodeError> {
 struct Builder {
     root: json::Root,
     bin: Vec<u8>,
+    /// Shared sampler for all textures, created lazily.
+    sampler: Option<json::Index<json::texture::Sampler>>,
 }
 
 struct SkinRefs {
@@ -228,12 +252,27 @@ impl Builder {
         Some(SkinRefs { skin, root_node })
     }
 
-    /// Builds one glTF mesh (its primitives + shared per-vertex-buffer accessors).
+    /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
+    /// accessors), or `None` if every primitive was an outline. Inverted-hull
+    /// NPR outline primitives (Deadlock's toon outline, conventionally
+    /// `*_outline` materials) are dropped: as solid glTF geometry they form a
+    /// shell that occludes the model. Reproducing the outline is a renderer-side
+    /// (three.js) concern, not a baked one.
     fn add_mesh(
         &mut self,
         part: &MeshPart,
         mat_index: &mut BTreeMap<String, json::Index<json::Material>>,
-    ) -> json::Index<json::Mesh> {
+        files: Option<&dyn FileResolver>,
+    ) -> Option<json::Index<json::Mesh>> {
+        let renderable: Vec<_> = part
+            .primitives
+            .iter()
+            .filter(|p| !is_outline_material(&p.material))
+            .collect();
+        if renderable.is_empty() {
+            return None;
+        }
+
         // Deinterleaved attributes are shared by every primitive over a buffer.
         let vb_attrs: Vec<VertexAccessors> = part
             .vertex_buffers
@@ -241,8 +280,8 @@ impl Builder {
             .map(|vb| self.add_vertex_buffer(vb, part.bone_weight_count))
             .collect();
 
-        let mut primitives = Vec::with_capacity(part.primitives.len());
-        for prim in &part.primitives {
+        let mut primitives = Vec::with_capacity(renderable.len());
+        for prim in renderable {
             let attrs = &vb_attrs[prim.vertex_buffer];
 
             let mut attributes = BTreeMap::new();
@@ -273,7 +312,7 @@ impl Builder {
                 None,
             );
 
-            let material = self.material_for(&prim.material, mat_index);
+            let material = self.material_for(&prim.material, mat_index, files);
 
             primitives.push(json::mesh::Primitive {
                 attributes,
@@ -286,13 +325,13 @@ impl Builder {
             });
         }
 
-        self.root.push(json::Mesh {
+        Some(self.root.push(json::Mesh {
             primitives,
             weights: None,
             name: Some(part.name.clone()),
             extensions: None,
             extras: Default::default(),
-        })
+        }))
     }
 
     /// Writes one vertex buffer's attribute accessors. Skinned buffers with
@@ -397,12 +436,13 @@ impl Builder {
         &mut self,
         path: &str,
         mat_index: &mut BTreeMap<String, json::Index<json::Material>>,
+        files: Option<&dyn FileResolver>,
     ) -> json::Index<json::Material> {
         if let Some(i) = mat_index.get(path) {
             return *i;
         }
         let name = path.rsplit('/').next().unwrap_or(path).to_owned();
-        let index = self.root.push(json::Material {
+        let mut material = json::Material {
             name: Some(name),
             pbr_metallic_roughness: json::material::PbrMetallicRoughness {
                 base_color_factor: json::material::PbrBaseColorFactor([1.0, 1.0, 1.0, 1.0]),
@@ -414,9 +454,163 @@ impl Builder {
                 extras: Default::default(),
             },
             ..Default::default()
-        });
+        };
+
+        if let Some(files) = files {
+            self.apply_textures(&mut material, path, files);
+        }
+
+        let index = self.root.push(material);
         mat_index.insert(path.to_owned(), index);
         index
+    }
+
+    /// Resolves `path`'s `.vmat_c`, decodes its PBR-slot `.vtex_c` textures, and
+    /// wires them onto `material`. Best-effort: any slot that fails to resolve
+    /// or decode is simply left off (the material keeps its default factors).
+    fn apply_textures(
+        &mut self,
+        material: &mut json::Material,
+        mat_path: &str,
+        files: &dyn FileResolver,
+    ) {
+        let Some(vmat) = files.resolve(&compiled(mat_path)) else {
+            return;
+        };
+        let Ok(mat) = crate::material::parse(&vmat) else {
+            return;
+        };
+        let pbr = mat.pbr();
+        let alpha_mode = mat.alpha_mode();
+        // Source 2 albedo carries non-opacity data in its alpha channel (masks);
+        // for non-blended materials that alpha must not become glTF transparency.
+        let opaque = !matches!(alpha_mode, crate::material::AlphaMode::Blend);
+
+        // Base color (sRGB albedo).
+        if let Some(p) = pbr.base_color {
+            if let Some((w, h, mut rgba)) = decode_slot(files, p) {
+                if opaque {
+                    for px in rgba.chunks_exact_mut(4) {
+                        px[3] = 255;
+                    }
+                }
+                if let Some(png) = png_encode(w, h, &rgba) {
+                    if let Some(tex) = self.texture_png(&png) {
+                        material.pbr_metallic_roughness.base_color_texture = Some(tex_info(tex));
+                    }
+                }
+            }
+        }
+
+        // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
+        if let Some(p) = pbr.normal {
+            if let Some((w, h, rgba)) = decode_slot(files, p) {
+                if let Some(t) = self.texture_png(&normal_png(w, h, &rgba)) {
+                    material.normal_texture = Some(json::material::NormalTexture {
+                        index: t,
+                        tex_coord: 0,
+                        scale: 1.0,
+                        extensions: None,
+                        extras: Default::default(),
+                    });
+                }
+                if let Some(t) = self.texture_png(&metal_rough_png(w, h, &rgba)) {
+                    material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                    material.pbr_metallic_roughness.roughness_factor =
+                        json::material::StrengthFactor(1.0);
+                }
+            }
+        }
+
+        // Occlusion (R channel sampled by glTF).
+        if let Some(tex) = pbr.occlusion.and_then(|p| self.texture_from(files, p)) {
+            material.occlusion_texture = Some(json::material::OcclusionTexture {
+                index: tex,
+                tex_coord: 0,
+                strength: json::material::StrengthFactor(1.0),
+                extensions: None,
+                extras: Default::default(),
+            });
+        }
+
+        // Emissive (self-illum mask).
+        if let Some(tex) = pbr.emissive.and_then(|p| self.texture_from(files, p)) {
+            material.emissive_texture = Some(tex_info(tex));
+            material.emissive_factor = json::material::EmissiveFactor([1.0, 1.0, 1.0]);
+        }
+
+        material.alpha_mode = Valid(match alpha_mode {
+            crate::material::AlphaMode::Blend => json::material::AlphaMode::Blend,
+            crate::material::AlphaMode::Mask => json::material::AlphaMode::Mask,
+            crate::material::AlphaMode::Opaque => json::material::AlphaMode::Opaque,
+        });
+        if let Some(c) = mat.alpha_cutoff() {
+            material.alpha_cutoff = Some(json::material::AlphaCutoff(c));
+        }
+    }
+
+    /// Resolves + decodes a `.vtex` slot and embeds it verbatim as a glTF texture.
+    fn texture_from(
+        &mut self,
+        files: &dyn FileResolver,
+        vtex_path: &str,
+    ) -> Option<json::Index<json::Texture>> {
+        let (w, h, rgba) = decode_slot(files, vtex_path)?;
+        let png = png_encode(w, h, &rgba)?;
+        self.texture_png(&png)
+    }
+
+    /// Embeds PNG bytes as an image + texture (sharing one sampler), returning
+    /// the texture index.
+    fn texture_png(&mut self, png: &[u8]) -> Option<json::Index<json::Texture>> {
+        if png.is_empty() {
+            return None;
+        }
+        let view = self.add_image_view(png);
+        let image = self.root.push(json::Image {
+            buffer_view: Some(view),
+            mime_type: Some(json::image::MimeType("image/png".to_owned())),
+            uri: None,
+            name: None,
+            extensions: None,
+            extras: Default::default(),
+        });
+        let sampler = self.ensure_sampler();
+        Some(self.root.push(json::Texture {
+            sampler: Some(sampler),
+            source: image,
+            name: None,
+            extensions: None,
+            extras: Default::default(),
+        }))
+    }
+
+    /// A buffer view with no target, for embedded image data.
+    fn add_image_view(&mut self, bytes: &[u8]) -> json::Index<json::buffer::View> {
+        while !self.bin.len().is_multiple_of(4) {
+            self.bin.push(0);
+        }
+        let offset = self.bin.len();
+        self.bin.extend_from_slice(bytes);
+        self.root.push(json::buffer::View {
+            buffer: json::Index::new(0),
+            byte_length: USize64(bytes.len() as u64),
+            byte_offset: Some(USize64(offset as u64)),
+            byte_stride: None,
+            target: None,
+            name: None,
+            extensions: None,
+            extras: Default::default(),
+        })
+    }
+
+    fn ensure_sampler(&mut self) -> json::Index<json::texture::Sampler> {
+        if let Some(s) = self.sampler {
+            return s;
+        }
+        let s = self.root.push(json::texture::Sampler::default());
+        self.sampler = Some(s);
+        s
     }
 
     /// Frames the document + binary buffer into a GLB byte stream.
@@ -455,6 +649,75 @@ impl Builder {
 
         Ok(out)
     }
+}
+
+/// True for Deadlock's inverted-hull toon-outline materials (conventionally
+/// `*_outline`). Their primitives are dropped from the GLB: rendered as solid
+/// geometry the hull wraps and whitewashes the model.
+pub(crate) fn is_outline_material(path: &str) -> bool {
+    path.to_ascii_lowercase().contains("outline")
+}
+
+/// Appends `_c` to a source resource path unless it is already a compiled path.
+fn compiled(path: &str) -> String {
+    if path.ends_with("_c") {
+        path.to_owned()
+    } else {
+        format!("{path}_c")
+    }
+}
+
+fn tex_info(index: json::Index<json::Texture>) -> json::texture::Info {
+    json::texture::Info {
+        index,
+        tex_coord: 0,
+        extensions: None,
+        extras: Default::default(),
+    }
+}
+
+/// Resolves a `.vtex` slot (+ `_c`), decodes its top mip, and returns
+/// `(width, height, RGBA8)`. Skips HDR textures (no PBR slot we read is HDR) and
+/// Source 2's tiny placeholder textures (the 4x4 `default_*` masks a material
+/// binds when a slot is unused). The default self-illum mask in particular is
+/// solid white; binding it as emissive would make the whole surface glow.
+fn decode_slot(files: &dyn FileResolver, vtex_path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let bytes = files.resolve(&compiled(vtex_path))?;
+    let img = crate::decode(&bytes).ok()?;
+    if img.width.min(img.height) <= 4 {
+        return None;
+    }
+    match img.data {
+        crate::ImageData::Rgba8(d) => Some((img.width, img.height, d)),
+        crate::ImageData::Rgba16F(_) => None,
+    }
+}
+
+fn png_encode(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
+/// Normal map: the packed normal texture's RGB, with alpha cleared (its alpha
+/// carries roughness, which goes to the metallic-roughness texture instead).
+fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// glTF metallic-roughness texture: G = roughness (from the normal texture's
+/// alpha), B = metalness (0; Deadlock hero surfaces are treated as non-metal).
+fn metal_rough_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[0, px[3], 0, 255]);
+    }
+    png_encode(w, h, &out).unwrap_or_default()
 }
 
 /// The accessors written for one vertex buffer, shared across its primitives.
