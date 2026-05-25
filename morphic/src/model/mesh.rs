@@ -244,6 +244,9 @@ pub struct MeshPart {
     pub primitives: Vec<Primitive>,
     pub min_bounds: [f32; 3],
     pub max_bounds: [f32; 3],
+    /// `MDAT m_skeleton.m_nBoneWeightCount`: influences per vertex. 0 = unskinned.
+    /// Used to default weights for meshes that ship joints but no weights.
+    pub bone_weight_count: usize,
 }
 
 /// Resolves a global block index to its bytes. Implemented by `Resource`; the
@@ -329,6 +332,7 @@ pub fn assemble(
         primitives,
         min_bounds,
         max_bounds,
+        bone_weight_count: weight_count,
     })
 }
 

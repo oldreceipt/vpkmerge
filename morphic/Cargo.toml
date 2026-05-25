@@ -28,6 +28,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Pure-Rust LZ4 block decode for KV3 v5 model/material blocks (compression
 # method 1). KV3 packs each buffer as a single raw LZ4 block (no size prefix).
 lz4_flex = "0.11"
+# Pure-Rust glTF 2.0 document builder for the model exporter's .glb writer. The
+# JSON document is built with this; the binary GLB container is framed by hand.
+# `names` keeps node names (the bone names Grimoire retargets clips against).
+gltf-json = { version = "1", features = ["names"] }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -36,3 +40,5 @@ serde_json = "1"
 sha2 = "0.10"
 walkdir = "2"
 valve_pak = "0.1"
+# glTF reader, for round-tripping the .glb the writer produces in tests.
+gltf = { version = "1", features = ["names"] }

@@ -157,4 +157,62 @@ fn decode_hornet_local() {
         model.total_indices(),
         model.materials().len(),
     );
+
+    assert_glb_roundtrip(&model);
+}
+
+/// M5a: write the `.glb`, re-read it with the `gltf` crate (which validates the
+/// container + accessors), and confirm the structure survived. The file is left
+/// at `MORPHIC_GLB_OUT` (default /tmp/hornet.glb) for a maintainer to open in a
+/// glTF viewer / Grimoire's three.js and confirm it skins + retargets clips.
+fn assert_glb_roundtrip(model: &morphic::model::Model) {
+    let glb = morphic::model::to_glb(model).expect("write glb");
+    let out = std::env::var("MORPHIC_GLB_OUT").unwrap_or_else(|_| "/tmp/hornet.glb".to_string());
+    std::fs::write(&out, &glb).expect("write glb file");
+    eprintln!("wrote {} ({} bytes)", out, glb.len());
+
+    let gltf = gltf::Gltf::from_slice(&glb).unwrap_or_else(|e| panic!("re-read glb: {e:?}"));
+    assert!(gltf.blob.is_some(), "glb carries its binary blob");
+    let doc = &gltf.document;
+
+    let gltf_meshes = doc.meshes().count();
+    assert_eq!(gltf_meshes, model.meshes.len(), "glb mesh count");
+
+    let skin = doc.skins().next().expect("glb has a skin");
+    assert_eq!(
+        skin.joints().count(),
+        model.skeleton.bones.len(),
+        "glb joint count"
+    );
+
+    // Bone names survive (the retarget key).
+    let mut glb_bone_names: Vec<String> = skin
+        .joints()
+        .filter_map(|j| j.name().map(str::to_owned))
+        .collect();
+    glb_bone_names.sort();
+    assert_eq!(
+        glb_bone_names,
+        model.skeleton.sorted_bone_names(),
+        "glb bone names"
+    );
+
+    // Every primitive has POSITION + JOINTS_0 and an index accessor.
+    let mut prim_total = 0;
+    for mesh in doc.meshes() {
+        for prim in mesh.primitives() {
+            prim_total += 1;
+            assert!(
+                prim.get(&gltf::Semantic::Positions).is_some(),
+                "prim has POSITION"
+            );
+            assert!(prim.indices().is_some(), "prim has indices");
+            assert!(
+                prim.get(&gltf::Semantic::Joints(0)).is_some(),
+                "skinned prim has JOINTS_0"
+            );
+        }
+    }
+    assert_eq!(prim_total, 7, "hornet LOD0 primitive count");
+    eprintln!("glb re-read OK: {gltf_meshes} meshes, {prim_total} primitives, valid skin");
 }

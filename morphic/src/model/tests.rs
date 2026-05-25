@@ -224,3 +224,99 @@ fn remap_table_partitions_by_mesh() {
         "remap maps outside skeleton"
     );
 }
+
+// --- GLB writer (M5a) ---
+
+use super::math::{Mat4, Quat, Vec3};
+use super::mesh::{MeshPart, Primitive, VertexBuffer};
+use super::skeleton::Bone;
+use super::Model;
+
+/// A minimal skinned model: one root bone, one triangle bound to it. Lets the
+/// GLB writer be exercised in CI without the multi-megabyte hornet buffers.
+fn synthetic_model() -> Model {
+    let bone = Bone {
+        name: "root".to_owned(),
+        parent: None,
+        flags: 0,
+        position: Vec3::default(),
+        rotation: Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        local_bind: Mat4::IDENTITY,
+        global_bind: Mat4::IDENTITY,
+        inverse_bind: Mat4::IDENTITY,
+    };
+    let vb = VertexBuffer {
+        element_count: 3,
+        stride: 0,
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        tangents: Vec::new(),
+        texcoords: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+        joints: vec![[0, 0, 0, 0]; 3],
+        weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        layout: Vec::new(),
+    };
+    let part = MeshPart {
+        name: "tri".to_owned(),
+        mesh_index: 0,
+        vertex_buffers: vec![vb],
+        primitives: vec![Primitive {
+            vertex_buffer: 0,
+            material: "test/mat.vmat".to_owned(),
+            vertex_count: 3,
+            indices: vec![0, 1, 2],
+        }],
+        min_bounds: [0.0; 3],
+        max_bounds: [1.0, 1.0, 0.0],
+        bone_weight_count: 1,
+    };
+    Model {
+        skeleton: skeleton::Skeleton { bones: vec![bone] },
+        meshes: vec![part],
+    }
+}
+
+#[test]
+fn glb_writes_and_reloads() {
+    let glb = super::to_glb(&synthetic_model()).expect("write glb");
+
+    // Valid container: "glTF" magic, version 2, length matches.
+    assert_eq!(&glb[0..4], b"glTF", "GLB magic");
+    assert_eq!(
+        u32::from_le_bytes(glb[4..8].try_into().unwrap()),
+        2,
+        "GLB version"
+    );
+    assert_eq!(
+        u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize,
+        glb.len(),
+        "GLB declared length"
+    );
+
+    // The `gltf` reader parses + validates it.
+    let g = gltf::Gltf::from_slice(&glb).expect("re-read glb");
+    let doc = &g.document;
+
+    assert_eq!(doc.meshes().count(), 1);
+    let prim_count: usize = doc.meshes().map(|m| m.primitives().count()).sum();
+    assert_eq!(prim_count, 1);
+
+    let skin = doc.skins().next().expect("has skin");
+    assert_eq!(skin.joints().count(), 1, "one joint");
+    assert_eq!(
+        skin.joints().next().unwrap().name(),
+        Some("root"),
+        "bone name preserved"
+    );
+
+    let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+    assert!(prim.get(&gltf::Semantic::Positions).is_some(), "POSITION");
+    assert!(prim.get(&gltf::Semantic::Joints(0)).is_some(), "JOINTS_0");
+    assert!(prim.get(&gltf::Semantic::Weights(0)).is_some(), "WEIGHTS_0");
+    assert!(prim.indices().is_some(), "indices");
+}

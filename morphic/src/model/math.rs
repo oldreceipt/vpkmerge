@@ -25,6 +25,23 @@ pub struct Mat4 {
     pub m: [f32; 16],
 }
 
+impl Quat {
+    /// `Quaternion.CreateFromYawPitchRoll`, formula-for-formula. Used to build
+    /// the source-space -> glTF axis change.
+    #[must_use]
+    pub fn from_yaw_pitch_roll(yaw: f32, pitch: f32, roll: f32) -> Quat {
+        let (sr, cr) = (roll * 0.5).sin_cos();
+        let (sp, cp) = (pitch * 0.5).sin_cos();
+        let (sy, cy) = (yaw * 0.5).sin_cos();
+        Quat {
+            x: cy * sp * cr + sy * cp * sr,
+            y: sy * cp * cr - cy * sp * sr,
+            z: cy * cp * sr - sy * sp * cr,
+            w: cy * cp * cr + sy * sp * sr,
+        }
+    }
+}
+
 impl Mat4 {
     pub const IDENTITY: Mat4 = Mat4 {
         m: [
@@ -42,6 +59,16 @@ impl Mat4 {
         out.m[12] = p.x;
         out.m[13] = p.y;
         out.m[14] = p.z;
+        out
+    }
+
+    /// `Matrix4x4.CreateScale(s)`: uniform scale.
+    #[must_use]
+    pub fn from_scale(s: f32) -> Mat4 {
+        let mut out = Mat4::IDENTITY;
+        out.m[0] = s;
+        out.m[5] = s;
+        out.m[10] = s;
         out
     }
 

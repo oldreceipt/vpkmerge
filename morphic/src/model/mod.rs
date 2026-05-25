@@ -13,6 +13,7 @@
 //! `.glb` writer (M5) build on the [`Model`] this returns.
 
 mod dxgi;
+mod glb;
 mod math;
 mod mesh;
 mod skeleton;
@@ -21,6 +22,7 @@ mod vbib;
 #[cfg(test)]
 mod tests;
 
+pub use glb::to_glb;
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};
 pub use skeleton::{Bone, Skeleton};
