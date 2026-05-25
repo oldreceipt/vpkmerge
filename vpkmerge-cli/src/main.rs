@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    extract_portraits, inspect_models, merge, split, CollisionPolicy, MergeOptions, OverlapPolicy,
-    PathPredicate, PortraitInfo, SplitOptions, SplitOutput,
+    export_model, extract_portraits, inspect_models, merge, split, CollisionPolicy, MergeOptions,
+    OverlapPolicy, PathPredicate, PortraitInfo, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -75,8 +75,39 @@ struct PortraitCmd {
 
 #[derive(Args)]
 struct ModelCmd {
-    /// Input VPK to inspect.
-    input: PathBuf,
+    /// VPK to inspect (block structure, mesh/skeleton presence). Omit when
+    /// using a subcommand such as `export`.
+    input: Option<PathBuf>,
+
+    #[command(subcommand)]
+    action: Option<ModelAction>,
+}
+
+#[derive(Subcommand)]
+enum ModelAction {
+    /// Export a model entry to a textured binary glTF (`.glb`).
+    Export(ModelExportArgs),
+}
+
+#[derive(Args)]
+struct ModelExportArgs {
+    /// VPK containing the `.vmdl_c` (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// VPK-internal model path, e.g.
+    /// `models/heroes_staging/hornet_v3/hornet.vmdl_c`.
+    #[arg(long, value_name = "PATH")]
+    entry: String,
+
+    /// Base `pak01_dir.vpk` that referenced materials/textures resolve against
+    /// when the skin VPK does not ship them.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Output `.glb` path.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
 }
 
 #[derive(Args)]
@@ -164,7 +195,16 @@ fn main() -> Result<()> {
 }
 
 fn run_model(args: ModelCmd) -> Result<()> {
-    let ModelCmd { input } = args;
+    if let Some(ModelAction::Export(e)) = args.action {
+        export_model(&e.vpk, &e.entry, e.base.as_deref(), &e.out)
+            .with_context(|| format!("exporting {} from {}", e.entry, e.vpk.display()))?;
+        println!("wrote {}", e.out.display());
+        return Ok(());
+    }
+
+    let input = args.input.context(
+        "model: provide a VPK to inspect, or use `model export --vpk <vpk> --entry <path> --out <file.glb>`",
+    )?;
     let models = inspect_models(&input)
         .with_context(|| format!("inspecting models in {}", input.display()))?;
 

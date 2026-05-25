@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 pub mod model;
 pub mod portrait;
-pub use model::{inspect_models, ModelEntry, ModelInfo};
+pub use model::{export_model, inspect_models, ModelEntry, ModelInfo};
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
 #[derive(Debug, Clone)]
