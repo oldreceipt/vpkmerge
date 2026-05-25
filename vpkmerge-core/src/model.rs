@@ -30,7 +30,8 @@ impl morphic::model::FileResolver for VpkResolver {
     }
 }
 
-/// Decode a `.vmdl_c` and write it as a textured binary glTF.
+/// Decode a `.vmdl_c` at an explicit VPK `entry` path and write it as a textured
+/// binary glTF.
 ///
 /// `vpk` is searched first, then `base` (the base `pak01_dir.vpk`), for both the
 /// model entry and its materials/textures. A mesh skin ships its own model in
@@ -42,24 +43,48 @@ pub fn export_model(
     base: Option<&Path>,
     out: impl AsRef<Path>,
 ) -> Result<()> {
-    let vpk_path = vpk.as_ref();
-    let out = out.as_ref();
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    if read_entry(&vpks, entry).is_none() {
+        anyhow::bail!("model entry {entry} not found in the given VPK(s)");
+    }
+    export_resolved(vpks, entry, out.as_ref())
+}
 
-    // Resolution priority: the given VPK first (a skin's overrides win), then
-    // the base pak.
+/// Like [`export_model`] but discovers the hero's body model by codename instead
+/// of an explicit entry path: the first `.vmdl_c` under a `models/heroes*`
+/// directory whose file name is exactly `<codename>.vmdl_c` (so `hornet.vmdl_c`,
+/// not `hornet_backup.vmdl_c` or `hornet_lod1`, and not weapon/prop sub-meshes
+/// like `bookworm_sword`). The given VPK is searched first (a mesh skin ships its
+/// own model), then the base pak (texture-only skins reuse the base mesh).
+pub fn export_hero_model(
+    vpk: impl AsRef<Path>,
+    codename: &str,
+    base: Option<&Path>,
+    out: impl AsRef<Path>,
+) -> Result<()> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let entry = discover_hero_entry(&vpks, codename).with_context(|| {
+        format!("no body model (`<dir>/{codename}.vmdl_c` under models/heroes*) found in the given VPK(s)")
+    })?;
+    export_resolved(vpks, &entry, out.as_ref())
+}
+
+/// Opens the VPKs in resolution priority order: `vpk` first (a skin's overrides
+/// win), then the base pak.
+fn open_vpks(vpk: &Path, base: Option<&Path>) -> Result<Vec<valve_pak::VPK>> {
     let mut vpks =
-        vec![valve_pak::open(vpk_path).with_context(|| format!("opening {}", vpk_path.display()))?];
+        vec![valve_pak::open(vpk).with_context(|| format!("opening {}", vpk.display()))?];
     if let Some(base) = base {
         vpks.push(valve_pak::open(base).with_context(|| format!("opening {}", base.display()))?);
     }
+    Ok(vpks)
+}
 
-    let bytes = read_entry(&vpks, entry).with_context(|| {
-        format!(
-            "model entry {entry} not found in {}{}",
-            vpk_path.display(),
-            base.map_or_else(String::new, |b| format!(" or {}", b.display())),
-        )
-    })?;
+/// Reads `entry`, decodes it, textures it via the cross-VPK resolver, and writes
+/// the `.glb`. Consumes `vpks` (they move into the resolver).
+fn export_resolved(vpks: Vec<valve_pak::VPK>, entry: &str, out: &Path) -> Result<()> {
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
     let model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
 
     let resolver = VpkResolver { vpks };
@@ -72,6 +97,22 @@ pub fn export_model(
     }
     std::fs::write(out, &glb).with_context(|| format!("writing {}", out.display()))?;
     Ok(())
+}
+
+/// Finds the hero body model entry for `codename` across `vpks` (first match
+/// wins). The body model's file name is exactly `<codename>.vmdl_c` and it lives
+/// under a `models/heroes...` directory.
+fn discover_hero_entry(vpks: &[valve_pak::VPK], codename: &str) -> Option<String> {
+    let want = format!("{codename}.vmdl_c");
+    for vpk in vpks {
+        for path in vpk.file_paths() {
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            if basename == want && path.contains("/heroes") {
+                return Some(path.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Reads a VPK entry from the first of `vpks` that contains it.

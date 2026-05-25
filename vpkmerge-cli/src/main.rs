@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    export_model, extract_portraits, inspect_models, merge, split, CollisionPolicy, MergeOptions,
-    OverlapPolicy, PathPredicate, PortraitInfo, SplitOptions, SplitOutput,
+    export_hero_model, export_model, extract_portraits, inspect_models, merge, split,
+    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SplitOptions,
+    SplitOutput,
 };
 
 #[derive(Parser)]
@@ -96,9 +97,21 @@ struct ModelExportArgs {
     vpk: PathBuf,
 
     /// VPK-internal model path, e.g.
-    /// `models/heroes_staging/hornet_v3/hornet.vmdl_c`.
-    #[arg(long, value_name = "PATH")]
-    entry: String,
+    /// `models/heroes_staging/hornet_v3/hornet.vmdl_c`. Mutually exclusive with
+    /// `--hero`.
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "hero",
+        conflicts_with = "hero"
+    )]
+    entry: Option<String>,
+
+    /// Hero codename (e.g. `hornet`, `bookworm`) whose body model
+    /// (`<dir>/<codename>.vmdl_c`) is auto-discovered. Mutually exclusive with
+    /// `--entry`.
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
 
     /// Base `pak01_dir.vpk` that referenced materials/textures resolve against
     /// when the skin VPK does not ship them.
@@ -196,8 +209,13 @@ fn main() -> Result<()> {
 
 fn run_model(args: ModelCmd) -> Result<()> {
     if let Some(ModelAction::Export(e)) = args.action {
-        export_model(&e.vpk, &e.entry, e.base.as_deref(), &e.out)
-            .with_context(|| format!("exporting {} from {}", e.entry, e.vpk.display()))?;
+        match (&e.entry, &e.hero) {
+            (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &e.out)
+                .with_context(|| format!("exporting {entry} from {}", e.vpk.display()))?,
+            (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &e.out)
+                .with_context(|| format!("exporting hero {hero} from {}", e.vpk.display()))?,
+            (None, None) => anyhow::bail!("model export: provide --entry or --hero"),
+        }
         println!("wrote {}", e.out.display());
         return Ok(());
     }
