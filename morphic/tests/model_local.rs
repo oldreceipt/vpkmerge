@@ -55,6 +55,37 @@ fn approx3(a: [f32; 3], b: [f32; 3], what: &str) {
     }
 }
 
+/// Gated GLB export of an arbitrary VPK entry (no golden diff): set
+/// `MORPHIC_EXPORT_VPK` (+ optional `MORPHIC_EXPORT_ENTRY`, `MORPHIC_EXPORT_OUT`)
+/// to decode any model and write its `.glb` for eyeballing. A standin for the
+/// M6 `model export` CLI; useful for skins whose numbers differ from the golden.
+#[test]
+fn export_glb_from_env() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_EXPORT_VPK") else {
+        eprintln!("MORPHIC_EXPORT_VPK not set; skipping arbitrary export");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_EXPORT_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+    let out = std::env::var("MORPHIC_EXPORT_OUT").unwrap_or_else(|_| "/tmp/export.glb".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("locate entry");
+    let bytes = vf.read_all().expect("read entry");
+
+    let model = morphic::model::decode(&bytes).expect("decode model");
+    let glb = morphic::model::to_glb(&model).expect("write glb");
+    std::fs::write(&out, &glb).expect("write glb file");
+    eprintln!(
+        "exported {entry} -> {out} ({} bytes): {} bones, {} meshes, {} unique verts, {} materials",
+        glb.len(),
+        model.skeleton.bones.len(),
+        model.meshes.len(),
+        model.total_vertices(),
+        model.materials().len(),
+    );
+}
+
 #[test]
 fn decode_hornet_local() {
     let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
