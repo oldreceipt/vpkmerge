@@ -1,7 +1,8 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Resume point: **M5b** (textures)
-once a maintainer confirms the M5a `.glb` skins + retargets in a viewer. Scope
+Live handoff state for the model exporter work. Resume point: **M6** (CLI +
+core orchestration + refreshed bundled binary). M3..M5 are done and visually
+confirmed (hornet + bunnysuit render fully textured, verified in Blender). Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -23,10 +24,25 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `2e9c0c3` | M2 | Pure-Rust meshopt vertex+index decoders (`morphic/src/meshopt/`). Validated byte-exact vs VRF. |
 | `d7cb3ba` | M3 | Mesh assembly + skeleton + skin (`morphic/src/model/`): in-memory `Model`. Validated vs oracle `model-meta` golden. |
 | `70e97d8` | M4 | Material (`.vmat_c`) parsing (`morphic/src/material/`): shader + param tables + name-based PBR slots. Validated vs oracle `material-meta` golden. |
-| `18d2f39` | M5a | GLB writer (`morphic/src/model/glb.rs`): geometry + skeleton + skin, untextured. Round-trips through the `gltf` reader; pending maintainer eyeball. |
+| `18d2f39` | M5a | GLB writer (`morphic/src/model/glb.rs`): geometry + skeleton + skin, untextured. Round-trips through the `gltf` reader. |
+| `47ef9ef` | M5b | Textured GLB (`to_glb_textured` + `FileResolver`): base color / normal / roughness / occlusion / emissive. Confirmed fully textured in Blender. |
 
-Remaining: **M5b** cross-VPK texture resolution + decode + embed (orchestration
-+ writer), **M6** CLI + core orchestration + refreshed bundled binary.
+Remaining: **M6** CLI + core orchestration + refreshed bundled binary.
+
+- M5b detail: `to_glb_textured(&Model, &dyn FileResolver) -> Vec<u8>`. The caller
+  implements `FileResolver` (compiled path -> bytes; skin VPK first, base pak
+  second), so morphic stays I/O-free. Per material it parses the `.vmat_c` (M4),
+  decodes each PBR-slot `.vtex_c` (`morphic::texture`), and embeds PNGs as glTF
+  images wired to baseColor (sRGB) / normal / metallicRoughness (roughness from
+  the packed normal alpha) / occlusion / emissive. Two Deadlock-specific gotchas
+  (found via Blender ground-truth, both fixed): (1) inverted-hull toon-OUTLINE
+  primitives (`*_outline`) are dropped, else the shell whitewashes the model;
+  (2) `<=4x4` placeholder textures are skipped, else the solid-white default
+  self-illum mask makes every surface glow white. Base-color alpha is forced
+  opaque for non-blend materials (Source albedo alpha is a mask, not opacity).
+  NOT reproduced (runtime NPR, out of scope): the toon outline itself, rim light,
+  tint masks. The backdrop is a faithful PBR albedo render, not the in-game NPR
+  look; doing the toon pass is a three.js (Grimoire) renderer concern.
 
 - M5a detail: `model::to_glb(&Model) -> Vec<u8>` (new dep `gltf-json`, pure-Rust;
   GLB container framed by hand). Emits POSITION/NORMAL/TANGENT/TEXCOORD_0/
@@ -209,10 +225,16 @@ C build deps).
 - `material::parse(&[u8]) -> Material` (M4). `Material { name, shader_name,
   texture_params, int_params, float_params, vector_params }`, `Material::pbr()`
   -> `PbrSlots`, `alpha_mode()`, `alpha_cutoff()`, `texture(slot)`.
-- `model::to_glb(&Model) -> Result<Vec<u8>, DecodeError>` (M5a). Pure: Model in,
-  GLB bytes out. `math.rs` now has `Mat4::from_scale` + `Quat::from_yaw_pitch_roll`
-  for the axis transform; `MeshPart::bone_weight_count` is stored for default
-  weights.
+- `model::to_glb(&Model) -> Result<Vec<u8>, DecodeError>` (M5a, untextured) and
+  `model::to_glb_textured(&Model, &dyn model::FileResolver)` (M5b, textured).
+  `FileResolver::resolve(compiled_path) -> Option<Vec<u8>>` is the caller's VPK
+  I/O hook. `math.rs` has `Mat4::from_scale` + `Quat::from_yaw_pitch_roll`;
+  `MeshPart::bone_weight_count` is stored for default weights.
+- M6 orchestration sketch: `vpkmerge-core` opens the skin VPK (+ base pak), reads
+  the entry, calls `model::decode`, then `to_glb_textured` with a `FileResolver`
+  that tries the skin VPK then base. Mirror the cross-VPK pattern in the gated
+  `morphic/tests/model_local.rs::VpkResolver`. CLI: extend `ModelCmd` with
+  `export --vpk --entry --base --out`. Then refresh the bundled binary.
 - Texture decode (`morphic::decode` / `decode_at`) is done; M5 reuses it to turn
   the `PbrSlots` `.vtex` paths (append `_c`) into glTF images. Mirror
   `vpkmerge-core/src/portrait.rs` for the M5/M6 cross-VPK loader + orchestration.
