@@ -24,6 +24,7 @@ fixtures/
   bc6h/                   (M7)
   rgba16f/                (M8)
   kv3/                    raw KV3 blocks + .kv3.json goldens (model exporter M1)
+  meshopt/                raw MVTX/MIDX blocks + .meshopt.json goldens (M2)
   _local/                 gitignored, oracle-populated stress corpus
 ```
 
@@ -31,6 +32,12 @@ The `kv3/` tier differs from the texture tiers: each `*.kv3bin` is a raw KV3
 block sliced out of a `.vmdl_c`, and its sibling `*.kv3.json` is the canonical
 JSON the morphic KV3 parser is diffed against (see `tools/morphic-oracle`,
 `kv3-dump`). Re-bless with `just kv3-goldens`.
+
+The `meshopt/` tier holds raw `*.meshopt` MVTX/MIDX payloads sliced from
+hornet's embedded meshes, each with a sibling `*.meshopt.json` golden
+(decoded length + SHA-256 from VRF). The morphic meshopt decoders are diffed
+byte-for-byte against these. Committed fixtures span vertex strides 52/56/60
+and both index buffers. Re-bless with `just mesh-buffers`.
 
 ## Provenance
 

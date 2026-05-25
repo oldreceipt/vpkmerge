@@ -1,0 +1,13 @@
+{
+  "mesh": "ghost_glow_lod1",
+  "kind": "vertex",
+  "buffer_index": 0,
+  "block_index": 22,
+  "element_count": 2643,
+  "element_size": 56,
+  "meshopt": true,
+  "zstd": false,
+  "compressed_size": 105458,
+  "decoded_len": 148008,
+  "sha256": "c8afcd07ed7f179d6d4a6305a4dedc237e7a50c4f9698c958bf42fe6b621163a"
+}

@@ -24,6 +24,9 @@ pub enum DecodeError {
     #[error("KV3 parse error: {0}")]
     Kv3(&'static str),
 
+    #[error("meshopt decode error: {0}")]
+    Meshopt(&'static str),
+
     #[error("texture header missing field: {0}")]
     MissingField(&'static str),
 

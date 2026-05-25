@@ -1,0 +1,13 @@
+{
+  "mesh": "body_lod3",
+  "kind": "vertex",
+  "buffer_index": 1,
+  "block_index": 38,
+  "element_count": 598,
+  "element_size": 60,
+  "meshopt": true,
+  "zstd": false,
+  "compressed_size": 24464,
+  "decoded_len": 35880,
+  "sha256": "c2f00e880ee8e4e0070396b3fd6375589f64029cc0d6008e1f06841e4fb5205d"
+}

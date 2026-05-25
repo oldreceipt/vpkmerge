@@ -1,0 +1,13 @@
+{
+  "mesh": "gun_lod3",
+  "kind": "vertex",
+  "buffer_index": 0,
+  "block_index": 41,
+  "element_count": 2495,
+  "element_size": 52,
+  "meshopt": true,
+  "zstd": false,
+  "compressed_size": 84085,
+  "decoded_len": 129740,
+  "sha256": "159ede1ea310badf433b58d5ce1d2873436d2fb35a9d50f75c8070d84b02b7ca"
+}

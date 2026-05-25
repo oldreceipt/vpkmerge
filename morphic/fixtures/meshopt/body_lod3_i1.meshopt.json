@@ -1,0 +1,13 @@
+{
+  "mesh": "body_lod3",
+  "kind": "index",
+  "buffer_index": 1,
+  "block_index": 39,
+  "element_count": 1530,
+  "element_size": 2,
+  "meshopt": true,
+  "zstd": false,
+  "compressed_size": 552,
+  "decoded_len": 3060,
+  "sha256": "a8b8063db4e977bd940dc0a89baec5c385b61ba2ca90ea2fc00766ea89dad544"
+}

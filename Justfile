@@ -45,6 +45,14 @@ kv3-goldens:
       --out ../../morphic/fixtures/kv3/hornet_mdat0.kv3.json \
       --raw ../../morphic/fixtures/kv3/hornet_mdat0.kv3bin
 
+# Re-dump the meshopt buffer goldens (raw MVTX/MIDX + decoded SHA/metadata) for
+# every embedded mesh in hornet. Copy the small ones into morphic/fixtures/meshopt/.
+mesh-buffers:
+    cd tools/morphic-oracle && dotnet run -- mesh-buffers \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out-dir /tmp/morphic-meshbuf
+
 # Export a golden .glb for one model entry, for the M3+ semantic diff. The GLB
 # is large and not committed; regenerate on demand. Usage: just model-golden <entry> <out.glb>
 model-golden entry out:

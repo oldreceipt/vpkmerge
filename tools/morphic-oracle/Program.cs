@@ -20,8 +20,10 @@ using System.Threading;
 using SteamDatabase.ValvePak;
 using ValveKeyValue;
 using ValveResourceFormat;
+using ValveResourceFormat.Blocks;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.ResourceTypes;
+using ValveResourceFormat.Serialization.KeyValues;
 
 namespace MorphicOracle;
 
@@ -50,6 +52,7 @@ internal static class Program
                 "survey"   => Survey(args[1..]),
                 "model"    => ModelExport(args[1..]),
                 "kv3-dump" => Kv3Dump(args[1..]),
+                "mesh-buffers" => MeshBuffers(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -504,6 +507,109 @@ internal static class Program
     private static JsonObject BlobNode(byte[] blob) =>
         new() { ["$bin"] = new JsonObject { ["len"] = blob.Length, ["sha256"] = Sha256Hex(blob) } };
 
+    // ---------- mesh-buffers (M2 meshopt validation) ----------
+
+    // For each embedded mesh in a .vmdl_c, reconstructs the VBIB the way VRF
+    // does (so MVTX/MIDX blocks get meshopt-decoded) and writes, per buffer:
+    //   <mesh>_v{j}.meshopt / _i{j}.meshopt  -> raw compressed block bytes
+    //   <mesh>_v{j}.meshopt.json / ...        -> decoded-buffer golden record
+    // morphic decodes the raw block and matches the golden's length + SHA-256.
+    private static int MeshBuffers(string[] args)
+    {
+        string? vpk = null, entry = null, outDir = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":     vpk    = args[++i]; break;
+                case "--entry":   entry  = args[++i]; break;
+                case "--out-dir": outDir = args[++i]; break;
+                default: return Fail($"mesh-buffers: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outDir is null)
+        {
+            return Fail("mesh-buffers: --vpk, --entry, and --out-dir are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        KVObject? root = resource.GetBlockByType(BlockType.CTRL) switch
+        {
+            BinaryKV3 b => b.Data.Root,
+            KeyValuesOrNTRO k => k.Data,
+            _ => null,
+        };
+        if (root is null)
+        {
+            return Fail("mesh-buffers: no CTRL block (embedded mesh control)");
+        }
+
+        Directory.CreateDirectory(Path.GetFullPath(outDir));
+        var records = new List<MeshBufferRecord>();
+
+        foreach (var em in root.GetArray("embedded_meshes"))
+        {
+            var name = em.GetStringProperty("m_Name");
+            var vbib = new VBIB(resource, em) { Resource = resource };
+
+            EmitBuffers(data, resource, outDir, records, name, "vertex",
+                em.GetArray("m_vertexBuffers"), vbib.VertexBuffers);
+            EmitBuffers(data, resource, outDir, records, name, "index",
+                em.GetArray("m_indexBuffers"), vbib.IndexBuffers);
+        }
+
+        File.WriteAllText(Path.Combine(Path.GetFullPath(outDir), "manifest.json"),
+            JsonSerializer.Serialize(records, JsonOpts) + "\n");
+        Console.WriteLine($"wrote {records.Count} mesh buffers -> {outDir}");
+        return 0;
+    }
+
+    private static void EmitBuffers(
+        byte[] data, Resource resource, string outDir, List<MeshBufferRecord> records,
+        string mesh, string kind, IReadOnlyList<KVObject> descriptors, List<VBIB.OnDiskBufferData> buffers)
+    {
+        for (var j = 0; j < buffers.Count; j++)
+        {
+            var desc = descriptors[j];
+            var blockIndex = desc.GetInt32Property("m_nBlockIndex");
+            var block = resource.GetBlockByIndex(blockIndex);
+            var raw = new byte[block.Size];
+            Array.Copy(data, (int)block.Offset, raw, 0, (int)block.Size);
+
+            var prefix = kind == "vertex" ? "v" : "i";
+            var baseName = $"{SanitizeBasename(mesh)}_{prefix}{j}";
+            File.WriteAllBytes(Path.Combine(Path.GetFullPath(outDir), baseName + ".meshopt"), raw);
+
+            var rec = new MeshBufferRecord
+            {
+                Mesh = mesh,
+                Kind = kind,
+                BufferIndex = j,
+                BlockIndex = blockIndex,
+                ElementCount = buffers[j].ElementCount,
+                ElementSize = buffers[j].ElementSizeInBytes,
+                Meshopt = desc.GetByteProperty("m_bMeshoptCompressed") == 1,
+                Zstd = desc.GetByteProperty("m_bCompressedZSTD") == 1,
+                CompressedSize = (int)block.Size,
+                DecodedLen = buffers[j].Data.Length,
+                Sha256 = Sha256Hex(buffers[j].Data),
+            };
+            records.Add(rec);
+            File.WriteAllText(
+                Path.Combine(Path.GetFullPath(outDir), baseName + ".meshopt.json"),
+                JsonSerializer.Serialize(rec, JsonOpts) + "\n");
+        }
+    }
+
     // ---------- helpers ----------
 
     private static string TryReadKv3Magic(byte[] resourceBytes, Resource resource)
@@ -570,6 +676,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle survey   --vpk PATH --out CSV");
         Console.WriteLine("  morphic-oracle model    --vpk PATH --entry NAME [--base PATH] --out GLB [--no-materials]");
         Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
+        Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
         return 0;
     }
 
@@ -605,5 +712,20 @@ internal static class Program
         [JsonPropertyName("epsilon")] public double? Epsilon { get; init; }
         [JsonPropertyName("abs")]     public double? Abs { get; init; }
         [JsonPropertyName("rel")]     public double? Rel { get; init; }
+    }
+
+    private sealed class MeshBufferRecord
+    {
+        [JsonPropertyName("mesh")]            public string Mesh { get; init; } = "";
+        [JsonPropertyName("kind")]            public string Kind { get; init; } = "";
+        [JsonPropertyName("buffer_index")]    public int BufferIndex { get; init; }
+        [JsonPropertyName("block_index")]     public int BlockIndex { get; init; }
+        [JsonPropertyName("element_count")]   public uint ElementCount { get; init; }
+        [JsonPropertyName("element_size")]    public uint ElementSize { get; init; }
+        [JsonPropertyName("meshopt")]         public bool Meshopt { get; init; }
+        [JsonPropertyName("zstd")]            public bool Zstd { get; init; }
+        [JsonPropertyName("compressed_size")] public int CompressedSize { get; init; }
+        [JsonPropertyName("decoded_len")]     public int DecodedLen { get; init; }
+        [JsonPropertyName("sha256")]          public string Sha256 { get; init; } = "";
     }
 }
