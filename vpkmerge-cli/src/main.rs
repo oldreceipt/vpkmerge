@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    extract_portraits, merge, split, CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate,
-    PortraitInfo, SplitOptions, SplitOutput,
+    extract_portraits, inspect_models, merge, split, CollisionPolicy, MergeOptions, OverlapPolicy,
+    PathPredicate, PortraitInfo, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -48,6 +48,10 @@ enum Command {
 
     /// Extract and decode hero portrait/card art from a VPK to PNG.
     Portrait(PortraitCmd),
+
+    /// Inspect compiled models (`.vmdl_c`) in a VPK: block structure,
+    /// mesh-part count, embedded geometry, and skeleton/physics presence.
+    Model(ModelCmd),
 }
 
 #[derive(Args)]
@@ -67,6 +71,12 @@ struct PortraitCmd {
     /// Write the JSON manifest to this file instead of stdout.
     #[arg(long, value_name = "FILE")]
     manifest: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct ModelCmd {
+    /// Input VPK to inspect.
+    input: PathBuf,
 }
 
 #[derive(Args)]
@@ -148,8 +158,50 @@ fn main() -> Result<()> {
     match cli.cmd {
         Some(Command::Split(args)) => run_split(args),
         Some(Command::Portrait(args)) => run_portrait(args),
+        Some(Command::Model(args)) => run_model(args),
         None => run_merge(cli),
     }
+}
+
+fn run_model(args: ModelCmd) -> Result<()> {
+    let ModelCmd { input } = args;
+    let models = inspect_models(&input)
+        .with_context(|| format!("inspecting models in {}", input.display()))?;
+
+    if models.is_empty() {
+        println!("{}: no .vmdl_c entries found", input.display());
+        return Ok(());
+    }
+
+    for m in &models {
+        let i = &m.info;
+        println!("\n{}", m.path);
+        println!(
+            "  mesh parts: {}   index buffers: {}   vertex bytes: {}",
+            i.mesh_parts, i.index_buffers, i.vertex_bytes
+        );
+        println!(
+            "  embedded geometry: {}   skeleton/anim: {}   physics: {}",
+            i.has_embedded_geometry, i.has_skeleton_anim, i.has_physics
+        );
+
+        // Collapse the block table into a "KINDxCOUNT (bytes)" histogram so a
+        // model with 8 MVTX/MIDX pairs reads at a glance instead of 29 lines.
+        let mut counts: std::collections::BTreeMap<&str, (usize, u64)> =
+            std::collections::BTreeMap::new();
+        for b in &i.blocks {
+            let e = counts.entry(b.kind.as_str()).or_insert((0, 0));
+            e.0 += 1;
+            e.1 += u64::from(b.size);
+        }
+        let histogram: Vec<String> = counts
+            .iter()
+            .map(|(k, (n, sz))| format!("{k}x{n} ({sz}B)"))
+            .collect();
+        println!("  blocks: {}", histogram.join("  "));
+    }
+
+    Ok(())
 }
 
 fn run_merge(cli: Cli) -> Result<()> {
