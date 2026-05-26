@@ -26,11 +26,49 @@ Three PKGBUILDs live here, one per AUR package:
     cd /tmp/aur-vpkmerge-bin && git add -A && git commit -m "Initial import" && git push
     ```
 
-## Release workflow
+## Release workflow (automated)
 
-When you cut a new vpkmerge release (tag `vX.Y.Z` triggers `.github/workflows/release.yml`), the AUR packages need to be updated **after** the GitHub release is published (so the .deb and CLI binary URLs resolve).
+`vpkmerge-bin` and `vpkmerge-cli-bin` are bumped and pushed to the AUR
+automatically. When a tag `vX.Y.Z` triggers `.github/workflows/release.yml`, its
+final `aur` job calls the reusable `.github/workflows/aur.yml` **after** the
+GitHub release is published (so the .deb and CLI binary URLs resolve). That
+workflow:
 
-For each of `vpkmerge-bin/` and `vpkmerge-cli-bin/`:
+1. **`sync`** (Arch container): for each package it runs the exact manual recipe
+   below (`sed` the `pkgver`, `updpkgsums`, `makepkg --printsrcinfo`) and commits
+   the refreshed `PKGBUILD` + `.SRCINFO` back to `main` (`[skip ci]`), keeping
+   this in-repo mirror authoritative.
+2. **`publish`**: pushes each package to its AUR repo
+   (via `KSXGitHub/github-actions-deploy-aur`).
+
+### One-time CI setup
+
+Add one repo secret so the `publish` job can push over SSH:
+
+- `AUR_SSH_PRIVATE_KEY`: a private key whose public half is registered on the AUR
+  account (same key as the local `~/.ssh/aur` below). Settings -> Secrets and
+  variables -> Actions -> New repository secret.
+
+Notes:
+- The AUR repos must already exist (first import is still manual, see above). The
+  action pushes to `ssh://aur@aur.archlinux.org/<pkgname>.git`.
+- The `sync` job pushes a commit to `main`. If `main` ever gets branch
+  protection that blocks the Actions bot, either allow it or drop the commit-back
+  step (the AUR push does not depend on it).
+- If the secret is missing, `publish` warns and skips (the release itself still
+  succeeds); set the secret and re-run the job.
+
+### Running it by hand
+
+To (re)publish a specific tag (e.g. the first run after adding the secret, or to
+backfill v0.4.0): Actions -> **AUR** -> Run workflow -> enter the tag (`v0.4.0`).
+This works for any already-published release.
+
+### The manual recipe (fallback)
+
+Still valid if you need to push outside CI, or after a structural PKGBUILD change
+(new deps, build steps, .desktop content) that the version-bump automation does
+not cover. For each of `vpkmerge-bin/` and `vpkmerge-cli-bin/`:
 
 ```bash
 cd packaging/aur/vpkmerge-bin   # or vpkmerge-cli-bin
@@ -44,7 +82,7 @@ namcap PKGBUILD *.pkg.tar.zst                    # optional lint
 
 Then push to the AUR remote for that package (see "One-time AUR setup" above).
 
-`vpkmerge-git` doesn't need version bumps; AUR helpers regenerate `pkgver` via the `pkgver()` function on each user build. Only push when the PKGBUILD itself changes (deps, build steps, .desktop content).
+`vpkmerge-git` doesn't need version bumps; AUR helpers regenerate `pkgver` via the `pkgver()` function on each user build. Only push when the PKGBUILD itself changes (deps, build steps, .desktop content). The automation deliberately leaves it alone.
 
 ## Why we ship a separate `-cli-bin` package
 

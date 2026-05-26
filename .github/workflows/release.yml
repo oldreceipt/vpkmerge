@@ -188,3 +188,15 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
+
+  # Once the release is public (its asset URLs resolve), refresh and push the
+  # AUR packages. Calling the reusable workflow directly (rather than letting it
+  # listen for `release: published`) sidesteps the limitation that events raised
+  # by GITHUB_TOKEN do not trigger other workflows.
+  aur:
+    name: AUR
+    needs: publish
+    uses: ./.github/workflows/aur.yml
+    secrets: inherit
+    with:
+      tag: ${{ github.ref_name }}
