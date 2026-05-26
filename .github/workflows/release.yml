@@ -28,46 +28,14 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           {
             echo 'body<<EOF'
-
-            # Stable Download section. Filenames here mirror what tauri-bundler
-            # and the cli matrix produce; if either of those is renamed, update
-            # this preamble in lockstep.
-            cat <<DL
-## Download
-
-Two flavors below: most people want the **desktop app**. Power users / scripters want the **CLI**.
-
-### Desktop app (recommended)
-
-| Your computer | File |
-|---|---|
-| **Windows** | [\`vpkmerge_${ver}_x64-setup.exe\`](${base}/vpkmerge_${ver}_x64-setup.exe) (installer), [\`vpkmerge_${ver}_x64_en-US.msi\`](${base}/vpkmerge_${ver}_x64_en-US.msi), or [\`vpkmerge_${ver}_x64_portable.exe\`](${base}/vpkmerge_${ver}_x64_portable.exe) (portable, no install) |
-| **macOS** (Apple Silicon, M1+) | [\`vpkmerge_${ver}_aarch64.dmg\`](${base}/vpkmerge_${ver}_aarch64.dmg) |
-| **macOS** (Intel) | Run the Apple Silicon \`.dmg\` under Rosetta 2, or build from source. |
-| **Linux** (Debian / Ubuntu) | [\`vpkmerge_${ver}_amd64.deb\`](${base}/vpkmerge_${ver}_amd64.deb) |
-| **Linux** (Fedora / RHEL)   | [\`vpkmerge-${ver}-1.x86_64.rpm\`](${base}/vpkmerge-${ver}-1.x86_64.rpm) |
-| **Linux** (anything else)   | [\`vpkmerge_${ver}_amd64.AppImage\`](${base}/vpkmerge_${ver}_amd64.AppImage) (no install, \`chmod +x\` and run) |
-
-Install steps:
-- **Windows**: double-click the \`.exe\` installer, or just run \`vpkmerge_${ver}_x64_portable.exe\` directly (no install; needs WebView2, preinstalled on Windows 10 1903+ and all Windows 11).
-- **macOS**: open the \`.dmg\`, drag the app into Applications. First launch: right-click → Open (app is not notarized).
-- **Linux .deb**: \`sudo dpkg -i vpkmerge_${ver}_amd64.deb\`
-- **Linux .rpm**: \`sudo dnf install ./vpkmerge-${ver}-1.x86_64.rpm\`
-- **Linux AppImage**: \`chmod +x vpkmerge_${ver}_amd64.AppImage && ./vpkmerge_${ver}_amd64.AppImage\`
-
-### Command-line tool
-
-| Your computer | File |
-|---|---|
-| **Linux** (x86_64) | [\`vpkmerge-linux-x86_64\`](${base}/vpkmerge-linux-x86_64) |
-| **macOS** (Apple Silicon) | [\`vpkmerge-macos-aarch64\`](${base}/vpkmerge-macos-aarch64) |
-| **Windows** (x86_64) | [\`vpkmerge-windows-x86_64.exe\`](${base}/vpkmerge-windows-x86_64.exe) |
-
-On Linux/macOS, \`chmod +x vpkmerge-*\` once and call it from a terminal. On Windows it's already executable.
-
----
-
-DL
+            # Per-platform Download table. The markdown template lives in
+            # .github/release-notes-download.md with @VER@/@BASE@ placeholders so
+            # it stays out of this YAML block scalar (column-0 markdown here would
+            # terminate the scalar and break the workflow file). Keep the
+            # filenames in lockstep with what tauri-bundler and the cli matrix
+            # produce.
+            sed -e "s|@VER@|${ver}|g" -e "s|@BASE@|${base}|g" \
+              .github/release-notes-download.md
             echo
             echo "## What's new"
             echo
