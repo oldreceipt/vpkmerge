@@ -211,6 +211,42 @@ pub fn merge<P: AsRef<Path>, O: AsRef<Path>>(
     })
 }
 
+/// Pack in-memory files into a standalone single-archive VPK at `output`.
+///
+/// Each tuple is `(entry_path, bytes)`; entry paths use `/` and are relative to
+/// the VPK root (e.g. `soundevents/hero/gigawatt.vsndevts_c`). The parent
+/// directory of `output` is created if missing. The result is a `_dir.vpk` with
+/// no chunk files, loadable by Deadlock as an addon and mergeable via [`merge`].
+///
+/// This is the inverse of the "merge VPK inputs only" pipeline: it gets a
+/// generated or edited loose file (e.g. an encoded soundevents resource) into a
+/// VPK so it can enter the merge pipeline.
+pub fn pack<O: AsRef<Path>>(files: &[(&str, &[u8])], output: O) -> Result<()> {
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating output directory {}", parent.display()))?;
+        }
+    }
+
+    let tmp = tempfile::tempdir().context("creating temp directory")?;
+    for (entry, bytes) in files {
+        let dst = tmp.path().join(entry);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        std::fs::write(&dst, bytes).with_context(|| format!("writing {}", dst.display()))?;
+    }
+
+    let packed = valve_pak::from_directory(tmp.path()).context("packing VPK")?;
+    packed
+        .save(output)
+        .with_context(|| format!("saving {}", output.display()))?;
+    Ok(())
+}
+
 /// Route entries from `input` into N output VPKs according to `outputs`.
 /// Reads `input` once. Returns a per-output entry count.
 ///
@@ -929,6 +965,61 @@ mod tests {
             &MergeOptions::default(),
         )?;
         assert_eq!(entry_set(&input)?, entry_set(&recombined)?);
+        Ok(())
+    }
+
+    #[test]
+    fn pack_writes_single_entry_at_path() -> Result<()> {
+        let tmp = tempdir()?;
+        let out = tmp.path().join("packed_dir.vpk");
+        pack(
+            &[("soundevents/hero/gigawatt.vsndevts_c", b"encoded-bytes")],
+            &out,
+        )?;
+        assert_eq!(
+            entry_set(&out)?,
+            vec!["soundevents/hero/gigawatt.vsndevts_c".to_string()]
+        );
+        assert_eq!(
+            read_entry(&out, "soundevents/hero/gigawatt.vsndevts_c")?,
+            b"encoded-bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pack_creates_missing_parent_dir() -> Result<()> {
+        let tmp = tempdir()?;
+        let nested = tmp.path().join("does/not/exist/packed_dir.vpk");
+        pack(&[("a/b.txt", b"x")], &nested)?;
+        assert!(nested.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn packed_vpk_merges_cleanly_when_disjoint() -> Result<()> {
+        // A packed loose file enters the merge pipeline like any other VPK.
+        let tmp = tempdir()?;
+        let chunk = tmp.path().join("sndevts_chunk_dir.vpk");
+        pack(
+            &[("soundevents/hero/gigawatt.vsndevts_c", b"edited")],
+            &chunk,
+        )?;
+        let other = tmp.path().join("other_dir.vpk");
+        make_vpk(&other, &[("materials/foo.txt", b"foo")])?;
+        let out = tmp.path().join("combined_dir.vpk");
+        merge(&[&chunk, &other], &out, &MergeOptions::default())?;
+        assert_eq!(
+            entry_set(&out)?,
+            vec![
+                "materials/foo.txt".to_string(),
+                "soundevents/hero/gigawatt.vsndevts_c".to_string(),
+            ]
+        );
+        assert_eq!(
+            read_entry(&out, "soundevents/hero/gigawatt.vsndevts_c")?,
+            b"edited"
+        );
         Ok(())
     }
 

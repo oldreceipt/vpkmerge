@@ -140,7 +140,12 @@ wrap the resource envelope, preserving the format GUID and `RED2` on re-encode.
 
 `vpkmerge-core::soundevents::SoundEvents` is the soundevents-aware layer (load from
 file/VPK, JSON projection, `swap_vsnd`, `set_event_field`, re-encode). Exposed as
-`vpkmerge soundevents <file> [--from-vpk <vpk>] [--swap-vsnd OLD=NEW] [--set EVENT/FIELD=N] [--encode OUT]`.
+`vpkmerge soundevents <file> [--from-vpk <vpk>] [--swap-vsnd OLD=NEW] [--set EVENT/FIELD=N] [--encode OUT] [--encode-vpk OUT_dir.vpk [--vpk-entry PATH]]`.
+
+`--encode-vpk` re-encodes the edited file and packs it into a standalone addon VPK at its
+entry path (defaults to INPUT under `--from-vpk`; `--vpk-entry` overrides, required for a
+loose-file input). Built on `vpkmerge_core::pack`, which is the general primitive for
+getting loose/generated files into a VPK so they can enter the merge pipeline.
 
 Built for a Grimoire per-ability sound picker (control `volume`/`pitch`/clip choice, not
 just swap the audio). Full writeup + the pending in-game verification step:

@@ -66,6 +66,15 @@ vpkmerge soundevents gigawatt.vsndevts_c \
   --swap-vsnd "sounds/a/old.vsnd=sounds/b/new.vsnd" \
   --set "Seven.Wpn.Fire/volume=0.25" \
   --encode out.vsndevts_c
+
+# Or pack the edited file straight into a standalone addon VPK at its entry
+# path (defaults to INPUT in --from-vpk mode), ready to merge into a consolidated
+# addon. This is the Grimoire per-ability volume/pitch path:
+vpkmerge soundevents soundevents/hero/gigawatt.vsndevts_c \
+  --from-vpk /path/to/citadel/pak01_dir.vpk \
+  --set "Gigawatt.LightningBall.Damage/volume=-9" \
+  --encode-vpk sndevts_chunk_dir.vpk
+# -> sndevts_chunk_dir.vpk; merges cleanly with other addon VPKs when paths are disjoint.
 ```
 
 ## Key design decisions / why it is lower-risk than feared

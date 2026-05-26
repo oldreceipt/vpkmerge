@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0
+
+Closes the gap between editing a soundevents file and shipping it: the `soundevents` subcommand can now pack its re-encoded output straight into a standalone addon VPK, so an edited (or generated) loose file can finally enter the merge pipeline. This unblocks Grimoire's per-ability volume/pitch path, where a hero's `.vsndevts_c` is decoded, `--set` on the relevant events, and the result shipped in a consolidated addon VPK at the same entry path.
+
+### CLI (`vpkmerge` 0.4)
+
+- New `--encode-vpk OUT_dir.vpk` flag on `soundevents`. After applying `--swap-vsnd` / `--set`, re-encode and pack the file into a standalone single-archive VPK at its entry path, ready to merge. The entry path defaults to INPUT in `--from-vpk` mode; `--vpk-entry PATH` overrides it (and is required for a loose-file input). Combinable with `--encode`; the loose `--encode` and JSON-to-stdout behaviors are unchanged.
+
+### Library (`vpkmerge-core` 0.5)
+
+- New `pack(files, output)`: write in-memory `(entry_path, bytes)` files into a standalone single-archive `_dir.vpk`. The general primitive for getting loose or generated files into a VPK so they can enter `merge`. Creates missing parent directories; produces a chunk-free, engine-loadable addon VPK.
+
 ## v0.3.0
 
 vpkmerge grows past pure merging into a small Deadlock asset toolkit: two new CLI subcommands (hero portrait extraction and soundevents editing), a GUI Browse tab that walks a VPK's file tree with live texture previews, and a much-expanded `morphic` that now decodes HDR textures, selects mips/cubemap faces, re-encodes, and reads/writes binary KeyValues3.

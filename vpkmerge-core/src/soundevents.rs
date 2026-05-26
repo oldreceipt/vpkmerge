@@ -220,6 +220,24 @@ mod tests {
     }
 
     #[test]
+    fn edit_encode_pack_round_trips_from_vpk() {
+        // The Grimoire path: edit a param, encode, pack into a standalone VPK at
+        // an entry path, then decode straight back out of that VPK.
+        const ENTRY: &str = "soundevents/hero/gigawatt.vsndevts_c";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("sndevts_chunk_dir.vpk");
+
+        let mut se = SoundEvents::from_file(FIXTURE).expect("load fixture");
+        assert!(se.set_event_field("Seven.Wpn.Fire", "volume", -9.0));
+        let bytes = se.encode().expect("encode");
+        crate::pack(&[(ENTRY, bytes.as_slice())], &out).expect("pack");
+
+        let back = SoundEvents::from_vpk(&out, ENTRY).expect("decode from packed vpk");
+        let fire = back.root.get("Seven.Wpn.Fire").expect("event present");
+        assert_eq!(fire.get("volume").and_then(Value::as_f64), Some(-9.0));
+    }
+
+    #[test]
     fn json_projection_is_ordered_and_typed() {
         let se = SoundEvents::from_file(FIXTURE).expect("load fixture");
         let json = se.to_json();
