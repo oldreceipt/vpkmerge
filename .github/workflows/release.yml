@@ -51,7 +51,7 @@ jobs:
 
       - name: Create draft
         id: create
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: vpkmerge ${{ github.ref_name }}
@@ -92,7 +92,7 @@ jobs:
              "dist/${{ matrix.asset }}${{ matrix.ext }}"
 
       - name: upload
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
@@ -171,7 +171,7 @@ jobs:
 
       - name: upload portable Windows .exe
         if: matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
@@ -184,7 +184,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Mark release as published
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: false
