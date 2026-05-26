@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.3.0
+
+vpkmerge grows past pure merging into a small Deadlock asset toolkit: two new CLI subcommands (hero portrait extraction and soundevents editing), a GUI Browse tab that walks a VPK's file tree with live texture previews, and a much-expanded `morphic` that now decodes HDR textures, selects mips/cubemap faces, re-encodes, and reads/writes binary KeyValues3.
+
+### CLI (`vpkmerge` 0.3)
+
+- New `portrait` subcommand. Extract and decode hero card/portrait art from a VPK to PNG. Flags: `--out DIR`, `--hero CODENAME` (omit for every hero), `--manifest FILE` (otherwise the JSON manifest prints to stdout).
+- New `soundevents` subcommand. Decode a `.vsndevts_c` file to JSON, edit it, and re-emit a loadable file. Reads a file on disk or, with `--from-vpk VPK`, an entry path inside a VPK. Edits: `--swap-vsnd OLD=NEW` (rewrite a clip path everywhere), `--set EVENT/FIELD=NUMBER` (set a numeric field like volume/pitch). `--encode OUT` writes an uncompressed v4 file the engine can load; without it the decoded tree prints as JSON.
+- The positional merge invocation and the `split` subcommand are unchanged.
+
+### Library (`vpkmerge-core` 0.4)
+
+- `extract_portraits(vpk, hero, out_dir)` plus `PortraitInfo` and `PortraitVariant`: locate hero portrait textures in a VPK and decode them to PNG (via `morphic`), reporting per-texture format/size and skip reasons.
+- `SoundEvents` (load `from_file` / `from_vpk` / `from_bytes`, `to_json`, `swap_vsnd`, `set_event_field`, `encode`, `original_len`) plus `EventSummary`: the soundevents-aware layer over `morphic`'s KV3 codec, built for a per-ability sound picker (control volume/pitch/clip choice, not just swap audio).
+
+### GUI (0.3)
+
+- **Browse tab.** New top-level tab alongside Merge. Auto-loads the local Deadlock `pak01_dir.vpk`, walks the VPK file tree with a filter, and renders a live preview of any selected `.vtex_c` via `morphic`.
+- **Collision default flipped to top-of-list-wins.** The highest-priority (top) mod now overrides by default, matching the visible priority order. Still exposes Bottom wins and Refuse.
+- **HDR previews tone-mapped** instead of erroring out, so BC6H / float textures show a sensible thumbnail.
+- Long entry paths in the Browse tab scroll horizontally instead of overflowing.
+
+### `morphic` 0.1.0
+
+- **BC6H decode** (HDR, `Rgba16F` output) with an HDR golden path: LDR formats diff against a PNG, HDR formats against a raw `.f32` sibling with per-channel tolerance.
+- **Encoders + splicing.** `encode_image` (BCn, BC6H, RGBA8, inline PNG passthrough) plus splice entry points: `replace_face0_mip0` / `replace_face_mip` (single mip, rest byte-exact) and `replace_mip_chain` / `replace_face_mip_chain` (regenerate the full mip pyramid from a new mip 0).
+- **Mip + cubemap face selection.** `DecodeOptions { mip, slice, face }` decodes any mip level or cubemap face.
+- **Binary KeyValues3 codec** (`morphic::kv3`): reads v1..=5 (including v5 two-buffer / LZ4), writes v4 uncompressed. `decode_kv3_resource` / `encode_kv3_resource` wrap the resource envelope, preserving the format GUID and `RED2` block on re-encode. This is what powers `SoundEvents`.
+- Format coverage is now roughly 86% of Deadlock's `.vtex_c` corpus by count. RGBA16161616F, inline WebP, 3D depth slices, and texture arrays remain pending (non-blocking in the golden harness).
+
+### Packaging / release
+
+- **AUR packages** under `packaging/aur/`: `vpkmerge-bin` (GUI from the release `.deb`), `vpkmerge-cli-bin` (raw CLI binary), and `vpkmerge-git` (both, built from HEAD).
+- Portable Windows `.exe` added to the release artifacts (no install; needs WebView2).
+- Release notes now lead with a per-platform Download table for both the desktop app and the CLI.
+
 ## v0.2.0
 
 The first release with both directions of the operation: combine many VPKs into one, or split one into many. The GUI gets a substantial visual overhaul and the conflict resolver gains texture-aware previews.
