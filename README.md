@@ -1,8 +1,15 @@
 # vpkmerge
 
-Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many. Plus a small toolkit for the assets inside: decode Source 2 textures, extract hero portraits, and read/edit soundevents.
+[![CI](https://github.com/Slush97/vpkmerge/actions/workflows/ci.yml/badge.svg)](https://github.com/Slush97/vpkmerge/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Slush97/vpkmerge?logo=github&color=blue)](https://github.com/Slush97/vpkmerge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Slush97/vpkmerge/total?logo=github)](https://github.com/Slush97/vpkmerge/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](https://github.com/Slush97/vpkmerge/releases/latest)
 
-Built for **Deadlock** modding: the game caps mounted mod VPKs at roughly 100, so pre-merging several mods into one VPK lets players run more mods than the engine would otherwise allow. Splitting is the inverse operation for mod managers that want per-feature granularity (e.g. one ability slot at a time).
+Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many. Plus a small toolkit for the assets inside: decode Source 2 textures, extract hero portraits, read/edit soundevents, and export compiled models to glTF.
+
+Built for **Deadlock** modding: pre-merging several mods into one VPK consolidates them into a single addon slot, so a mod manager can resolve load order and overrides up front instead of dropping a pile of loose VPKs into the game. Splitting is the inverse operation for mod managers that want per-feature granularity (e.g. one ability slot at a time).
 
 What it does:
 
@@ -10,8 +17,9 @@ What it does:
 - **Split** one VPK into many by path predicate (the inverse of merge).
 - **Portrait**: extract and decode hero card/portrait art from a VPK to PNG.
 - **Soundevents**: decode a Deadlock `.vsndevts_c` file to JSON, edit clip paths and params (volume, pitch), and re-emit a file the engine can load.
+- **Model**: export a hero `.vmdl_c` to a textured, skinned, animated binary glTF (`.glb`), decoded entirely in pure Rust (no .NET or C runtime).
 - **Desktop GUI**: drag-and-drop merging with a visual conflict resolver, plus a Browse tab to walk a VPK's file tree and preview textures.
-- **`morphic`**: a pure-Rust Source 2 `.vtex_c` decoder/encoder and binary KeyValues3 codec underpinning the texture previews and soundevents editing (no .NET runtime required).
+- **`morphic`**: a pure-Rust Source 2 decoder underpinning the rest: `.vtex_c` textures (decode/encode), binary KeyValues3, and `.vmdl_c` -> `.glb` model export (no .NET runtime required).
 
 ## Download
 
@@ -49,10 +57,10 @@ On Linux/macOS, run `chmod +x vpkmerge-*` once after downloading, then call it f
 
 This repo is a Cargo workspace with four crates:
 
-- [`vpkmerge-core/`](./vpkmerge-core) (v0.4): pure Rust library with the merge and split engines plus the portrait-extraction and soundevents layers. No UI dependencies. Reusable from any Rust project.
-- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.3): the `vpkmerge` command-line binary (`merge`, `split`, `portrait`, `soundevents`).
-- [`gui/src-tauri/`](./gui/src-tauri) (v0.3): Tauri v2 desktop app with a visual conflict resolver, a Browse tab for walking a VPK's file tree, a themeable paper UI, and texture preview for Source 2 `.vtex_c` entries (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
-- [`morphic/`](./morphic) (v0.1): pure-Rust Source 2 `.vtex_c` texture decoder/encoder and binary KeyValues3 codec. Decodes LDR and HDR (BC6H) formats, selects mips/cubemap faces, re-encodes, and reads/writes `.vsndevts_c`. Powers the GUI texture previews and the soundevents layer. See [`morphic/README.md`](./morphic/README.md).
+- [`vpkmerge-core/`](./vpkmerge-core) (v0.6): pure Rust library with the merge and split engines plus the portrait-extraction, soundevents, and model-export layers. No UI dependencies. Reusable from any Rust project.
+- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.5): the `vpkmerge` command-line binary (`merge`, `split`, `portrait`, `model`, `soundevents`).
+- [`gui/src-tauri/`](./gui/src-tauri) (v0.5): Tauri v2 desktop app with a visual conflict resolver, a Browse tab for walking a VPK's file tree, a themeable paper UI, and texture preview for Source 2 `.vtex_c` entries (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
+- [`morphic/`](./morphic) (v0.2): pure-Rust Source 2 decoder. Decodes `.vtex_c` textures in LDR and HDR (BC6H), selecting mips/cubemap faces and re-encoding; reads/writes binary KeyValues3 (`.vsndevts_c`); and decodes `.vmdl_c` models (skeleton, skinned LOD0 meshes, materials, animation clips) to binary glTF. Powers the GUI texture previews, the soundevents layer, and the model exporter. See [`morphic/README.md`](./morphic/README.md).
 
 ## CLI
 
@@ -115,6 +123,39 @@ Find hero card/portrait textures in a VPK and decode them to PNG. Without `--her
 
 ```bash
 vpkmerge portrait pak01_dir.vpk --out ./portraits --hero hornet
+```
+
+### Model
+
+```bash
+# Inspect the compiled models in a VPK.
+vpkmerge model <input_dir.vpk>
+
+# Export one model to a textured, skinned, animated .glb.
+vpkmerge model export --vpk <vpk> (--entry <path.vmdl_c> | --hero <codename>) \
+  [--base <pak01_dir.vpk>] [--clip <name>]... [--no-anim] --out <file.glb>
+```
+
+`model <vpk>` (no subcommand) lists each `.vmdl_c` in the VPK with its block structure, mesh-part count, and whether it carries embedded geometry / skeleton / physics.
+
+`model export` decodes a single `.vmdl_c` to a binary glTF, in pure Rust (no .NET or C runtime). It writes the skeleton, the skinned LOD0 meshes, PBR materials with their `.vtex_c` textures, and the model's own animation clips on its own skeleton (so a viewer can play its idle with no cross-hero retargeting).
+
+| Flag | Description |
+|------|-------------|
+| `--vpk <VPK>` | VPK containing the `.vmdl_c` (a skin VPK, or the base pak itself) |
+| `--entry <PATH>` | VPK-internal model path, e.g. `models/heroes_staging/hornet_v3/hornet.vmdl_c`. Mutually exclusive with `--hero` |
+| `--hero <CODENAME>` | Hero codename (e.g. `hornet`) whose body model is auto-discovered. Mutually exclusive with `--entry` |
+| `--base <VPK>` | Base `pak01_dir.vpk` that referenced materials/textures resolve against when the skin VPK does not ship them (skin first, base second) |
+| `--clip <NAME>` | Export only the named clip(s). Repeatable. Omit to export every clip; `--no-anim` to drop them all |
+| `--no-anim` | Export the static mesh + skeleton only (no animation) |
+| `--out <FILE>` | Output `.glb` path |
+
+```bash
+# Export a hero's body model from the base pak, all clips, to a .glb.
+vpkmerge model export \
+  --vpk ~/.steam/steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk \
+  --hero hornet \
+  --out hornet.glb
 ```
 
 ### Soundevents
@@ -182,7 +223,7 @@ To use the merge / split engines from another Rust project:
 
 ```toml
 [dependencies]
-vpkmerge-core = "0.4"
+vpkmerge-core = "0.6"
 ```
 
 ```rust
@@ -205,7 +246,7 @@ let outputs = vec![
 split("source_dir.vpk", &outputs, &SplitOptions::default())?;
 ```
 
-Also exposes `inspect(path)` (list a VPK's contents) and `detect_conflicts(inputs)` (preview path collisions without writing anything), plus two higher-level layers: `extract_portraits(vpk, hero, out_dir)` for decoding hero art to PNG, and `SoundEvents` (`from_file` / `from_vpk`, `to_json`, `swap_vsnd`, `set_event_field`, `encode`) for reading and editing `.vsndevts_c` files.
+Also exposes `inspect(path)` (list a VPK's contents), `detect_conflicts(inputs)` (preview path collisions without writing anything), and `pack(files, output)` (write loose/generated files into a standalone VPK), plus the higher-level asset layers: `extract_portraits(vpk, hero, out_dir)` for decoding hero art to PNG, `SoundEvents` (`from_file` / `from_vpk`, `to_json`, `swap_vsnd`, `set_event_field`, `encode`) for reading and editing `.vsndevts_c` files, and `export_model` / `export_hero_model` / `inspect_models` (with `AnimOptions`) for turning a `.vmdl_c` into a textured, animated `.glb`.
 
 ## License
 

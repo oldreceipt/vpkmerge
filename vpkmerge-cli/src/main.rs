@@ -13,7 +13,7 @@ use vpkmerge_core::{
     version,
     about = "Combine multiple VPK files into one (or split one into many).",
     long_about = "Combine multiple Valve Pak (VPK) files into one. Built for Deadlock \
-                  modding so players can pre-merge mods and bypass the ~100-mod mount limit.\n\
+                  modding so players can consolidate several mods into a single addon VPK.\n\
                   \n\
                   By default, later inputs win on path collision. Use --strict to refuse to \
                   merge when paths collide.\n\

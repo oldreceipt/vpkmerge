@@ -1,6 +1,6 @@
 # vpkmerge
 
-Combine multiple Valve Pak (`.vpk`) files into one. Built for **Deadlock** modding: the engine caps mounted mod VPKs at roughly 100, so pre-merging lets players run more mods than the engine otherwise allows.
+Combine multiple Valve Pak (`.vpk`) files into one. Built for **Deadlock** modding: pre-merging several mods into one addon VPK consolidates them into a single load slot so a mod manager can resolve order and overrides up front.
 
 Published at https://github.com/Slush97/vpkmerge (MIT).
 
