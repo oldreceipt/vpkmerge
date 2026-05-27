@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.5.0
+
+Adds a Source 2 model exporter. `vpkmerge model export` turns a Deadlock hero `.vmdl_c` (from the base pak or a skin VPK) into a textured, skinned, animated `.glb`, decoded entirely in pure Rust (a faithful port of ValveResourceFormat, no .NET or C runtime). The exported model carries the hero's own animation clips on its own skeleton, so a viewer can play its idle without any cross-hero retargeting. Built for Grimoire's hero/skin preview.
+
+### CLI (`vpkmerge` 0.5)
+
+- New `model` subcommand. `model <vpk>` inspects the compiled models in a VPK (block structure, mesh-part count, embedded geometry, skeleton/physics presence). `model export` writes a `.glb`: choose the source with `--entry <path.vmdl_c>` or `--hero <codename>` (auto-discovers the body model), resolve materials/textures across `--vpk` then `--base <pak01_dir.vpk>`, and write to `--out`. Animation clips are emitted by default; `--clip <name>` (repeatable) exports only the named clip(s) and `--no-anim` drops them. The positional merge invocation and the `split` / `portrait` / `soundevents` subcommands are unchanged.
+
+### Library (`vpkmerge-core` 0.6)
+
+- `export_model`, `export_hero_model`, and `inspect_models` plus `AnimOptions`: open a VPK (and optional base pak), decode a `.vmdl_c` via `morphic`, and write a textured, animated `.glb`, resolving referenced materials/textures across both packages (skin first, base second).
+
+### morphic (0.2)
+
+- New `model` module: a pure-Rust Source 2 `.vmdl_c` decoder and glTF writer. Decodes the skeleton, LOD0 meshes (meshoptimizer vertex/index codecs), per-vertex skin weights, materials (`.vmat_c`) with their `.vtex_c` textures, and the model's own animation clips (`ANIM`/`ASEQ`/`AGRP`: the compressed segment decoders, the 6-byte packed quaternion, half-float vectors), then emits a binary `.glb` (geometry + skin + PBR materials + animation samplers). The KV3 reader gained ZSTD (via `ruzstd`) and the binary-blob section, which the model `ANIM` block uses.
+
 ## v0.4.0
 
 Closes the gap between editing a soundevents file and shipping it: the `soundevents` subcommand can now pack its re-encoded output straight into a standalone addon VPK, so an edited (or generated) loose file can finally enter the merge pipeline. This unblocks Grimoire's per-ability volume/pitch path, where a hero's `.vsndevts_c` is decoded, `--set` on the relevant events, and the result shipped in a consolidated addon VPK at the same entry path.

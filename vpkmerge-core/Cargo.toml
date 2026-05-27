@@ -1,6 +1,6 @@
 [package]
 name = "vpkmerge-core"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Core VPK merging and splitting logic shared by the vpkmerge CLI and GUI."
 license = "MIT"
@@ -18,7 +18,7 @@ tempfile = "3"
 serde_json = { version = "1", features = ["preserve_order"] }
 # Source 2 .vtex_c decoder (same workspace). Used to turn extracted portrait
 # textures into PNGs; covers the uncompressed, embedded-PNG, and BCn formats.
-morphic = { path = "../morphic", version = "0.1.0" }
+morphic = { path = "../morphic", version = "0.2.0" }
 
 [lints]
 workspace = true

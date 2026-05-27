@@ -9,14 +9,14 @@ Published at https://github.com/Slush97/vpkmerge (MIT).
 Rust Cargo workspace:
 
 ```
-vpkmerge-core/        pure-Rust merge engine (lib, v0.3.0)
+vpkmerge-core/        pure-Rust merge engine (lib, v0.6.0)
   src/lib.rs          public API: inspect / detect_conflicts / merge / split
-vpkmerge-cli/         CLI binary `vpkmerge` on top of core (v0.2.0)
+vpkmerge-cli/         CLI binary `vpkmerge` on top of core (v0.5.0)
 gui/
   src/                Vue 3 + Vite + Tailwind 4 frontend
   src-tauri/          Tauri v2 desktop app wrapping the same engine
-morphic/              pure-Rust Source 2 .vtex_c decoder + KV3 codec (lib, v0.0.1)
-  src/                resource / kv3 / texture modules
+morphic/              pure-Rust Source 2 decoder: .vtex_c + KV3 + .vmdl_c->.glb (lib, v0.2.0)
+  src/                resource / kv3 / texture / model modules
   src/kv3/            binary KeyValues3 codec (reader v1..=5 + LZ4, writer v4 uncompressed)
   fixtures/           committed canonical corpus (.vtex_c + .png + .meta.json; kv3/ holds .vsndevts_c)
   tests/golden.rs     diffs morphic's decode against oracle PNGs
