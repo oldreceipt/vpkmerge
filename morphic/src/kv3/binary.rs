@@ -95,11 +95,11 @@ fn read_v5(c: &mut Cursor) -> Result<Value, DecodeError> {
     let _size_uncompressed_total = c.u32()? as usize;
     let _size_compressed_total = c.u32()? as usize;
     let count_blocks = c.u32()? as usize;
-    let _size_binary_blobs = c.u32()? as usize;
+    let size_binary_blobs = c.u32()? as usize;
 
     // version >= 4
     let count_bytes2 = c.u32()? as usize;
-    let _size_block_compressed_sizes = c.u32()? as usize;
+    let size_block_compressed_sizes = c.u32()? as usize;
 
     // version >= 5
     let size_uncompressed_buffer1 = c.u32()? as usize;
@@ -121,11 +121,6 @@ fn read_v5(c: &mut Cursor) -> Result<Value, DecodeError> {
     if compression_method == 1 && compression_frame_size != LZ4_FRAME_SIZE {
         return Err(DecodeError::Kv3("KV3 unexpected LZ4 frame size"));
     }
-    if count_blocks > 0 {
-        // Binary blobs use chained (sliding-dictionary) LZ4 frames; no Deadlock
-        // model/material KV3 block ships one, so this is unimplemented for now.
-        return Err(DecodeError::Kv3("KV3 binary-blob section not supported"));
-    }
 
     let buffer1 = read_block(
         c,
@@ -140,26 +135,10 @@ fn read_v5(c: &mut Cursor) -> Result<Value, DecodeError> {
         size_compressed_buffer2,
     )?;
 
-    // --- Carve buffer 1 (auxiliary): scalar pools, then string table. ---
-    let mut off = 0usize;
-    let r_b1 = carve(&buffer1, &mut off, count_bytes1, 1)?;
-    let r_b2 = carve(&buffer1, &mut off, count_bytes2, 2)?;
-    let r_b4 = carve(&buffer1, &mut off, count_bytes4, 4)?;
-    let r_b8 = carve(&buffer1, &mut off, count_bytes8, 8)?;
-    let mut aux = Buffers {
-        bytes1: r_b1,
-        bytes2: r_b2,
-        bytes4: r_b4,
-        bytes8: r_b8,
-    };
-    if aux.bytes4.remaining() < 4 {
-        return Err(DecodeError::Kv3("KV3 missing string count"));
-    }
-    let count_strings = aux.bytes4.u32()? as usize;
-    let mut strings = Vec::with_capacity(count_strings);
-    for _ in 0..count_strings {
-        strings.push(read_nullterm_utf8(&mut aux.bytes1)?);
-    }
+    let (aux, strings) = carve_aux(
+        &buffer1,
+        [count_bytes1, count_bytes2, count_bytes4, count_bytes8],
+    )?;
 
     // --- Carve buffer 2 (main): object lengths, scalar pools, type stream. ---
     let mut off = count_objects_b2
@@ -173,15 +152,35 @@ fn read_v5(c: &mut Cursor) -> Result<Value, DecodeError> {
     let types = slice_reader(&buffer2, off, count_types)?;
     off += count_types;
 
-    let trailer = read_u32_at(&buffer2, off)?;
-    if trailer != TRAILER {
-        return Err(DecodeError::Kv3("bad KV3 trailer"));
-    }
+    // After the type stream sits either the document trailer (no blobs) or the
+    // binary-blob section: per-blob uncompressed lengths, the trailer, then a
+    // per-frame compressed-size table. The compressed blob frames themselves
+    // follow buffer 2 in the stream (chained LZ4, sliding 16 KB dictionary).
+    let blobs = if count_blocks == 0 {
+        let trailer = read_u32_at(&buffer2, off)?;
+        if trailer != TRAILER {
+            return Err(DecodeError::Kv3("bad KV3 trailer"));
+        }
+        Vec::new()
+    } else {
+        read_binary_blobs(
+            c,
+            &buffer2,
+            &mut off,
+            compression_method,
+            usize::from(compression_frame_size),
+            count_blocks,
+            size_binary_blobs,
+            size_block_compressed_sizes,
+        )?
+    };
 
     let mut ctx = Context {
         types,
         object_lengths,
         strings,
+        blobs,
+        next_blob: 0,
         buffer: Buffers {
             bytes1: m_b1,
             bytes2: m_b2,
@@ -200,6 +199,28 @@ fn read_v5(c: &mut Cursor) -> Result<Value, DecodeError> {
         return Err(DecodeError::Kv3("KV3 type stream not fully consumed"));
     }
     Ok(root)
+}
+
+/// Carves buffer 1 (auxiliary): its four scalar pools (counts in `[b1,b2,b4,b8]`
+/// order), then the string table whose count leads the `bytes4` pool and whose
+/// null-terminated entries fill the `bytes1` pool.
+fn carve_aux(buffer1: &[u8], counts: [usize; 4]) -> Result<(Buffers, Vec<String>), DecodeError> {
+    let mut off = 0usize;
+    let mut aux = Buffers {
+        bytes1: carve(buffer1, &mut off, counts[0], 1)?,
+        bytes2: carve(buffer1, &mut off, counts[1], 2)?,
+        bytes4: carve(buffer1, &mut off, counts[2], 4)?,
+        bytes8: carve(buffer1, &mut off, counts[3], 8)?,
+    };
+    if aux.bytes4.remaining() < 4 {
+        return Err(DecodeError::Kv3("KV3 missing string count"));
+    }
+    let count_strings = aux.bytes4.u32()? as usize;
+    let mut strings = Vec::with_capacity(count_strings);
+    for _ in 0..count_strings {
+        strings.push(read_nullterm_utf8(&mut aux.bytes1)?);
+    }
+    Ok((aux, strings))
 }
 
 /// Reads one payload buffer from the stream and returns it uncompressed.
@@ -221,9 +242,125 @@ fn read_block(
             }
             Ok(out)
         }
-        2 => Err(DecodeError::Kv3("KV3 ZSTD compression not supported")),
+        2 => {
+            let input = c.take(size_compressed)?;
+            zstd_decompress(input, size_uncompressed)
+        }
         _ => Err(DecodeError::Kv3("unknown KV3 compression method")),
     }
+}
+
+/// Decompresses a single ZSTD frame (pure-Rust, via `ruzstd`) to a known output
+/// length. Used for KV3 v5 ZSTD buffers and the blob region (larger blocks like
+/// the model `ANIM` choose ZSTD over LZ4).
+fn zstd_decompress(input: &[u8], size_uncompressed: usize) -> Result<Vec<u8>, DecodeError> {
+    use std::io::Read;
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(input)
+        .map_err(|_| DecodeError::Kv3("KV3 ZSTD init failed"))?;
+    let mut out = vec![0u8; size_uncompressed];
+    dec.read_exact(&mut out)
+        .map_err(|_| DecodeError::Kv3("KV3 ZSTD decompress failed"))?;
+    Ok(out)
+}
+
+/// Reads the v5 binary-blob section. `off` points just past the type stream in
+/// the decompressed `buffer2`, which holds the per-blob uncompressed lengths,
+/// the trailer, then the per-frame compressed-size table. The compressed frames
+/// follow buffer 2 in the stream `c`. Returns each blob in document order.
+/// Port of `BinaryKV3` v5 blob handling.
+#[allow(clippy::too_many_arguments)]
+fn read_binary_blobs(
+    c: &mut Cursor,
+    buffer2: &[u8],
+    off: &mut usize,
+    method: u32,
+    frame_size: usize,
+    count_blocks: usize,
+    size_blobs: usize,
+    size_block_compressed_sizes: usize,
+) -> Result<Vec<Vec<u8>>, DecodeError> {
+    // Per-blob uncompressed lengths (i32 each), then the document trailer.
+    let lengths_len = count_blocks
+        .checked_mul(4)
+        .ok_or(DecodeError::Kv3("KV3 blob length table overflow"))?;
+    let lengths_region = slice_at(buffer2, *off, lengths_len)?;
+    *off += lengths_len;
+    let lengths: Vec<usize> = lengths_region
+        .chunks_exact(4)
+        .map(|b| {
+            usize::try_from(i32::from_le_bytes(b.try_into().unwrap()))
+                .map_err(|_| DecodeError::Kv3("negative KV3 blob length"))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let trailer = read_u32_at(buffer2, *off)?;
+    if trailer != TRAILER {
+        return Err(DecodeError::Kv3("bad KV3 trailer"));
+    }
+    *off += 4;
+
+    // Decompress the whole blob region into one buffer, then carve per blob.
+    let blob_buf = match method {
+        0 => c.take(size_blobs)?.to_vec(),
+        1 => {
+            let frame_sizes = slice_at(buffer2, *off, size_block_compressed_sizes)?;
+            decompress_blob_frames(c, frame_sizes, frame_size, size_blobs)?
+        }
+        // v5 ZSTD stores the blob region as a single frame after buffer 2 (no
+        // per-frame size table), so it is the remainder of the block stream.
+        2 => zstd_decompress(c.rest(), size_blobs)?,
+        _ => return Err(DecodeError::Kv3("KV3 blob compression not supported")),
+    };
+
+    let mut blobs = Vec::with_capacity(count_blocks);
+    let mut p = 0usize;
+    for len in lengths {
+        let end = p
+            .checked_add(len)
+            .ok_or(DecodeError::Kv3("KV3 blob slice overflow"))?;
+        if end > blob_buf.len() {
+            return Err(DecodeError::Kv3("KV3 blob region underrun"));
+        }
+        blobs.push(blob_buf[p..end].to_vec());
+        p = end;
+    }
+    Ok(blobs)
+}
+
+/// Decompresses the chained-LZ4 blob frames. Each frame decodes against all
+/// previously decoded blob bytes as its dictionary (LZ4 match offsets reach back
+/// at most 64 KB, so the full prior output is a safe superset of the 16 KB ring
+/// the writer used). `frame_sizes` is the `u16` compressed-size-per-frame table.
+fn decompress_blob_frames(
+    c: &mut Cursor,
+    frame_sizes: &[u8],
+    frame_size: usize,
+    size_blobs: usize,
+) -> Result<Vec<u8>, DecodeError> {
+    if frame_size == 0 {
+        return Err(DecodeError::Kv3("KV3 zero blob frame size"));
+    }
+    let mut out = vec![0u8; size_blobs];
+    let mut decompressed = 0usize;
+    for fs in frame_sizes.chunks_exact(2) {
+        if decompressed >= size_blobs {
+            break;
+        }
+        let compressed_len = usize::from(u16::from_le_bytes([fs[0], fs[1]]));
+        let want = frame_size.min(size_blobs - decompressed);
+        let input = c.take(compressed_len)?;
+        let (dict, rest) = out.split_at_mut(decompressed);
+        let written = lz4_flex::block::decompress_into_with_dict(input, &mut rest[..want], dict)
+            .map_err(|_| DecodeError::Kv3("KV3 blob LZ4 decompress failed"))?;
+        if written != want {
+            return Err(DecodeError::Kv3("KV3 blob LZ4 frame size mismatch"));
+        }
+        decompressed += written;
+    }
+    if decompressed != size_blobs {
+        return Err(DecodeError::Kv3("KV3 blob size mismatch"));
+    }
+    Ok(out)
 }
 
 /// Per-buffer scalar pools. Reads of a given width draw from the matching pool.
@@ -238,6 +375,9 @@ struct Context {
     types: Reader,
     object_lengths: Reader,
     strings: Vec<String>,
+    /// Binary blobs in document order; each `BINARY_BLOB` node consumes the next.
+    blobs: Vec<Vec<u8>>,
+    next_blob: usize,
     buffer: Buffers,
     aux: Buffers,
 }
@@ -340,7 +480,15 @@ fn read_value(ctx: &mut Context, datatype: u8) -> Result<Value, DecodeError> {
             Ok(Value::Object(map))
         }
 
-        tag::BINARY_BLOB => Err(DecodeError::Kv3("KV3 BINARY_BLOB without block section")),
+        tag::BINARY_BLOB => {
+            let blob = ctx
+                .blobs
+                .get_mut(ctx.next_blob)
+                .map(std::mem::take)
+                .ok_or(DecodeError::Kv3("KV3 blob index out of range"))?;
+            ctx.next_blob += 1;
+            Ok(Value::Binary(blob))
+        }
         _ => Err(DecodeError::Kv3("unknown KV3 node type")),
     }
 }
@@ -406,6 +554,18 @@ fn slice_reader(buf: &[u8], start: usize, len: usize) -> Result<Reader, DecodeEr
     Ok(Reader::new(buf[start..end].to_vec()))
 }
 
+/// Borrows `buf[start..start+len]`, erroring on overflow/overrun.
+fn slice_at(buf: &[u8], start: usize, len: usize) -> Result<&[u8], DecodeError> {
+    let end = start
+        .checked_add(len)
+        .ok_or(DecodeError::Kv3("KV3 slice overflow"))?;
+    buf.get(start..end).ok_or(DecodeError::Truncated {
+        offset: start as u64,
+        needed: len,
+        had: buf.len().saturating_sub(start),
+    })
+}
+
 fn read_u32_at(buf: &[u8], at: usize) -> Result<u32, DecodeError> {
     let end = at
         .checked_add(4)
@@ -448,6 +608,12 @@ impl<'a> Cursor<'a> {
         let s = &self.data[self.pos..end];
         self.pos = end;
         Ok(s)
+    }
+
+    /// The unread remainder of the stream (the trailing ZSTD blob frame sits
+    /// here, after both compressed buffers).
+    fn rest(&self) -> &'a [u8] {
+        &self.data[self.pos..]
     }
 
     fn u16(&mut self) -> Result<u16, DecodeError> {

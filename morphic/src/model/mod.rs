@@ -12,6 +12,7 @@
 //! weights remapped onto the model skeleton. Materials/textures (M4) and the
 //! `.glb` writer (M5) build on the [`Model`] this returns.
 
+mod animation;
 mod dxgi;
 mod glb;
 mod math;
@@ -22,6 +23,7 @@ mod vbib;
 #[cfg(test)]
 mod tests;
 
+pub use animation::{BoneTrack, Clip};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};
@@ -39,11 +41,13 @@ pub struct Aabb {
     pub max: [f32; 3],
 }
 
-/// A fully decoded model: the skin skeleton plus the LOD0 meshes.
+/// A fully decoded model: the skin skeleton, the LOD0 meshes, and the model's
+/// own animation clips (empty when the model carries no `ANIM`/`AGRP` blocks).
 #[derive(Debug, Clone)]
 pub struct Model {
     pub skeleton: Skeleton,
     pub meshes: Vec<MeshPart>,
+    pub animations: Vec<Clip>,
 }
 
 impl Model {
@@ -148,7 +152,15 @@ pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
         meshes.push(mesh::assemble(em, &resource, remap.as_deref())?);
     }
 
-    Ok(Model { skeleton, meshes })
+    // Best-effort: a model whose animation blocks fail to decode still exports
+    // its static mesh (mirrors the texture path's tolerance of bad slots).
+    let animations = animation::decode_all(&resource, &skeleton).unwrap_or_default();
+
+    Ok(Model {
+        skeleton,
+        meshes,
+        animations,
+    })
 }
 
 /// Parses just the model skeleton from a `.vmdl_c`. Cheap relative to [`decode`]

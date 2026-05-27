@@ -8,6 +8,28 @@ use std::path::Path;
 
 pub use morphic::model::{BlockSummary, ModelInfo};
 
+/// Animation-clip selection for model export. By default every clip the model
+/// carries is exported; these narrow that.
+#[derive(Debug, Clone, Default)]
+pub struct AnimOptions {
+    /// Drop all animation clips (export the static mesh + skeleton only).
+    pub no_anim: bool,
+    /// When non-empty, keep only clips whose name appears here. Ignored if
+    /// [`AnimOptions::no_anim`] is set (no-anim wins).
+    pub clips: Vec<String>,
+}
+
+impl AnimOptions {
+    /// Applies the selection to a decoded model's clip list in place.
+    fn apply(&self, clips: &mut Vec<morphic::model::Clip>) {
+        if self.no_anim {
+            clips.clear();
+        } else if !self.clips.is_empty() {
+            clips.retain(|c| self.clips.iter().any(|w| w == &c.name));
+        }
+    }
+}
+
 /// Resolves compiled resource paths (`.vmat_c`, `.vtex_c`) across the open VPKs
 /// in order: the skin VPK first, then the base `pak01_dir.vpk`. Skins embed
 /// their geometry but reference materials/textures that may live in the base
@@ -41,13 +63,14 @@ pub fn export_model(
     vpk: impl AsRef<Path>,
     entry: &str,
     base: Option<&Path>,
+    anim: &AnimOptions,
     out: impl AsRef<Path>,
 ) -> Result<()> {
     let vpks = open_vpks(vpk.as_ref(), base)?;
     if read_entry(&vpks, entry).is_none() {
         anyhow::bail!("model entry {entry} not found in the given VPK(s)");
     }
-    export_resolved(vpks, entry, out.as_ref())
+    export_resolved(vpks, entry, anim, out.as_ref())
 }
 
 /// Like [`export_model`] but discovers the hero's body model by codename instead
@@ -60,13 +83,14 @@ pub fn export_hero_model(
     vpk: impl AsRef<Path>,
     codename: &str,
     base: Option<&Path>,
+    anim: &AnimOptions,
     out: impl AsRef<Path>,
 ) -> Result<()> {
     let vpks = open_vpks(vpk.as_ref(), base)?;
     let entry = discover_hero_entry(&vpks, codename).with_context(|| {
         format!("no body model (`<dir>/{codename}.vmdl_c` under models/heroes*) found in the given VPK(s)")
     })?;
-    export_resolved(vpks, &entry, out.as_ref())
+    export_resolved(vpks, &entry, anim, out.as_ref())
 }
 
 /// Opens the VPKs in resolution priority order: `vpk` first (a skin's overrides
@@ -82,10 +106,16 @@ fn open_vpks(vpk: &Path, base: Option<&Path>) -> Result<Vec<valve_pak::VPK>> {
 
 /// Reads `entry`, decodes it, textures it via the cross-VPK resolver, and writes
 /// the `.glb`. Consumes `vpks` (they move into the resolver).
-fn export_resolved(vpks: Vec<valve_pak::VPK>, entry: &str, out: &Path) -> Result<()> {
+fn export_resolved(
+    vpks: Vec<valve_pak::VPK>,
+    entry: &str,
+    anim: &AnimOptions,
+    out: &Path,
+) -> Result<()> {
     let bytes =
         read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
-    let model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
+    let mut model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
+    anim.apply(&mut model.animations);
 
     let resolver = VpkResolver { vpks };
     let glb = morphic::model::to_glb_textured(&model, &resolver)

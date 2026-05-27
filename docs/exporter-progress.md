@@ -1,11 +1,12 @@
 # `.vmdl_c -> .glb` exporter: progress + continuation brief
 
-Live handoff state for the model exporter work. Status: **M1..M6 COMPLETE**. The
+Live handoff state for the model exporter work. Status: **M1..M7 COMPLETE**. The
 exporter is done: `vpkmerge model export` turns a `.vmdl_c` (base or skin VPK)
-into a textured, skinned `.glb`. Remaining work is Grimoire-side only (wire the
-IPC that runs the exporter on an installed skin + load the `.glb` in the Locker;
-confirm it accepts the bundled `hornet_idle.glb` clips retargeted by bone name
-in three.js). Scope
+into a textured, skinned, **animated** `.glb` (the hero's own clips, by default
+all of them; `--clip <name>` / `--no-anim` narrow it). Remaining work is
+Grimoire-side only (wire the IPC that runs the exporter on an installed skin +
+load the `.glb` in the Locker; now that each hero GLB carries its own clips,
+drop the cross-hero retarget assumption in `HeroModelViewer.tsx`). Scope
 authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this file
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
@@ -30,12 +31,14 @@ em-dashes anywhere** (code, comments, commit messages, replies).
 | `18d2f39` | M5a | GLB writer (`morphic/src/model/glb.rs`): geometry + skeleton + skin, untextured. Round-trips through the `gltf` reader. |
 | `47ef9ef` | M5b | Textured GLB (`to_glb_textured` + `FileResolver`): base color / normal / roughness / occlusion / emissive. Confirmed fully textured in Blender. |
 | `9ef786f` | M6 | `model export` CLI + `vpkmerge-core::export_model` (cross-VPK resolver) + refreshed bundled binary. |
+| (this) | M7 | Animation (clip) export: `ANIM`/`ASEQ`/`AGRP` decode (`morphic/src/model/animation.rs`) + glTF clip emit (`glb.rs`) + `--clip`/`--no-anim`. Validated vs oracle `anim-meta` golden (276 clips + sampled keyframes). |
 
 Remaining: Grimoire-side integration only (separate repo): an IPC that runs
 `vpkmerge model export` on the installed skin VPK and loads the `.glb` in the
-Locker, and confirming the skeleton retargets the shared `hornet_idle.glb` clips
-by bone name in three.js. `heroModels.ts` / `HeroModelViewer.tsx` already exist
-as the home for that.
+Locker. Each hero GLB now ships its own clips (no cross-hero retarget), so
+`HeroModelViewer.tsx` should load per-hero clips directly. The bundled
+`grimoire/public/models/*.glb` example assets can be re-exported from correct
+in-game models with this exporter.
 
 - M6 detail: `vpkmerge model export --vpk <vpk> --entry <path.vmdl_c> [--base
   <pak01_dir.vpk>] --out <file.glb>`. The bare `vpkmerge model <vpk>` inspect
@@ -47,6 +50,25 @@ as the home for that.
   + copy the `.exe` target when packaging for Windows (not done here).
   Validated: exports both the base hornet (from pak01) and the bunnysuit skin
   VPK to fully-textured `.glb` (eyeballed in Blender).
+
+- M7 detail (animation): `morphic/src/model/animation.rs` is a verbatim port of
+  VRF `ResourceTypes/ModelAnimation` (`Animation`, `AnimationDataChannel`,
+  `AnimationSegmentDecoder`, `Frame`, `SegmentHelpers`, the 10
+  `CCompressed*` segment decoders incl. the 6-byte packed quaternion and the
+  half-float anim/delta vectors). `model::decode` now fills `Model.animations:
+  Vec<Clip>` (best-effort; a model with no `ANIM` block exports statically). The
+  decode-key channels map onto the model `DATA` skeleton **by bone name** (the
+  AGRP `m_boneArray` is not needed), so a clip drives that hero's own bind pose
+  with no retargeting. `glb.rs::add_animations` emits one glTF animation per clip
+  (sampler per animated bone+channel, time = `frame/fps`, raw Source local space
+  like the bind-pose nodes; `--clip`/`--no-anim` filter in `vpkmerge-core`). The
+  expected clip set comes from `ASEQ` (sequence names) plus leftover `ANIM`
+  anims, matching VRF's `GltfModelExporter`. Per-hero own-animations replaced the
+  dead cross-hero retarget plan (heroes do not share a skeleton: hornet 62 bones,
+  bookworm 164). Validated vs oracle `anim-meta`: 276 clips (names + fps +
+  frame_count + looping exact) and sampled per-bone keyframes within 2e-3
+  (gated `tests/anim_local.rs`); CI smoke test round-trips a synthetic clip.
+  `glb_viewer` loads `(skin: true, N animation(s))` and plays the idle.
 
 - M5b detail: `to_glb_textured(&Model, &dyn FileResolver) -> Vec<u8>`. The caller
   implements `FileResolver` (compiled path -> bytes; skin VPK first, base pak
@@ -113,9 +135,11 @@ as the home for that.
   the old brief quoted), 426927 indices, 7 materials. `gun` carries BLENDINDICES
   but no BLENDWEIGHT (VRF defaults weights at GLB-write time; replicate in M5).
 
-- M1 detail: ported from VRF `BinaryKV3.cs` KV3_V5 path; LZ4 via `lz4_flex`;
-  `parse()` is crate-private. v1-v4 / ZSTD / binary-blob sections return errors
-  (not needed: every hornet KV3 block is v5).
+- M1 detail: ported from VRF `BinaryKV3.cs` KV3_V5 path; `parse()` is
+  crate-private. LZ4 via `lz4_flex`. v1-v4 return errors (not needed: every
+  hornet KV3 block is v5). ZSTD (via pure-Rust `ruzstd`) + the binary-blob
+  section (chained-LZ4 or single ZSTD frame) were added in M7: the `ANIM` block
+  is ZSTD and carries its segment buffers as KV3 binary blobs.
 - M2 detail: `decode_vertex_buffer` / `decode_index_buffer`, scalar ports of
   zeux/VRF. Pure-Rust on purpose (no C toolchain). Oracle `mesh-buffers` added.
 
@@ -194,9 +218,11 @@ Note for M4/M5 (carry forward):
 - Oracle subcommands: `model --vpk --entry [--base] --out`,
   `kv3-dump --vpk --entry --block FOURCC [--nth N] --out [--raw]`,
   `mesh-buffers --vpk --entry --out-dir`, `model-meta --vpk --entry --out`
-  (compact M3 golden), `material-meta --vpk --entry --out` (M4 golden). Justfile:
-  `just model-golden <entry> <out>`, `just kv3-goldens` (now also dumps `CTRL`),
-  `just mesh-buffers`, `just model-meta`, `just material-meta`.
+  (compact M3 golden), `material-meta --vpk --entry --out` (M4 golden),
+  `anim-meta --vpk --entry --out` (M7 golden: clip list + sampled keyframes).
+  Justfile: `just model-golden <entry> <out>`, `just kv3-goldens` (now also dumps
+  `CTRL`), `just mesh-buffers`, `just model-meta`, `just material-meta`,
+  `just anim-meta`.
 - Test data: entry `models/heroes_staging/hornet_v3/hornet.vmdl_c` in
   `~/.local/share/Steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk`
   (archive parts `_000.._019` present). Regenerate the golden GLB to
@@ -246,9 +272,15 @@ C build deps).
   -> `PbrSlots`, `alpha_mode()`, `alpha_cutoff()`, `texture(slot)`.
 - `model::to_glb(&Model) -> Result<Vec<u8>, DecodeError>` (M5a, untextured) and
   `model::to_glb_textured(&Model, &dyn model::FileResolver)` (M5b, textured).
-  `FileResolver::resolve(compiled_path) -> Option<Vec<u8>>` is the caller's VPK
-  I/O hook. `math.rs` has `Mat4::from_scale` + `Quat::from_yaw_pitch_roll`;
-  `MeshPart::bone_weight_count` is stored for default weights.
+  Both emit the model's animation clips (M7). `FileResolver::resolve(compiled_path)
+  -> Option<Vec<u8>>` is the caller's VPK I/O hook. `math.rs` has
+  `Mat4::from_scale` + `Quat::from_yaw_pitch_roll`; `MeshPart::bone_weight_count`
+  is stored for default weights.
+- `Model { skeleton, meshes, animations }` (M7 added `animations: Vec<Clip>`).
+  `Clip { name, fps, frame_count, looping, tracks: Vec<BoneTrack> }`;
+  `BoneTrack { bone, translations, rotations, scales }` (each `Option<Vec<_>>`,
+  length `frame_count`). `vpkmerge-core::AnimOptions { no_anim, clips }` filters
+  the clip list before `to_glb_textured` (CLI `--no-anim` / `--clip <name>`).
 - M6 orchestration sketch: `vpkmerge-core` opens the skin VPK (+ base pak), reads
   the entry, calls `model::decode`, then `to_glb_textured` with a `FileResolver`
   that tries the skin VPK then base. Mirror the cross-VPK pattern in the gated

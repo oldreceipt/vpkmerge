@@ -11,6 +11,19 @@ pub struct Vec3 {
     pub z: f32,
 }
 
+impl std::ops::Add for Vec3 {
+    type Output = Vec3;
+    /// Component-wise sum. Used by the delta-compressed Vector3 decoder
+    /// (`base + half-precision delta`), matching VRF's `Vector3 + Half3`.
+    fn add(self, rhs: Vec3) -> Vec3 {
+        Vec3 {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Quat {
     pub x: f32,

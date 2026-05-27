@@ -23,6 +23,7 @@ using ValveResourceFormat;
 using ValveResourceFormat.Blocks;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.ResourceTypes;
+using ValveResourceFormat.ResourceTypes.ModelAnimation;
 using ValveResourceFormat.Serialization.KeyValues;
 
 namespace MorphicOracle;
@@ -54,6 +55,7 @@ internal static class Program
                 "kv3-dump" => Kv3Dump(args[1..]),
                 "mesh-buffers" => MeshBuffers(args[1..]),
                 "model-meta" => ModelMeta(args[1..]),
+                "anim-meta" => AnimMeta(args[1..]),
                 "material-meta" => MaterialMeta(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
@@ -793,6 +795,128 @@ internal static class Program
     private static float[] Finite(float[] v) =>
         float.IsFinite(v[0]) ? v : new float[] { 0f, 0f, 0f };
 
+    // ---------- anim-meta (animation-decode validation) ----------
+
+    // Dumps the model's embedded animation clips (VRF's GetEmbeddedAnimations,
+    // the same set GltfModelExporter writes) as the golden the morphic animation
+    // decoder diffs against: per-clip name/fps/frame_count/looping, plus a few
+    // sampled per-bone keyframe values decoded in raw Source space. The raw
+    // ANIM/AGRP/ASEQ blocks are NOT committed (multi-MB); the gated Rust test
+    // reads them live from the pak. Small JSON; committed.
+    private static int AnimMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"anim-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("anim-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Model model)
+        {
+            return Fail("anim-meta: resource is not a model");
+        }
+
+        var skeleton = model.Skeleton;
+        var flex = model.FlexControllers;
+        // The clips morphic emits to the glb: frame_count >= 1, ordered by name.
+        var anims = model.GetEmbeddedAnimations()
+            .Where(a => a.FrameCount >= 1)
+            .OrderBy(a => a.Name, StringComparer.Ordinal)
+            .ToList();
+        var byName = anims.GroupBy(a => a.Name).ToDictionary(g => g.Key, g => g.First());
+
+        var clips = anims.Select(a => new ClipMeta_t
+        {
+            Name = a.Name,
+            Fps = a.Fps,
+            FrameCount = a.FrameCount,
+            Looping = a.IsLooping,
+        }).ToArray();
+
+        // Probe a spread of (clip, bone, channel) on a real idle + UI/loadout
+        // poses, sampling start / middle / last frame, to validate the position,
+        // angle (packed-quaternion), and scale decoders end-to-end.
+        var probes = new (string Clip, string Bone, string Channel)[]
+        {
+            ("primary_stand_idle", "pelvis", "rotation"),
+            ("primary_stand_idle", "pelvis", "translation"),
+            ("primary_stand_idle", "spine_0", "rotation"),
+            ("idle_loadout", "pelvis", "rotation"),
+            ("ui_hero_select", "pelvis", "rotation"),
+        };
+
+        var samples = new List<SampleMeta_t>();
+        foreach (var (clipName, boneName, channel) in probes)
+        {
+            if (!byName.TryGetValue(clipName, out var anim))
+            {
+                continue;
+            }
+            var boneIdx = Array.FindIndex(skeleton.Bones, b => b.Name == boneName);
+            if (boneIdx < 0)
+            {
+                continue;
+            }
+            var last = anim.FrameCount - 1;
+            foreach (var frame in new[] { 0, anim.FrameCount / 2, last }.Distinct())
+            {
+                var f = new Frame(skeleton, flex) { FrameIndex = frame };
+                anim.DecodeFrame(f);
+                var bone = f.Bones[boneIdx];
+                var value = channel switch
+                {
+                    "translation" => new[] { bone.Position.X, bone.Position.Y, bone.Position.Z },
+                    "rotation" => new[] { bone.Angle.X, bone.Angle.Y, bone.Angle.Z, bone.Angle.W },
+                    "scale" => new[] { bone.Scale },
+                    _ => Array.Empty<float>(),
+                };
+                samples.Add(new SampleMeta_t
+                {
+                    Clip = clipName,
+                    Bone = boneName,
+                    Channel = channel,
+                    Frame = frame,
+                    Value = value,
+                });
+            }
+        }
+
+        var meta = new AnimMeta_t
+        {
+            ClipCount = clips.Length,
+            Clips = clips,
+            Samples = samples.ToArray(),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote anim meta for {entry} -> {outFull}");
+        Console.WriteLine($"  clips={meta.ClipCount} samples={meta.Samples.Length}");
+        return 0;
+    }
+
     // ---------- material-meta (M4 validation) ----------
 
     // Dumps a compiled material's shader name + parameter tables (as VRF's
@@ -923,6 +1047,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
         Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
         Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle anim-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle material-meta --vpk PATH --entry NAME --out JSON");
         return 0;
     }
@@ -1040,5 +1165,30 @@ internal static class Program
         [JsonPropertyName("float_params")]   public IDictionary<string, double> FloatParams { get; init; } = new Dictionary<string, double>();
         [JsonPropertyName("vector_params")]  public IDictionary<string, float[]> VectorParams { get; init; } = new Dictionary<string, float[]>();
         [JsonPropertyName("vrf_version")]    public string VrfVersion { get; init; } = "";
+    }
+
+    private sealed class AnimMeta_t
+    {
+        [JsonPropertyName("clip_count")]  public int ClipCount { get; init; }
+        [JsonPropertyName("clips")]       public ClipMeta_t[] Clips { get; init; } = Array.Empty<ClipMeta_t>();
+        [JsonPropertyName("samples")]     public SampleMeta_t[] Samples { get; init; } = Array.Empty<SampleMeta_t>();
+        [JsonPropertyName("vrf_version")] public string VrfVersion { get; init; } = "";
+    }
+
+    private sealed class ClipMeta_t
+    {
+        [JsonPropertyName("name")]        public string Name { get; init; } = "";
+        [JsonPropertyName("fps")]         public float Fps { get; init; }
+        [JsonPropertyName("frame_count")] public int FrameCount { get; init; }
+        [JsonPropertyName("looping")]     public bool Looping { get; init; }
+    }
+
+    private sealed class SampleMeta_t
+    {
+        [JsonPropertyName("clip")]    public string Clip { get; init; } = "";
+        [JsonPropertyName("bone")]    public string Bone { get; init; } = "";
+        [JsonPropertyName("channel")] public string Channel { get; init; } = "";
+        [JsonPropertyName("frame")]   public int Frame { get; init; }
+        [JsonPropertyName("value")]   public float[] Value { get; init; } = Array.Empty<float>();
     }
 }

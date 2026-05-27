@@ -60,6 +60,17 @@ model-meta:
       --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
       --out ../../morphic/fixtures/kv3/hornet_model_meta.json
 
+# Re-bless the anim-meta golden (per-clip name/fps/frame_count/looping plus a few
+# sampled per-bone keyframe values) the animation decoder diffs against. Small
+# JSON; committed. The raw ANIM/ASEQ/AGRP buffers are NOT committed (~16 MB); the
+# keyframe-correctness test reads them live and is gated on MORPHIC_MODEL_VPK.
+# Re-run after a game update changes the animation schema; diff before committing.
+anim-meta:
+    cd tools/morphic-oracle && dotnet run -- anim-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out ../../morphic/fixtures/kv3/hornet_anim_meta.json
+
 # Re-bless the material golden (shader + parameter tables) the M4 material parser
 # diffs against. Re-extracts the .vmat_c fixture too. Small; committed.
 material-meta:

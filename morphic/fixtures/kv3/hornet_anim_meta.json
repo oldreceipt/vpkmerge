@@ -1,0 +1,1841 @@
+{
+  "clip_count": 276,
+  "clips": [
+    {
+      "name": "RopeClimb_Aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "RopeClimb_Down",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "RopeClimb_Idle",
+      "fps": 30,
+      "frame_count": 5,
+      "looping": true
+    },
+    {
+      "name": "RopeClimb_Idle_settle",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "RopeClimb_Shoot",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "RopeClimb_Up",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": true
+    },
+    {
+      "name": "RopeClimb_Up_0",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": true
+    },
+    {
+      "name": "RopeClimb_Up_256",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": true
+    },
+    {
+      "name": "RopeClimb_Up_433",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": true
+    },
+    {
+      "name": "WallAttach_forward",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "WallAttach_left",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "WallAttach_right",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "ability_generic_cast",
+      "fps": 30,
+      "frame_count": 23,
+      "looping": false
+    },
+    {
+      "name": "air_melee_in_air_loop",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": true
+    },
+    {
+      "name": "air_melee_intro",
+      "fps": 30,
+      "frame_count": 28,
+      "looping": false
+    },
+    {
+      "name": "air_melee_land",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "ar_run_center",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "ar_walk_e",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_n",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_ne",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_nw",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_s",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_se",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_sw",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "ar_walk_w",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": true
+    },
+    {
+      "name": "assassinate_charge_reload",
+      "fps": 30,
+      "frame_count": 49,
+      "looping": false
+    },
+    {
+      "name": "bindpose",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": true
+    },
+    {
+      "name": "crouching_stunned",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "flinch_melee_left_add",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "flinch_melee_mid_add",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "flinch_melee_right_add",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "generic_cast_channeling_end",
+      "fps": 30,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "generic_cast_channeling_loop",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "generic_cast_channeling_start",
+      "fps": 30,
+      "frame_count": 6,
+      "looping": false
+    },
+    {
+      "name": "generic_cast_end",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "generic_cast_loop",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "generic_cast_start",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly",
+      "fps": 30,
+      "frame_count": 41,
+      "looping": true
+    },
+    {
+      "name": "hornet_fly_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_hover_overlay",
+      "fps": 30,
+      "frame_count": 61,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_center",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_e",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_n",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_ne",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_nw",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_s",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_se",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_sw",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_lean_w",
+      "fps": 30,
+      "frame_count": 20,
+      "looping": false
+    },
+    {
+      "name": "hornet_fly_start_overlay",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "hornet_jump_into_fly_start",
+      "fps": 10,
+      "frame_count": 33,
+      "looping": false
+    },
+    {
+      "name": "hornet_jump_into_fly_start_loop_end",
+      "fps": 30,
+      "frame_count": 17,
+      "looping": false
+    },
+    {
+      "name": "idle_loadout",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "in_air_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "in_air_stun_intro",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "in_air_stun_loop",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": true
+    },
+    {
+      "name": "item_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "item_crouch_idle",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_center",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_e",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_n",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_ne",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_nw",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_s",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_se",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_sw",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_crouch_walk_w",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "item_run_center",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_e",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_center",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_e",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_n",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_ne",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_nw",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_s",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_se",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_sw",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_fast_w",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_n",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_ne",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_nw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_s",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_se",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_sw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_run_w",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "item_stand_idle",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": true
+    },
+    {
+      "name": "item_throw",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "jump_in_air_loop",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": true
+    },
+    {
+      "name": "jump_in_air_transition",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": false
+    },
+    {
+      "name": "jump_landing",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "jump_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "knockdown_large",
+      "fps": 30,
+      "frame_count": 41,
+      "looping": false
+    },
+    {
+      "name": "knockdown_large_get_up",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "knockdown_large_loop_on_ground",
+      "fps": 30,
+      "frame_count": 26,
+      "looping": true
+    },
+    {
+      "name": "ladder_climb_down",
+      "fps": 30,
+      "frame_count": 15,
+      "looping": false
+    },
+    {
+      "name": "ladder_climb_up",
+      "fps": 30,
+      "frame_count": 15,
+      "looping": false
+    },
+    {
+      "name": "ladder_slide_down",
+      "fps": 30,
+      "frame_count": 37,
+      "looping": false
+    },
+    {
+      "name": "leap_forward",
+      "fps": 30,
+      "frame_count": 45,
+      "looping": false
+    },
+    {
+      "name": "lift",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_center",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_e",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_n",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_ne",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_nw",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_s",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_se",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_sw",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "loco_lean_w",
+      "fps": 30,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_one",
+      "fps": 40,
+      "frame_count": 29,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_one_recover",
+      "fps": 30,
+      "frame_count": 17,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_one_start",
+      "fps": 30,
+      "frame_count": 27,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_three",
+      "fps": 30,
+      "frame_count": 36,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_three_recover",
+      "fps": 24,
+      "frame_count": 12,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_three_start",
+      "fps": 24,
+      "frame_count": 27,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_two",
+      "fps": 30,
+      "frame_count": 30,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_two_recover",
+      "fps": 24,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "melee_combo_hit_two_start",
+      "fps": 24,
+      "frame_count": 14,
+      "looping": false
+    },
+    {
+      "name": "melee_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_in_air_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_in_air_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_in_air_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "melee_dwn_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "melee_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_in_air_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_in_air_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_in_air_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "melee_quick_1",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "melee_quick_2",
+      "fps": 30,
+      "frame_count": 17,
+      "looping": false
+    },
+    {
+      "name": "melee_slide_kick_dash",
+      "fps": 30,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_slide_kick_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_slide_kick_start",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "melee_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "melee_up_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_up_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_up_in_air_dash",
+      "fps": 20,
+      "frame_count": 8,
+      "looping": false
+    },
+    {
+      "name": "melee_up_in_air_hit",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "melee_up_in_air_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "melee_up_start",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "null_add",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": true
+    },
+    {
+      "name": "parry_to_idle",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": true
+    },
+    {
+      "name": "parry_to_success",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "pose_retarget_ASTRO",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "pose_retarget_GENMAN_2handed",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "primary_airdash",
+      "fps": 30,
+      "frame_count": 51,
+      "looping": false
+    },
+    {
+      "name": "primary_airdash_bkward",
+      "fps": 30,
+      "frame_count": 51,
+      "looping": false
+    },
+    {
+      "name": "primary_airdash_left",
+      "fps": 30,
+      "frame_count": 51,
+      "looping": false
+    },
+    {
+      "name": "primary_airdash_old",
+      "fps": 30,
+      "frame_count": 2,
+      "looping": false
+    },
+    {
+      "name": "primary_airdash_right",
+      "fps": 30,
+      "frame_count": 51,
+      "looping": false
+    },
+    {
+      "name": "primary_crouch_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "primary_crouch_idle",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_crouch_walk_center",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_e",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_n",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_ne",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_nw",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_crouch_walk_s",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_se",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_sw",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_crouch_walk_to_stop",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "primary_crouch_walk_w",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": true
+    },
+    {
+      "name": "primary_hip_fire",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_idle_fire_one_shot",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_in_air_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_mantle_128",
+      "fps": 30,
+      "frame_count": 22,
+      "looping": false
+    },
+    {
+      "name": "primary_mantle_32",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "primary_mantle_64",
+      "fps": 30,
+      "frame_count": 13,
+      "looping": false
+    },
+    {
+      "name": "primary_mantle_96",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_run_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "primary_run_center",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_e",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_e",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_n",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_ne",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_nw",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_s",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_se",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_sw",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_fast_w",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_lean_center",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "primary_run_lean_center_null",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "primary_run_lean_l",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "primary_run_lean_r",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "primary_run_n",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_ne",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_nw",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_run_s",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_se",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_sw",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_run_to_stop",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "primary_run_w",
+      "fps": 27,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_shoot",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_slide_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_e",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_n",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_ne",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_nw",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_s",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_se",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_sw",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint355_w",
+      "fps": 40,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_e",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_n",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_ne",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_nw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_s",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_se",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_sw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_sprint_w",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_idle",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": true
+    },
+    {
+      "name": "primary_stand_idle_lean_r",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_quick_reload",
+      "fps": 40,
+      "frame_count": 27,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_reload_OLD",
+      "fps": 30,
+      "frame_count": 46,
+      "looping": false
+    },
+    {
+      "name": "primary_stand_zoomed_idle",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "primary_zoomed_reload",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "primary_zoomed_run_center",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_e",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_center",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_e",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_n",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_ne",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_nw",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_s",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_se",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_sw",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_fast_w",
+      "fps": 36,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_n",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_ne",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_nw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_s",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_se",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_sw",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_run_w",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": true
+    },
+    {
+      "name": "primary_zoomed_shoot",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "rebirth_countdown_idle",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "ref",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": true
+    },
+    {
+      "name": "respawn_countdown_idle",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "self_sleep",
+      "fps": 30,
+      "frame_count": 81,
+      "looping": false
+    },
+    {
+      "name": "shopping",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": false
+    },
+    {
+      "name": "slide_aim",
+      "fps": 30,
+      "frame_count": 10,
+      "looping": false
+    },
+    {
+      "name": "slide_forward",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "slide_getup",
+      "fps": 30,
+      "frame_count": 19,
+      "looping": false
+    },
+    {
+      "name": "slide_intro",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "stagger_n",
+      "fps": 30,
+      "frame_count": 31,
+      "looping": false
+    },
+    {
+      "name": "standing_stunned",
+      "fps": 30,
+      "frame_count": 121,
+      "looping": false
+    },
+    {
+      "name": "stun_medium_forward",
+      "fps": 30,
+      "frame_count": 18,
+      "looping": false
+    },
+    {
+      "name": "turn_180_l",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "turn_180_r",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "turn_90_l",
+      "fps": 30,
+      "frame_count": 18,
+      "looping": false
+    },
+    {
+      "name": "turn_90_r",
+      "fps": 30,
+      "frame_count": 18,
+      "looping": false
+    },
+    {
+      "name": "turn_crouch_180_l",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "turn_crouch_180_r",
+      "fps": 30,
+      "frame_count": 21,
+      "looping": false
+    },
+    {
+      "name": "turn_crouch_90_l",
+      "fps": 30,
+      "frame_count": 18,
+      "looping": false
+    },
+    {
+      "name": "turn_crouch_90_r",
+      "fps": 30,
+      "frame_count": 18,
+      "looping": false
+    },
+    {
+      "name": "ui_hero_info",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "ui_hero_pose",
+      "fps": 30,
+      "frame_count": 11,
+      "looping": false
+    },
+    {
+      "name": "ui_hero_pose_ag2",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "ui_hero_select",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "ui_hero_select_fly",
+      "fps": 30,
+      "frame_count": 1,
+      "looping": false
+    },
+    {
+      "name": "ui_main_menu",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": true
+    },
+    {
+      "name": "ui_matchmaking",
+      "fps": 30,
+      "frame_count": 141,
+      "looping": false
+    },
+    {
+      "name": "wall_jump",
+      "fps": 30,
+      "frame_count": 17,
+      "looping": false
+    },
+    {
+      "name": "wing_blast",
+      "fps": 30,
+      "frame_count": 23,
+      "looping": false
+    },
+    {
+      "name": "zipline_attached_and_reeling",
+      "fps": 30,
+      "frame_count": 40,
+      "looping": false
+    },
+    {
+      "name": "zipline_awaiting_tether",
+      "fps": 30,
+      "frame_count": 61,
+      "looping": false
+    },
+    {
+      "name": "zipline_detach",
+      "fps": 30,
+      "frame_count": 16,
+      "looping": false
+    },
+    {
+      "name": "zipline_grab",
+      "fps": 30,
+      "frame_count": 81,
+      "looping": false
+    },
+    {
+      "name": "zipline_loop",
+      "fps": 30,
+      "frame_count": 71,
+      "looping": true
+    }
+  ],
+  "samples": [
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 0,
+      "value": [
+        -0.3576103,
+        -0.2910169,
+        -0.6198837,
+        -0.63495535
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 60,
+      "value": [
+        -0.37215465,
+        -0.29559168,
+        -0.6024909,
+        -0.6411951
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 120,
+      "value": [
+        -0.3576103,
+        -0.2910169,
+        -0.6198837,
+        -0.63495535
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "translation",
+      "frame": 0,
+      "value": [
+        1.6487217,
+        51.654163,
+        -1.0229492
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "translation",
+      "frame": 60,
+      "value": [
+        0.8198719,
+        51.649048,
+        -1.0273399
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "pelvis",
+      "channel": "translation",
+      "frame": 120,
+      "value": [
+        1.6487217,
+        51.654163,
+        -1.0229492
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "spine_0",
+      "channel": "rotation",
+      "frame": 0,
+      "value": [
+        -0.065687045,
+        -0.0145443715,
+        -0.04194994,
+        -0.996852
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "spine_0",
+      "channel": "rotation",
+      "frame": 60,
+      "value": [
+        -0.066766,
+        -0.034699332,
+        -0.055587985,
+        -0.9956145
+      ]
+    },
+    {
+      "clip": "primary_stand_idle",
+      "bone": "spine_0",
+      "channel": "rotation",
+      "frame": 120,
+      "value": [
+        -0.065687045,
+        -0.0145443715,
+        -0.04194994,
+        -0.996852
+      ]
+    },
+    {
+      "clip": "idle_loadout",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 0,
+      "value": [
+        -0.31617823,
+        -0.318293,
+        -0.63330954,
+        -0.630587
+      ]
+    },
+    {
+      "clip": "idle_loadout",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 70,
+      "value": [
+        -0.32256567,
+        -0.32960048,
+        -0.6197542,
+        -0.63499576
+      ]
+    },
+    {
+      "clip": "idle_loadout",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 140,
+      "value": [
+        -0.31617823,
+        -0.318293,
+        -0.63330954,
+        -0.630587
+      ]
+    },
+    {
+      "clip": "ui_hero_select",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 0,
+      "value": [
+        -0.31617823,
+        -0.318293,
+        -0.63330954,
+        -0.630587
+      ]
+    },
+    {
+      "clip": "ui_hero_select",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 70,
+      "value": [
+        -0.32256567,
+        -0.32960048,
+        -0.6197542,
+        -0.63499576
+      ]
+    },
+    {
+      "clip": "ui_hero_select",
+      "bone": "pelvis",
+      "channel": "rotation",
+      "frame": 140,
+      "value": [
+        -0.31617823,
+        -0.318293,
+        -0.63330954,
+        -0.630587
+      ]
+    }
+  ],
+  "vrf_version": "19.1.0.0"
+}

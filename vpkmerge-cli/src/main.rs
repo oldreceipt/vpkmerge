@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    export_hero_model, export_model, extract_portraits, inspect_models, merge, split,
+    export_hero_model, export_model, extract_portraits, inspect_models, merge, split, AnimOptions,
     CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SplitOptions,
     SplitOutput,
 };
@@ -118,6 +118,15 @@ struct ModelExportArgs {
     #[arg(long, value_name = "VPK")]
     base: Option<PathBuf>,
 
+    /// Exclude all animation clips (export the static mesh + skeleton only).
+    #[arg(long, conflicts_with = "clip")]
+    no_anim: bool,
+
+    /// Only export the named clip(s) (e.g. `--clip primary_stand_idle`).
+    /// Repeatable. Omit to export every clip the model carries.
+    #[arg(long, value_name = "NAME")]
+    clip: Vec<String>,
+
     /// Output `.glb` path.
     #[arg(long, value_name = "FILE")]
     out: PathBuf,
@@ -209,10 +218,14 @@ fn main() -> Result<()> {
 
 fn run_model(args: ModelCmd) -> Result<()> {
     if let Some(ModelAction::Export(e)) = args.action {
+        let anim = AnimOptions {
+            no_anim: e.no_anim,
+            clips: e.clip.clone(),
+        };
         match (&e.entry, &e.hero) {
-            (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &e.out)
+            (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &anim, &e.out)
                 .with_context(|| format!("exporting {entry} from {}", e.vpk.display()))?,
-            (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &e.out)
+            (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &anim, &e.out)
                 .with_context(|| format!("exporting hero {hero} from {}", e.vpk.display()))?,
             (None, None) => anyhow::bail!("model export: provide --entry or --hero"),
         }

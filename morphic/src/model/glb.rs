@@ -38,7 +38,7 @@ use crate::error::DecodeError;
 
 use super::math::{Mat4, Quat};
 use super::mesh::{MeshPart, VertexBuffer};
-use super::{Model, Skeleton};
+use super::{Clip, Model, Skeleton};
 
 /// Source space (inches, Z-up) to glTF space (meters, Y-up). Matches VRF
 /// `TRANSFORMSOURCETOGLTF = CreateScale(0.0254) * CreateFromYawPitchRoll(0, -pi/2, -pi/2)`.
@@ -98,6 +98,11 @@ fn build(model: &Model, files: Option<&dyn FileResolver>) -> Result<Vec<u8>, Dec
         scene_nodes.push(node);
     }
 
+    // Animation clips drive the skin's joint nodes; they need no scene node.
+    if let Some(s) = &skin {
+        b.add_animations(model, s);
+    }
+
     b.root.push(json::Scene {
         nodes: scene_nodes,
         extensions: None,
@@ -121,6 +126,9 @@ struct Builder {
 struct SkinRefs {
     skin: json::Index<json::Skin>,
     root_node: json::Index<json::Node>,
+    /// Joint node index per model-skeleton bone, in bone order. Animation
+    /// channels target these by bone index.
+    bone_nodes: Vec<json::Index<json::Node>>,
 }
 
 impl Builder {
@@ -241,7 +249,7 @@ impl Builder {
         });
 
         let skin = self.root.push(json::Skin {
-            joints: bone_nodes,
+            joints: bone_nodes.clone(),
             inverse_bind_matrices: Some(ibm_accessor),
             skeleton: Some(root_node),
             name: None,
@@ -249,7 +257,120 @@ impl Builder {
             extras: Default::default(),
         });
 
-        Some(SkinRefs { skin, root_node })
+        Some(SkinRefs {
+            skin,
+            root_node,
+            bone_nodes,
+        })
+    }
+
+    /// Emits one glTF animation per decoded clip. Each animated bone+channel
+    /// becomes a `(sampler, channel)` pair: the sampler shares the clip's time
+    /// accessor (`frame / fps`) as input and the channel targets that bone's
+    /// joint node. Keyframe values are raw Source/local space, exactly like the
+    /// bind-pose bone nodes; the source->glTF transform lives on the skeleton
+    /// wrapper node above them and must not be applied here.
+    fn add_animations(&mut self, model: &Model, skin: &SkinRefs) {
+        use json::animation::Property;
+
+        for clip in &model.animations {
+            if clip.frame_count == 0 {
+                continue;
+            }
+            let input = self.time_accessor(clip);
+
+            let mut samplers: Vec<json::animation::Sampler> = Vec::new();
+            let mut channels: Vec<json::animation::Channel> = Vec::new();
+
+            for track in &clip.tracks {
+                let Some(&node) = skin.bone_nodes.get(track.bone) else {
+                    continue; // a decoded bone with no joint node (defensive)
+                };
+                if let Some(t) = &track.translations {
+                    let out = self.f32_accessor(t.iter().flat_map(|v| [v.x, v.y, v.z]), 3);
+                    push_channel(
+                        &mut samplers,
+                        &mut channels,
+                        input,
+                        out,
+                        node,
+                        Property::Translation,
+                    );
+                }
+                if let Some(r) = &track.rotations {
+                    let out = self.f32_accessor(r.iter().flat_map(|q| [q.x, q.y, q.z, q.w]), 4);
+                    push_channel(
+                        &mut samplers,
+                        &mut channels,
+                        input,
+                        out,
+                        node,
+                        Property::Rotation,
+                    );
+                }
+                if let Some(s) = &track.scales {
+                    // Source bone scale is uniform; glTF wants a Vec3.
+                    let out = self.f32_accessor(s.iter().flat_map(|&v| [v, v, v]), 3);
+                    push_channel(
+                        &mut samplers,
+                        &mut channels,
+                        input,
+                        out,
+                        node,
+                        Property::Scale,
+                    );
+                }
+            }
+
+            if channels.is_empty() {
+                continue; // clip animated nothing on this skeleton
+            }
+            self.root.push(json::Animation {
+                name: Some(clip.name.clone()),
+                channels,
+                samplers,
+                extensions: None,
+                extras: Default::default(),
+            });
+        }
+    }
+
+    /// SCALAR f32 time accessor for a clip (`frame / fps`). glTF requires
+    /// `min`/`max` on a sampler's input accessor; times are monotonic so they
+    /// are the first and last sample.
+    fn time_accessor(&mut self, clip: &Clip) -> json::Index<json::Accessor> {
+        let fps = if clip.fps > 0.0 { clip.fps } else { 1.0 };
+        let times: Vec<f32> = (0..clip.frame_count).map(|f| f as f32 / fps).collect();
+        let bytes: Vec<u8> = times.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let view = self.add_image_view(&bytes); // targetless: animation data
+        let min = json::serialize::to_value(vec![times.first().copied().unwrap_or(0.0)]).unwrap();
+        let max = json::serialize::to_value(vec![times.last().copied().unwrap_or(0.0)]).unwrap();
+        self.add_accessor(
+            view,
+            times.len(),
+            json::accessor::ComponentType::F32,
+            json::accessor::Type::Scalar,
+            Some((min, max)),
+        )
+    }
+
+    /// Output accessor for animation samples: `components` f32 per element
+    /// (3 = VEC3 translation/scale, 4 = VEC4 rotation). No `min`/`max` (only the
+    /// input accessor needs them).
+    fn f32_accessor(
+        &mut self,
+        values: impl Iterator<Item = f32>,
+        components: usize,
+    ) -> json::Index<json::Accessor> {
+        let bytes: Vec<u8> = values.flat_map(f32::to_le_bytes).collect();
+        let count = bytes.len() / 4 / components;
+        let view = self.add_image_view(&bytes); // targetless: animation data
+        let type_ = if components == 4 {
+            json::accessor::Type::Vec4
+        } else {
+            json::accessor::Type::Vec3
+        };
+        self.add_accessor(view, count, json::accessor::ComponentType::F32, type_, None)
     }
 
     /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
@@ -732,6 +853,38 @@ struct VertexAccessors {
     texcoord0: Option<json::Index<json::Accessor>>,
     joints0: Option<json::Index<json::Accessor>>,
     weights0: Option<json::Index<json::Accessor>>,
+}
+
+/// Pushes a sampler + channel pair into one animation's local arrays. The
+/// sampler index is local to the animation (channels reference samplers within
+/// the same `json::Animation`, not globally).
+fn push_channel(
+    samplers: &mut Vec<json::animation::Sampler>,
+    channels: &mut Vec<json::animation::Channel>,
+    input: json::Index<json::Accessor>,
+    output: json::Index<json::Accessor>,
+    node: json::Index<json::Node>,
+    property: json::animation::Property,
+) {
+    let sampler = json::Index::new(samplers.len() as u32);
+    samplers.push(json::animation::Sampler {
+        input,
+        output,
+        interpolation: Valid(json::animation::Interpolation::Linear),
+        extensions: None,
+        extras: Default::default(),
+    });
+    channels.push(json::animation::Channel {
+        sampler,
+        target: json::animation::Target {
+            node,
+            path: Valid(property),
+            extensions: None,
+            extras: Default::default(),
+        },
+        extensions: None,
+        extras: Default::default(),
+    });
 }
 
 fn default_node() -> json::Node {

@@ -32,6 +32,7 @@ lz4_flex = "0.11"
 # JSON document is built with this; the binary GLB container is framed by hand.
 # `names` keeps node names (the bone names Grimoire retargets clips against).
 gltf-json = { version = "1", features = ["names"] }
+ruzstd = "0.8.3"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

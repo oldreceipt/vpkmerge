@@ -230,7 +230,7 @@ fn remap_table_partitions_by_mesh() {
 use super::math::{Mat4, Quat, Vec3};
 use super::mesh::{MeshPart, Primitive, VertexBuffer};
 use super::skeleton::Bone;
-use super::Model;
+use super::{BoneTrack, Clip, Model};
 
 /// A minimal skinned model: one root bone, one triangle bound to it. Lets the
 /// GLB writer be exercised in CI without the multi-megabyte hornet buffers.
@@ -278,6 +278,7 @@ fn synthetic_model() -> Model {
     Model {
         skeleton: skeleton::Skeleton { bones: vec![bone] },
         meshes: vec![part],
+        animations: Vec::new(),
     }
 }
 
@@ -319,6 +320,78 @@ fn glb_writes_and_reloads() {
     assert!(prim.get(&gltf::Semantic::Joints(0)).is_some(), "JOINTS_0");
     assert!(prim.get(&gltf::Semantic::Weights(0)).is_some(), "WEIGHTS_0");
     assert!(prim.indices().is_some(), "indices");
+}
+
+/// [`synthetic_model`] with a single 2-frame rotation clip on its one bone:
+/// exercises the animation emit path (samplers/channels/accessors) in CI with no
+/// VPK dependency.
+fn synthetic_animated_model() -> Model {
+    let mut m = synthetic_model();
+    m.animations = vec![Clip {
+        name: "spin".to_owned(),
+        fps: 2.0,
+        frame_count: 2,
+        looping: true,
+        tracks: vec![BoneTrack {
+            bone: 0,
+            translations: None,
+            rotations: Some(vec![
+                Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                    w: 0.0,
+                },
+            ]),
+            scales: None,
+        }],
+    }];
+    m
+}
+
+#[test]
+fn glb_animation_writes_and_reloads() {
+    let glb = super::to_glb(&synthetic_animated_model()).expect("write glb");
+    let g = gltf::Gltf::from_slice(&glb).expect("re-read glb");
+    let doc = &g.document;
+
+    assert_eq!(doc.animations().count(), 1, "one clip");
+    let anim = doc.animations().next().unwrap();
+    assert_eq!(anim.name(), Some("spin"));
+    assert_eq!(anim.channels().count(), 1, "one rotation channel");
+    assert_eq!(anim.samplers().count(), 1, "one sampler");
+
+    let chan = anim.channels().next().unwrap();
+    assert!(
+        matches!(
+            chan.target().property(),
+            gltf::animation::Property::Rotation
+        ),
+        "targets rotation"
+    );
+    assert_eq!(
+        chan.target().node().name(),
+        Some("root"),
+        "targets the joint node"
+    );
+
+    let s = chan.sampler();
+    assert!(
+        matches!(s.interpolation(), gltf::animation::Interpolation::Linear),
+        "linear interpolation"
+    );
+    assert_eq!(s.input().count(), 2, "two time samples");
+    assert_eq!(s.output().count(), 2, "two rotation samples");
+    assert_eq!(s.input().dimensions(), gltf::accessor::Dimensions::Scalar);
+    assert!(s.input().min().is_some(), "input accessor has min");
+    assert!(s.input().max().is_some(), "input accessor has max");
+    assert_eq!(s.output().dimensions(), gltf::accessor::Dimensions::Vec4);
 }
 
 /// A [`super::FileResolver`] backed by committed fixtures: any `.vmat_c` request
