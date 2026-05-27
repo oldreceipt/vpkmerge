@@ -55,6 +55,32 @@ impl Value {
     }
 
     #[must_use]
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(i) => Some(*i),
+            Self::UInt(u) => i64::try_from(*u).ok(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_uint(&self) -> Option<u64> {
+        match self {
+            Self::UInt(u) => Some(*u),
+            Self::Int(i) => u64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Double(d) => Some(*d),

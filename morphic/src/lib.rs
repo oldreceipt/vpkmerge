@@ -16,6 +16,9 @@ use std::path::Path;
 mod edit;
 mod error;
 pub mod kv3;
+pub mod material;
+mod meshopt;
+pub mod model;
 mod resource;
 mod texture;
 

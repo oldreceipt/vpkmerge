@@ -1,0 +1,86 @@
+//! M2 validation: decode each committed `*.meshopt` raw block (a real MVTX /
+//! MIDX payload sliced from `hornet.vmdl_c`) and assert the result matches the
+//! oracle golden in the sibling `*.meshopt.json` byte-for-byte (length +
+//! SHA-256). Goldens come from `tools/morphic-oracle mesh-buffers`, which
+//! decodes via `ValveResourceFormat`'s own meshopt path.
+
+use std::path::PathBuf;
+
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use super::{decode_index_buffer, decode_vertex_buffer};
+
+#[derive(Deserialize)]
+struct Golden {
+    kind: String,
+    element_count: usize,
+    element_size: usize,
+    meshopt: bool,
+    zstd: bool,
+    decoded_len: usize,
+    sha256: String,
+}
+
+fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/meshopt")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut s = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        write!(s, "{b:02x}").expect("write to String never fails");
+    }
+    s
+}
+
+#[test]
+fn meshopt_buffers_match_oracle() {
+    let dir = fixtures_dir();
+    let mut checked = 0usize;
+
+    for entry in std::fs::read_dir(&dir).expect("meshopt fixtures dir present") {
+        let path = entry.expect("dir entry").path();
+        // Drive off the .meshopt raw blocks; their sibling .meshopt.json is the golden.
+        if path.extension().and_then(|e| e.to_str()) != Some("meshopt") {
+            continue;
+        }
+
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let raw = std::fs::read(&path).expect("read .meshopt");
+        let golden_path = path.with_extension("meshopt.json");
+        let golden: Golden =
+            serde_json::from_str(&std::fs::read_to_string(&golden_path).expect("read golden"))
+                .expect("parse golden");
+
+        assert!(golden.meshopt, "{name}: fixture is not meshopt-compressed");
+        assert!(!golden.zstd, "{name}: zstd buffers are not supported");
+
+        let decoded = match golden.kind.as_str() {
+            "vertex" => decode_vertex_buffer(golden.element_count, golden.element_size, &raw)
+                .unwrap_or_else(|e| panic!("{name}: vertex decode failed: {e}")),
+            "index" => decode_index_buffer(golden.element_count, golden.element_size, &raw)
+                .unwrap_or_else(|e| panic!("{name}: index decode failed: {e}")),
+            other => panic!("{name}: unknown buffer kind {other:?}"),
+        };
+
+        assert_eq!(
+            decoded.len(),
+            golden.decoded_len,
+            "{name}: decoded length mismatch"
+        );
+        assert_eq!(
+            sha256_hex(&decoded),
+            golden.sha256,
+            "{name}: decoded bytes differ from oracle"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 5,
+        "expected to check the committed meshopt fixtures, got {checked}"
+    );
+}

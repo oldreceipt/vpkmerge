@@ -7,16 +7,24 @@
 //   generate --fixtures DIR [--force]
 //   extract  --vpk PATH --entry NAME --out DIR
 //   survey   --vpk PATH --out CSV
+//   model    --vpk PATH --entry NAME [--base PATH] --out GLB   (golden glTF)
+//   kv3-dump --vpk PATH --entry NAME --block FOURCC --out JSON (M1 KV3 golden)
 
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Threading;
 using SteamDatabase.ValvePak;
+using ValveKeyValue;
 using ValveResourceFormat;
+using ValveResourceFormat.Blocks;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.ResourceTypes;
+using ValveResourceFormat.ResourceTypes.ModelAnimation;
+using ValveResourceFormat.Serialization.KeyValues;
 
 namespace MorphicOracle;
 
@@ -43,7 +51,13 @@ internal static class Program
                 "generate" => Generate(args[1..]),
                 "extract"  => Extract(args[1..]),
                 "survey"   => Survey(args[1..]),
-                "kv3dump"  => Kv3Dump(args[1..]),
+                "model"    => ModelExport(args[1..]),
+                "kv3-dump" => Kv3Dump(args[1..]),
+                "kv3dump"  => Kv3Check(args[1..]),
+                "mesh-buffers" => MeshBuffers(args[1..]),
+                "model-meta" => ModelMeta(args[1..]),
+                "anim-meta" => AnimMeta(args[1..]),
+                "material-meta" => MaterialMeta(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -277,14 +291,704 @@ internal static class Program
         return 0;
     }
 
+    // ---------- model (golden .glb) ----------
+
+    // Produces the golden glTF the Rust exporter is diffed against. Mirrors the
+    // arg shape of `vpkmerge model export`: --vpk is where the .vmdl_c lives,
+    // --base is the package external refs (materials/textures/skeleton) resolve
+    // against. For a base hero model the two are the same pak01_dir.vpk.
+    private static int ModelExport(string[] args)
+    {
+        string? vpk = null, entry = null, basePak = null, outPath = null;
+        var noMaterials = false;
+        var noAnimations = false;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":           vpk          = args[++i]; break;
+                case "--entry":         entry        = args[++i]; break;
+                case "--base":          basePak      = args[++i]; break;
+                case "--out":           outPath      = args[++i]; break;
+                case "--no-materials":  noMaterials  = true; break;
+                case "--no-animations": noAnimations = true; break;
+                default: return Fail($"model: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outPath is null)
+        {
+            return Fail("model: --vpk, --entry, and --out are required");
+        }
+        basePak ??= vpk;
+
+        using var pak = new Package();
+        pak.Read(basePak);
+        var loader = new GameFileLoader(pak, basePak);
+
+        // If the model lives in a separate (skin) VPK, search it first so its
+        // overrides win over the base pak.
+        Package? skinPak = null;
+        if (!string.Equals(Path.GetFullPath(vpk), Path.GetFullPath(basePak), StringComparison.Ordinal))
+        {
+            skinPak = new Package();
+            skinPak.Read(vpk);
+            loader.AddPackageToSearch(skinPak);
+        }
+
+        var sourcePak = skinPak ?? pak;
+        var packageEntry = sourcePak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        sourcePak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource();
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+        resource.FileName = entry;
+
+        var exporter = new GltfModelExporter(loader)
+        {
+            ProgressReporter = new Progress<string>(s => Console.Error.WriteLine($"  {s}")),
+            ExportMaterials = !noMaterials,
+            // Keep animations on so the golden carries the full skeleton + skin
+            // (joints, inverse-bind matrices, bone names). morphic only needs to
+            // match the skin; it emits no animation samplers, but M3 validates
+            // joint count + bone-name set against this golden's skin, so the
+            // skeleton must be present. With animations off VRF drops it.
+            ExportAnimations = !noAnimations,
+        };
+
+        var outFull = Path.GetFullPath(outPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        exporter.Export(resource, outFull, CancellationToken.None);
+        Console.WriteLine($"exported {entry} -> {outFull}");
+        skinPak?.Dispose();
+        return 0;
+    }
+
+    // ---------- kv3-dump (M1 validation) ----------
+
+    // Dumps a single KV3 block (DATA, MDAT, CTRL, AGRP, ...) of a resource as
+    // canonical JSON for diffing against morphic's kv3 parser, and optionally
+    // writes the raw block bytes (a self-contained KV3 document) for committing
+    // as a morphic fixture.
+    private static int Kv3Dump(string[] args)
+    {
+        string? vpk = null, entry = null, blockName = null, outJson = null, rawOut = null;
+        var nth = 0;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk       = args[++i]; break;
+                case "--entry": entry     = args[++i]; break;
+                case "--block": blockName = args[++i]; break;
+                case "--nth":   nth       = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
+                case "--out":   outJson   = args[++i]; break;
+                case "--raw":   rawOut    = args[++i]; break;
+                default: return Fail($"kv3-dump: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || blockName is null || outJson is null)
+        {
+            return Fail("kv3-dump: --vpk, --entry, --block, and --out are required");
+        }
+        if (!Enum.TryParse<BlockType>(blockName, ignoreCase: false, out var blockType))
+        {
+            return Fail($"kv3-dump: unknown block type {blockName}");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource();
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        var matches = resource.Blocks.Where(b => b.Type == blockType).ToList();
+        if (matches.Count == 0)
+        {
+            return Fail($"kv3-dump: no {blockName} block in {entry}");
+        }
+        if (nth < 0 || nth >= matches.Count)
+        {
+            return Fail($"kv3-dump: --nth {nth} out of range ({matches.Count} {blockName} blocks)");
+        }
+
+        var block = matches[nth];
+        // VRF wraps a KV3 block either as a raw BinaryKV3 or, for blocks it
+        // recognizes (DATA -> Model, MDAT -> Mesh, ...), as a KeyValuesOrNTRO
+        // subclass. Both expose the parsed tree as a KVObject.
+        var kvData = block switch
+        {
+            BinaryKV3 b => b.Data,
+            KeyValuesOrNTRO knv => knv.Data,
+            _ => null,
+        };
+        if (kvData is null)
+        {
+            return Fail($"kv3-dump: {blockName}[{nth}] is not KV3 (got {block.GetType().Name})");
+        }
+
+        var json = KvToJson(kvData);
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, (json?.ToJsonString(JsonOpts) ?? "null") + "\n");
+        Console.WriteLine($"dumped {blockName}[{nth}] of {entry} -> {outFull}");
+
+        if (rawOut is not null)
+        {
+            // Offset/Size are absolute within the resource file (same convention
+            // the survey path already relies on). The slice is a complete KV3
+            // document: magic + header + (LZ4) payload.
+            var raw = new byte[block.Size];
+            Array.Copy(data, (int)block.Offset, raw, 0, (int)block.Size);
+            var rawFull = Path.GetFullPath(rawOut);
+            Directory.CreateDirectory(Path.GetDirectoryName(rawFull)!);
+            File.WriteAllBytes(rawFull, raw);
+            Console.WriteLine($"  raw block -> {rawFull} ({raw.Length} bytes)");
+        }
+        return 0;
+    }
+
+    // Canonical JSON encoding of a KV3 tree. The encoding is chosen so morphic's
+    // Value tree maps to the exact same JSON, and the Rust comparator can match
+    // it without float-formatting ambiguity:
+    //   - ints / uints  -> JSON number
+    //   - floats (f32 widened, f64) -> {"$f64":"0xHEXBITS"} (IEEE-754 bit pattern)
+    //   - binary blobs  -> {"$bin":{"len":N,"sha256":"..."}}
+    //   - collections   -> JSON object (compared by key, order-insensitive)
+    private static JsonNode? KvToJson(KVObject o)
+    {
+        switch (o.ValueType)
+        {
+            case KVValueType.Null:
+                return null;
+            case KVValueType.Boolean:
+                return JsonValue.Create((bool)o);
+            case KVValueType.Int16:
+            case KVValueType.Int32:
+            case KVValueType.Int64:
+                return JsonValue.Create((long)o);
+            case KVValueType.UInt16:
+            case KVValueType.UInt32:
+            case KVValueType.UInt64:
+                return JsonValue.Create((ulong)o);
+            case KVValueType.FloatingPoint:
+            case KVValueType.FloatingPoint64:
+                return FloatNode((double)o);
+            case KVValueType.String:
+                return JsonValue.Create((string)o);
+            case KVValueType.BinaryBlob:
+                return BlobNode((byte[])o);
+            case KVValueType.Array:
+            {
+                var arr = new JsonArray();
+                for (var i = 0; i < o.Count; i++)
+                {
+                    arr.Add(KvToJson(o[i]));
+                }
+                return arr;
+            }
+            case KVValueType.Collection:
+            {
+                var obj = new JsonObject();
+                foreach (var key in o.Keys)
+                {
+                    obj[key] = KvToJson(o[key]);
+                }
+                return obj;
+            }
+            default:
+                throw new NotSupportedException($"kv3-dump: KV3 value type {o.ValueType} not handled");
+        }
+    }
+
+    private static JsonObject FloatNode(double d) =>
+        new() { ["$f64"] = $"0x{BitConverter.DoubleToUInt64Bits(d):X16}" };
+
+    private static JsonObject BlobNode(byte[] blob) =>
+        new() { ["$bin"] = new JsonObject { ["len"] = blob.Length, ["sha256"] = Sha256Hex(blob) } };
+
+    // ---------- mesh-buffers (M2 meshopt validation) ----------
+
+    // For each embedded mesh in a .vmdl_c, reconstructs the VBIB the way VRF
+    // does (so MVTX/MIDX blocks get meshopt-decoded) and writes, per buffer:
+    //   <mesh>_v{j}.meshopt / _i{j}.meshopt  -> raw compressed block bytes
+    //   <mesh>_v{j}.meshopt.json / ...        -> decoded-buffer golden record
+    // morphic decodes the raw block and matches the golden's length + SHA-256.
+    private static int MeshBuffers(string[] args)
+    {
+        string? vpk = null, entry = null, outDir = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":     vpk    = args[++i]; break;
+                case "--entry":   entry  = args[++i]; break;
+                case "--out-dir": outDir = args[++i]; break;
+                default: return Fail($"mesh-buffers: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outDir is null)
+        {
+            return Fail("mesh-buffers: --vpk, --entry, and --out-dir are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        KVObject? root = resource.GetBlockByType(BlockType.CTRL) switch
+        {
+            BinaryKV3 b => b.Data.Root,
+            KeyValuesOrNTRO k => k.Data,
+            _ => null,
+        };
+        if (root is null)
+        {
+            return Fail("mesh-buffers: no CTRL block (embedded mesh control)");
+        }
+
+        Directory.CreateDirectory(Path.GetFullPath(outDir));
+        var records = new List<MeshBufferRecord>();
+
+        foreach (var em in root.GetArray("embedded_meshes"))
+        {
+            var name = em.GetStringProperty("m_Name");
+            var vbib = new VBIB(resource, em) { Resource = resource };
+
+            EmitBuffers(data, resource, outDir, records, name, "vertex",
+                em.GetArray("m_vertexBuffers"), vbib.VertexBuffers);
+            EmitBuffers(data, resource, outDir, records, name, "index",
+                em.GetArray("m_indexBuffers"), vbib.IndexBuffers);
+        }
+
+        File.WriteAllText(Path.Combine(Path.GetFullPath(outDir), "manifest.json"),
+            JsonSerializer.Serialize(records, JsonOpts) + "\n");
+        Console.WriteLine($"wrote {records.Count} mesh buffers -> {outDir}");
+        return 0;
+    }
+
+    private static void EmitBuffers(
+        byte[] data, Resource resource, string outDir, List<MeshBufferRecord> records,
+        string mesh, string kind, IReadOnlyList<KVObject> descriptors, List<VBIB.OnDiskBufferData> buffers)
+    {
+        for (var j = 0; j < buffers.Count; j++)
+        {
+            var desc = descriptors[j];
+            var blockIndex = desc.GetInt32Property("m_nBlockIndex");
+            var block = resource.GetBlockByIndex(blockIndex);
+            var raw = new byte[block.Size];
+            Array.Copy(data, (int)block.Offset, raw, 0, (int)block.Size);
+
+            var prefix = kind == "vertex" ? "v" : "i";
+            var baseName = $"{SanitizeBasename(mesh)}_{prefix}{j}";
+            File.WriteAllBytes(Path.Combine(Path.GetFullPath(outDir), baseName + ".meshopt"), raw);
+
+            var rec = new MeshBufferRecord
+            {
+                Mesh = mesh,
+                Kind = kind,
+                BufferIndex = j,
+                BlockIndex = blockIndex,
+                ElementCount = buffers[j].ElementCount,
+                ElementSize = buffers[j].ElementSizeInBytes,
+                Meshopt = desc.GetByteProperty("m_bMeshoptCompressed") == 1,
+                Zstd = desc.GetByteProperty("m_bCompressedZSTD") == 1,
+                CompressedSize = (int)block.Size,
+                DecodedLen = buffers[j].Data.Length,
+                Sha256 = Sha256Hex(buffers[j].Data),
+            };
+            records.Add(rec);
+            File.WriteAllText(
+                Path.Combine(Path.GetFullPath(outDir), baseName + ".meshopt.json"),
+                JsonSerializer.Serialize(rec, JsonOpts) + "\n");
+        }
+    }
+
+    // ---------- model-meta (M3 validation) ----------
+
+    // Emits a compact, buffer-free-comparable summary of a model's LOD0 geometry
+    // and skin: sorted bone names, per-mesh vertex-buffer layouts + draw calls +
+    // materials + scene bounds, vertex/index totals, and a source-space position
+    // bbox. morphic's `model::decode` reproduces every field; the committed CI
+    // test checks the parts derivable from the committed CTRL/DATA/MDAT[0]
+    // fixtures, the gated local test checks the whole thing against a real VPK.
+    private static int ModelMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"model-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("model-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Model model)
+        {
+            return Fail("model-meta: resource is not a model");
+        }
+
+        var meta = new ModelMeta_t
+        {
+            BoneNames = model.Skeleton.Bones
+                .Select(b => b.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray(),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+        meta.BoneCount = meta.BoneNames.Length;
+
+        var meshes = new List<MeshMeta_t>();
+        var bbMin = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+        var bbMax = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+        var materials = new SortedSet<string>(StringComparer.Ordinal);
+        var uniqueVerts = 0;
+        var gltfVerts = 0;
+        var totalIndices = 0;
+
+        foreach (var (mesh, meshIndex, name, lodMask) in model.GetEmbeddedMeshesAndLoD())
+        {
+            if ((lodMask & 1) == 0)
+            {
+                continue; // LOD0 only
+            }
+
+            var vbib = mesh.VBIB;
+            var vbMetas = new List<VbMeta_t>();
+            foreach (var vb in vbib.VertexBuffers)
+            {
+                uniqueVerts += (int)vb.ElementCount;
+                vbMetas.Add(new VbMeta_t
+                {
+                    ElementCount = (int)vb.ElementCount,
+                    ElementSize = (int)vb.ElementSizeInBytes,
+                    Fields = vb.InputLayoutFields.Select(f => new FieldMeta_t
+                    {
+                        Semantic = f.SemanticName,
+                        SemanticIndex = f.SemanticIndex,
+                        Format = (int)f.Format,
+                        Offset = (int)f.Offset,
+                    }).ToArray(),
+                });
+
+                var posField = vb.InputLayoutFields.FirstOrDefault(f => f.SemanticName == "POSITION");
+                if (posField.SemanticName == "POSITION")
+                {
+                    foreach (var p in VBIB.GetVector3AttributeArray(vb, posField))
+                    {
+                        bbMin[0] = MathF.Min(bbMin[0], p.X);
+                        bbMin[1] = MathF.Min(bbMin[1], p.Y);
+                        bbMin[2] = MathF.Min(bbMin[2], p.Z);
+                        bbMax[0] = MathF.Max(bbMax[0], p.X);
+                        bbMax[1] = MathF.Max(bbMax[1], p.Y);
+                        bbMax[2] = MathF.Max(bbMax[2], p.Z);
+                    }
+                }
+            }
+
+            var ibMetas = vbib.IndexBuffers.Select(ib => new IbMeta_t
+            {
+                ElementCount = (int)ib.ElementCount,
+                ElementSize = (int)ib.ElementSizeInBytes,
+            }).ToArray();
+
+            var prims = new List<PrimMeta_t>();
+            var sceneMin = new[] { float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity };
+            var sceneMax = new[] { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+
+            foreach (var so in mesh.Data.GetArray("m_sceneObjects"))
+            {
+                AggregateBounds(so, "m_vMinBounds", sceneMin, isMin: true);
+                AggregateBounds(so, "m_vMaxBounds", sceneMax, isMin: false);
+
+                foreach (var dc in so.GetArray("m_drawCalls"))
+                {
+                    var vbIdx = dc.GetArray("m_vertexBuffers")[0].GetInt32Property("m_hBuffer");
+                    var indexCount = dc.GetInt32Property("m_nIndexCount");
+                    var material = dc.GetStringProperty("m_material");
+
+                    prims.Add(new PrimMeta_t
+                    {
+                        VertexBuffer = vbIdx,
+                        VertexCount = dc.GetInt32Property("m_nVertexCount"),
+                        IndexCount = indexCount,
+                        Material = material,
+                    });
+
+                    gltfVerts += (int)vbib.VertexBuffers[vbIdx].ElementCount;
+                    totalIndices += indexCount;
+                    materials.Add(material);
+                }
+            }
+
+            meshes.Add(new MeshMeta_t
+            {
+                Name = name,
+                MeshIndex = meshIndex,
+                SceneMin = Finite(sceneMin),
+                SceneMax = Finite(sceneMax),
+                VertexBuffers = vbMetas.ToArray(),
+                IndexBuffers = ibMetas,
+                Primitives = prims.ToArray(),
+            });
+        }
+
+        meta.Meshes = meshes.ToArray();
+        meta.UniqueVertices = uniqueVerts;
+        meta.GltfVertices = gltfVerts;
+        meta.TotalIndices = totalIndices;
+        meta.Materials = materials.ToArray();
+        meta.MaterialCount = materials.Count;
+        meta.BboxMin = Finite(bbMin);
+        meta.BboxMax = Finite(bbMax);
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote model meta for {entry} -> {outFull}");
+        Console.WriteLine($"  bones={meta.BoneCount} meshes={meta.Meshes.Length} " +
+            $"unique_verts={uniqueVerts} gltf_verts={gltfVerts} indices={totalIndices} materials={materials.Count}");
+        return 0;
+    }
+
+    private static void AggregateBounds(KVObject sceneObject, string key, float[] acc, bool isMin)
+    {
+        if (!sceneObject.ContainsKey(key))
+        {
+            return;
+        }
+        var v = sceneObject.GetSubCollection(key).ToVector3();
+        var comps = new[] { v.X, v.Y, v.Z };
+        for (var i = 0; i < 3; i++)
+        {
+            acc[i] = isMin ? MathF.Min(acc[i], comps[i]) : MathF.Max(acc[i], comps[i]);
+        }
+    }
+
+    private static float[] Finite(float[] v) =>
+        float.IsFinite(v[0]) ? v : new float[] { 0f, 0f, 0f };
+
+    // ---------- anim-meta (animation-decode validation) ----------
+
+    // Dumps the model's embedded animation clips (VRF's GetEmbeddedAnimations,
+    // the same set GltfModelExporter writes) as the golden the morphic animation
+    // decoder diffs against: per-clip name/fps/frame_count/looping, plus a few
+    // sampled per-bone keyframe values decoded in raw Source space. The raw
+    // ANIM/AGRP/ASEQ blocks are NOT committed (multi-MB); the gated Rust test
+    // reads them live from the pak. Small JSON; committed.
+    private static int AnimMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"anim-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("anim-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Model model)
+        {
+            return Fail("anim-meta: resource is not a model");
+        }
+
+        var skeleton = model.Skeleton;
+        var flex = model.FlexControllers;
+        // The clips morphic emits to the glb: frame_count >= 1, ordered by name.
+        var anims = model.GetEmbeddedAnimations()
+            .Where(a => a.FrameCount >= 1)
+            .OrderBy(a => a.Name, StringComparer.Ordinal)
+            .ToList();
+        var byName = anims.GroupBy(a => a.Name).ToDictionary(g => g.Key, g => g.First());
+
+        var clips = anims.Select(a => new ClipMeta_t
+        {
+            Name = a.Name,
+            Fps = a.Fps,
+            FrameCount = a.FrameCount,
+            Looping = a.IsLooping,
+        }).ToArray();
+
+        // Probe a spread of (clip, bone, channel) on a real idle + UI/loadout
+        // poses, sampling start / middle / last frame, to validate the position,
+        // angle (packed-quaternion), and scale decoders end-to-end.
+        var probes = new (string Clip, string Bone, string Channel)[]
+        {
+            ("primary_stand_idle", "pelvis", "rotation"),
+            ("primary_stand_idle", "pelvis", "translation"),
+            ("primary_stand_idle", "spine_0", "rotation"),
+            ("idle_loadout", "pelvis", "rotation"),
+            ("ui_hero_select", "pelvis", "rotation"),
+        };
+
+        var samples = new List<SampleMeta_t>();
+        foreach (var (clipName, boneName, channel) in probes)
+        {
+            if (!byName.TryGetValue(clipName, out var anim))
+            {
+                continue;
+            }
+            var boneIdx = Array.FindIndex(skeleton.Bones, b => b.Name == boneName);
+            if (boneIdx < 0)
+            {
+                continue;
+            }
+            var last = anim.FrameCount - 1;
+            foreach (var frame in new[] { 0, anim.FrameCount / 2, last }.Distinct())
+            {
+                var f = new Frame(skeleton, flex) { FrameIndex = frame };
+                anim.DecodeFrame(f);
+                var bone = f.Bones[boneIdx];
+                var value = channel switch
+                {
+                    "translation" => new[] { bone.Position.X, bone.Position.Y, bone.Position.Z },
+                    "rotation" => new[] { bone.Angle.X, bone.Angle.Y, bone.Angle.Z, bone.Angle.W },
+                    "scale" => new[] { bone.Scale },
+                    _ => Array.Empty<float>(),
+                };
+                samples.Add(new SampleMeta_t
+                {
+                    Clip = clipName,
+                    Bone = boneName,
+                    Channel = channel,
+                    Frame = frame,
+                    Value = value,
+                });
+            }
+        }
+
+        var meta = new AnimMeta_t
+        {
+            ClipCount = clips.Length,
+            Clips = clips,
+            Samples = samples.ToArray(),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote anim meta for {entry} -> {outFull}");
+        Console.WriteLine($"  clips={meta.ClipCount} samples={meta.Samples.Length}");
+        return 0;
+    }
+
+    // ---------- material-meta (M4 validation) ----------
+
+    // Dumps a compiled material's shader name + parameter tables (as VRF's
+    // Material parses them) for the morphic material parser to diff against.
+    // The .vmat_c itself is committed as a fixture; this is the golden.
+    private static int MaterialMeta(string[] args)
+    {
+        string? vpk = null, entry = null, outJson = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":   vpk     = args[++i]; break;
+                case "--entry": entry   = args[++i]; break;
+                case "--out":   outJson = args[++i]; break;
+                default: return Fail($"material-meta: unknown flag {args[i]}");
+            }
+        }
+        if (vpk is null || entry is null || outJson is null)
+        {
+            return Fail("material-meta: --vpk, --entry, and --out are required");
+        }
+
+        using var pak = new Package();
+        pak.Read(vpk);
+        var packageEntry = pak.FindEntry(entry)
+            ?? throw new FileNotFoundException($"entry not found in VPK: {entry}");
+        pak.ReadEntry(packageEntry, out var data);
+
+        using var resource = new Resource { FileName = entry };
+        using var ms = new MemoryStream(data);
+        resource.Read(ms);
+
+        if (resource.DataBlock is not Material mat)
+        {
+            return Fail("material-meta: resource is not a material");
+        }
+
+        var meta = new MaterialMeta_t
+        {
+            Name = mat.Name,
+            ShaderName = mat.ShaderName,
+            TextureParams = new SortedDictionary<string, string>(mat.TextureParams, StringComparer.Ordinal),
+            IntParams = new SortedDictionary<string, long>(mat.IntParams, StringComparer.Ordinal),
+            FloatParams = mat.FloatParams
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .ToDictionary(kv => kv.Key, kv => (double)kv.Value),
+            VectorParams = mat.VectorParams
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .ToDictionary(kv => kv.Key, kv => new[] { kv.Value.X, kv.Value.Y, kv.Value.Z, kv.Value.W }),
+            VrfVersion = typeof(Resource).Assembly.GetName().Version?.ToString() ?? "unknown",
+        };
+
+        var outFull = Path.GetFullPath(outJson);
+        Directory.CreateDirectory(Path.GetDirectoryName(outFull)!);
+        File.WriteAllText(outFull, JsonSerializer.Serialize(meta, JsonOpts) + "\n");
+        Console.WriteLine($"wrote material meta for {entry} -> {outFull}");
+        Console.WriteLine($"  shader={meta.ShaderName} textures={meta.TextureParams.Count} " +
+            $"int={meta.IntParams.Count} float={meta.FloatParams.Count} vector={meta.VectorParams.Count}");
+        return 0;
+    }
+
     // ---------- helpers ----------
 
-    // ---------- kv3dump ----------
+    // ---------- kv3dump (soundevents re-encode validation) ----------
     //
     // Independent validation: load a resource file with VRF and confirm the
     // DATA block parses as binary KV3. Used to check that morphic's
-    // uncompressed re-encode is spec-valid (not just self-consistent).
-    private static int Kv3Dump(string[] args)
+    // uncompressed re-encode is spec-valid (not just self-consistent). Distinct
+    // from `kv3-dump` (the block-by-FOURCC golden dumper above).
+    private static int Kv3Check(string[] args)
     {
         string? file = null;
         for (var i = 0; i < args.Length; i++)
@@ -384,6 +1088,13 @@ internal static class Program
         Console.WriteLine("  morphic-oracle generate --fixtures DIR [--force]");
         Console.WriteLine("  morphic-oracle extract  --vpk PATH --entry NAME --out DIR");
         Console.WriteLine("  morphic-oracle survey   --vpk PATH --out CSV");
+        Console.WriteLine("  morphic-oracle model    --vpk PATH --entry NAME [--base PATH] --out GLB [--no-materials]");
+        Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
+        Console.WriteLine("  morphic-oracle kv3dump  --file FILE  (validate a re-encoded KV3 file parses)");
+        Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
+        Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle anim-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle material-meta --vpk PATH --entry NAME --out JSON");
         return 0;
     }
 
@@ -419,5 +1130,111 @@ internal static class Program
         [JsonPropertyName("epsilon")] public double? Epsilon { get; init; }
         [JsonPropertyName("abs")]     public double? Abs { get; init; }
         [JsonPropertyName("rel")]     public double? Rel { get; init; }
+    }
+
+    private sealed class MeshBufferRecord
+    {
+        [JsonPropertyName("mesh")]            public string Mesh { get; init; } = "";
+        [JsonPropertyName("kind")]            public string Kind { get; init; } = "";
+        [JsonPropertyName("buffer_index")]    public int BufferIndex { get; init; }
+        [JsonPropertyName("block_index")]     public int BlockIndex { get; init; }
+        [JsonPropertyName("element_count")]   public uint ElementCount { get; init; }
+        [JsonPropertyName("element_size")]    public uint ElementSize { get; init; }
+        [JsonPropertyName("meshopt")]         public bool Meshopt { get; init; }
+        [JsonPropertyName("zstd")]            public bool Zstd { get; init; }
+        [JsonPropertyName("compressed_size")] public int CompressedSize { get; init; }
+        [JsonPropertyName("decoded_len")]     public int DecodedLen { get; init; }
+        [JsonPropertyName("sha256")]          public string Sha256 { get; init; } = "";
+    }
+
+    private sealed class ModelMeta_t
+    {
+        [JsonPropertyName("bone_count")]      public int BoneCount { get; set; }
+        [JsonPropertyName("bone_names")]      public string[] BoneNames { get; set; } = Array.Empty<string>();
+        [JsonPropertyName("meshes")]          public MeshMeta_t[] Meshes { get; set; } = Array.Empty<MeshMeta_t>();
+        [JsonPropertyName("unique_vertices")] public int UniqueVertices { get; set; }
+        [JsonPropertyName("gltf_vertices")]   public int GltfVertices { get; set; }
+        [JsonPropertyName("total_indices")]   public int TotalIndices { get; set; }
+        [JsonPropertyName("material_count")]  public int MaterialCount { get; set; }
+        [JsonPropertyName("materials")]       public string[] Materials { get; set; } = Array.Empty<string>();
+        [JsonPropertyName("bbox_min")]        public float[] BboxMin { get; set; } = Array.Empty<float>();
+        [JsonPropertyName("bbox_max")]        public float[] BboxMax { get; set; } = Array.Empty<float>();
+        [JsonPropertyName("vrf_version")]     public string VrfVersion { get; set; } = "";
+    }
+
+    private sealed class MeshMeta_t
+    {
+        [JsonPropertyName("name")]           public string Name { get; init; } = "";
+        [JsonPropertyName("mesh_index")]     public int MeshIndex { get; init; }
+        [JsonPropertyName("scene_min")]      public float[] SceneMin { get; init; } = Array.Empty<float>();
+        [JsonPropertyName("scene_max")]      public float[] SceneMax { get; init; } = Array.Empty<float>();
+        [JsonPropertyName("vertex_buffers")] public VbMeta_t[] VertexBuffers { get; init; } = Array.Empty<VbMeta_t>();
+        [JsonPropertyName("index_buffers")]  public IbMeta_t[] IndexBuffers { get; init; } = Array.Empty<IbMeta_t>();
+        [JsonPropertyName("primitives")]     public PrimMeta_t[] Primitives { get; init; } = Array.Empty<PrimMeta_t>();
+    }
+
+    private sealed class VbMeta_t
+    {
+        [JsonPropertyName("element_count")] public int ElementCount { get; init; }
+        [JsonPropertyName("element_size")]  public int ElementSize { get; init; }
+        [JsonPropertyName("fields")]        public FieldMeta_t[] Fields { get; init; } = Array.Empty<FieldMeta_t>();
+    }
+
+    private sealed class IbMeta_t
+    {
+        [JsonPropertyName("element_count")] public int ElementCount { get; init; }
+        [JsonPropertyName("element_size")]  public int ElementSize { get; init; }
+    }
+
+    private sealed class FieldMeta_t
+    {
+        [JsonPropertyName("semantic")]       public string Semantic { get; init; } = "";
+        [JsonPropertyName("semantic_index")] public int SemanticIndex { get; init; }
+        [JsonPropertyName("format")]         public int Format { get; init; }
+        [JsonPropertyName("offset")]         public int Offset { get; init; }
+    }
+
+    private sealed class PrimMeta_t
+    {
+        [JsonPropertyName("vertex_buffer")] public int VertexBuffer { get; init; }
+        [JsonPropertyName("vertex_count")]  public int VertexCount { get; init; }
+        [JsonPropertyName("index_count")]   public int IndexCount { get; init; }
+        [JsonPropertyName("material")]      public string Material { get; init; } = "";
+    }
+
+    private sealed class MaterialMeta_t
+    {
+        [JsonPropertyName("name")]           public string Name { get; init; } = "";
+        [JsonPropertyName("shader_name")]    public string ShaderName { get; init; } = "";
+        [JsonPropertyName("texture_params")] public IDictionary<string, string> TextureParams { get; init; } = new SortedDictionary<string, string>();
+        [JsonPropertyName("int_params")]     public IDictionary<string, long> IntParams { get; init; } = new SortedDictionary<string, long>();
+        [JsonPropertyName("float_params")]   public IDictionary<string, double> FloatParams { get; init; } = new Dictionary<string, double>();
+        [JsonPropertyName("vector_params")]  public IDictionary<string, float[]> VectorParams { get; init; } = new Dictionary<string, float[]>();
+        [JsonPropertyName("vrf_version")]    public string VrfVersion { get; init; } = "";
+    }
+
+    private sealed class AnimMeta_t
+    {
+        [JsonPropertyName("clip_count")]  public int ClipCount { get; init; }
+        [JsonPropertyName("clips")]       public ClipMeta_t[] Clips { get; init; } = Array.Empty<ClipMeta_t>();
+        [JsonPropertyName("samples")]     public SampleMeta_t[] Samples { get; init; } = Array.Empty<SampleMeta_t>();
+        [JsonPropertyName("vrf_version")] public string VrfVersion { get; init; } = "";
+    }
+
+    private sealed class ClipMeta_t
+    {
+        [JsonPropertyName("name")]        public string Name { get; init; } = "";
+        [JsonPropertyName("fps")]         public float Fps { get; init; }
+        [JsonPropertyName("frame_count")] public int FrameCount { get; init; }
+        [JsonPropertyName("looping")]     public bool Looping { get; init; }
+    }
+
+    private sealed class SampleMeta_t
+    {
+        [JsonPropertyName("clip")]    public string Clip { get; init; } = "";
+        [JsonPropertyName("bone")]    public string Bone { get; init; } = "";
+        [JsonPropertyName("channel")] public string Channel { get; init; } = "";
+        [JsonPropertyName("frame")]   public int Frame { get; init; }
+        [JsonPropertyName("value")]   public float[] Value { get; init; } = Array.Empty<float>();
     }
 }

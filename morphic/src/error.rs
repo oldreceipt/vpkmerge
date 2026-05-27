@@ -24,7 +24,7 @@ pub enum DecodeError {
     #[error("KV3 parse error: {0}")]
     Kv3(&'static str),
 
-    #[error("unsupported KV3 compression method: {0} (only 0=none and 1=LZ4 are handled)")]
+    #[error("unsupported KV3 compression method: {0} (only 0=none, 1=LZ4, 2=ZSTD are handled)")]
     Kv3Compression(u32),
 
     #[error("KV3 LZ4 decompress failed: {0}")]
@@ -32,6 +32,12 @@ pub enum DecodeError {
 
     #[error("unknown KV3 node type: {0}")]
     Kv3NodeType(u8),
+
+    #[error("meshopt decode error: {0}")]
+    Meshopt(&'static str),
+
+    #[error("model decode error: {0}")]
+    Model(&'static str),
 
     #[error("texture header missing field: {0}")]
     MissingField(&'static str),

@@ -15,7 +15,11 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+pub mod model;
 pub mod portrait;
+pub use model::{
+    export_hero_model, export_model, inspect_models, AnimOptions, ModelEntry, ModelInfo,
+};
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
 pub mod soundevents;

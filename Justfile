@@ -31,6 +31,75 @@ fixture entry subdir:
       --out "../../morphic/fixtures/{{subdir}}"
     just goldens
 
+# Re-bless the committed KV3 goldens (.kv3.json + raw .kv3bin) from the local
+# install. Run after a game update changes the KV3 schema; diff before committing.
+kv3-goldens:
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block DATA \
+      --out ../../morphic/fixtures/kv3/hornet_data.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_data.kv3bin
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block MDAT --nth 0 \
+      --out ../../morphic/fixtures/kv3/hornet_mdat0.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_mdat0.kv3bin
+    cd tools/morphic-oracle && dotnet run -- kv3-dump \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c --block CTRL \
+      --out ../../morphic/fixtures/kv3/hornet_ctrl.kv3.json \
+      --raw ../../morphic/fixtures/kv3/hornet_ctrl.kv3bin
+
+# Re-bless the compact model-meta golden (sorted bone names, per-LOD0-mesh
+# layouts + draw calls + materials, vertex/index totals, source-space bbox) the
+# M3 model decoder diffs against. Small JSON; committed. Re-run after a game
+# update changes the model schema; diff before committing.
+model-meta:
+    cd tools/morphic-oracle && dotnet run -- model-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out ../../morphic/fixtures/kv3/hornet_model_meta.json
+
+# Re-bless the anim-meta golden (per-clip name/fps/frame_count/looping plus a few
+# sampled per-bone keyframe values) the animation decoder diffs against. Small
+# JSON; committed. The raw ANIM/ASEQ/AGRP buffers are NOT committed (~16 MB); the
+# keyframe-correctness test reads them live and is gated on MORPHIC_MODEL_VPK.
+# Re-run after a game update changes the animation schema; diff before committing.
+anim-meta:
+    cd tools/morphic-oracle && dotnet run -- anim-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out ../../morphic/fixtures/kv3/hornet_anim_meta.json
+
+# Re-bless the material golden (shader + parameter tables) the M4 material parser
+# diffs against. Re-extracts the .vmat_c fixture too. Small; committed.
+material-meta:
+    cd tools/morphic-oracle && dotnet run -- extract \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c \
+      --out ../../morphic/fixtures/material
+    cd tools/morphic-oracle && dotnet run -- material-meta \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c \
+      --out ../../morphic/fixtures/material/vindicta_headv2.material.json
+
+# Re-dump the meshopt buffer goldens (raw MVTX/MIDX + decoded SHA/metadata) for
+# every embedded mesh in hornet. Copy the small ones into morphic/fixtures/meshopt/.
+mesh-buffers:
+    cd tools/morphic-oracle && dotnet run -- mesh-buffers \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry models/heroes_staging/hornet_v3/hornet.vmdl_c \
+      --out-dir /tmp/morphic-meshbuf
+
+# Export a golden .glb for one model entry, for the M3+ semantic diff. The GLB
+# is large and not committed; regenerate on demand. Usage: just model-golden <entry> <out.glb>
+model-golden entry out:
+    cd tools/morphic-oracle && dotnet run -- model \
+      --vpk "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --entry "{{entry}}" \
+      --base "${DEADLOCK_DIR:-$HOME/.steam/steam/steamapps/common/Deadlock/game/citadel}/pak01_dir.vpk" \
+      --out "{{out}}"
+
 # Resurvey every .vtex_c format in Deadlock pak01. Writes tools/format-counts.csv.
 survey:
     cd tools/morphic-oracle && dotnet run -- survey \

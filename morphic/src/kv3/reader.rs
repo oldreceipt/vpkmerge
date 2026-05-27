@@ -50,6 +50,11 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
     let (mut count_b1, mut count_b4, mut count_b8);
     let mut count_types = 0i64;
     let mut count_blocks = 0i64;
+    // Binary-blob section sizing (model `ANIM` blocks ship blobs; soundevents
+    // does not). `frame` doubles as the LZ4 frame size that chunks the blobs.
+    let mut frame = 0u16;
+    let mut size_blobs = 0i64;
+    let mut size_block_compressed = 0i64;
     let size_unc_total: i64;
     let size_comp_total: i64;
 
@@ -61,7 +66,7 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
         size_comp_total = (data.len() - h.pos) as i64;
     } else {
         let _dict = h.u16()?;
-        let frame = h.u16()?;
+        frame = h.u16()?;
         if compression == 1 && frame != LZ4_FRAME_SIZE {
             return Err(DecodeError::Kv3("unexpected LZ4 frame size"));
         }
@@ -74,13 +79,13 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
         size_unc_total = h.i32()?;
         size_comp_total = h.i32()?;
         count_blocks = h.i32()?;
-        let _size_blobs = h.i32()?;
+        size_blobs = h.i32()?;
     }
 
     let mut count_b2 = 0i64;
     if version >= 4 {
         count_b2 = h.i32()?;
-        let _size_block_compressed = h.i32()?;
+        size_block_compressed = h.i32()?;
     }
 
     // v5 splits everything into two buffers: an auxiliary buffer (strings +
@@ -121,10 +126,9 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
         size_comp_buf1 = size_comp_total;
     }
 
-    if count_blocks > 0 {
-        return Err(DecodeError::Kv3(
-            "binary blobs (countBlocks > 0) unsupported",
-        ));
+    // Binary blobs only occur in v5 (model `ANIM`); reject them elsewhere.
+    if count_blocks > 0 && version < 5 {
+        return Err(DecodeError::Kv3("binary blobs require KV3 v5"));
     }
 
     // Decompress the buffers off the stream, in order.
@@ -144,8 +148,25 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
             b4: count_b4,
             b8: count_b8,
         };
-        let (main_buffers, object_lengths, types) =
-            layout_main_v5(&buf2, &main, main_obj_count, count_types)?;
+        let (main_buffers, object_lengths, types, after_types) =
+            layout_main_v5(&buf2, &main, main_obj_count, count_types, count_blocks)?;
+        // The blob region (per-blob lengths + trailer + frame table) sits at the
+        // buf2 tail after the type stream; the compressed frames follow buf2 in
+        // the stream. `h` is positioned right after buf2.
+        let blobs = if count_blocks > 0 {
+            read_blobs(
+                &mut h,
+                &buf2,
+                after_types,
+                compression,
+                usize::from(frame),
+                count_blocks,
+                size_blobs,
+                size_block_compressed,
+            )?
+        } else {
+            Vec::new()
+        };
         Ctx {
             version,
             strings,
@@ -153,6 +174,8 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
             object_lengths: Cursor::new(object_lengths),
             main: main_buffers,
             aux,
+            blobs,
+            next_blob: 0,
         }
     } else {
         layout_single(
@@ -195,6 +218,10 @@ struct Ctx<'a> {
     object_lengths: Cursor<'a>,
     main: Buffers<'a>,
     aux: Buffers<'a>,
+    /// Decoded binary blobs in document order; each `BINARY_BLOB` node consumes
+    /// the next. Empty unless the payload carries a blob section (model `ANIM`).
+    blobs: Vec<Vec<u8>>,
+    next_blob: usize,
 }
 
 fn read_buffer(
@@ -223,8 +250,125 @@ fn read_buffer(
             }
             Ok(out)
         }
+        2 => {
+            let comp =
+                usize::try_from(size_comp).map_err(|_| DecodeError::Kv3("negative comp size"))?;
+            let input = h.bytes(comp)?;
+            zstd_decompress(input, unc)
+        }
         other => Err(DecodeError::Kv3Compression(other)),
     }
+}
+
+/// Decompresses a single ZSTD frame (pure-Rust `ruzstd`) to a known length.
+/// Larger model blocks like `ANIM` choose ZSTD over LZ4 for their buffers and
+/// blob region.
+fn zstd_decompress(input: &[u8], size_unc: usize) -> Result<Vec<u8>, DecodeError> {
+    use std::io::Read;
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(input)
+        .map_err(|_| DecodeError::Kv3("ZSTD init failed"))?;
+    let mut out = vec![0u8; size_unc];
+    dec.read_exact(&mut out)
+        .map_err(|_| DecodeError::Kv3("ZSTD decompress failed"))?;
+    Ok(out)
+}
+
+/// Reads the v5 binary-blob section. `after_types` is the offset into the
+/// decompressed `buf2` just past the type stream: there sit the per-blob
+/// uncompressed lengths, the trailer, then (for LZ4) the per-frame
+/// compressed-size table. The compressed frames follow buf2 in the stream `h`.
+/// Returns each blob in document order.
+#[allow(clippy::too_many_arguments)]
+fn read_blobs(
+    h: &mut Cursor,
+    buf2: &[u8],
+    after_types: usize,
+    compression: u32,
+    frame_size: usize,
+    count_blocks: i64,
+    size_blobs: i64,
+    size_block_compressed: i64,
+) -> Result<Vec<Vec<u8>>, DecodeError> {
+    let count = usize_of(count_blocks)?;
+    let size_blobs = usize_of(size_blobs)?;
+
+    // Per-blob uncompressed lengths (i32 each), then the document trailer.
+    let lengths_len = count
+        .checked_mul(4)
+        .ok_or(DecodeError::Kv3("blob length table overflow"))?;
+    let mut off = after_types;
+    let lengths_region = slice(buf2, off, lengths_len)?;
+    off += lengths_len;
+    let lengths: Vec<usize> = lengths_region
+        .chunks_exact(4)
+        .map(|b| usize_of(i64::from(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))))
+        .collect::<Result<_, _>>()?;
+    check_trailer(buf2, off)?;
+    off += 4;
+
+    // Decompress the whole blob region into one buffer, then carve per blob.
+    let blob_buf = match compression {
+        0 => h.bytes(size_blobs)?.to_vec(),
+        1 => {
+            let table = slice(buf2, off, usize_of(size_block_compressed)?)?;
+            decompress_blob_frames(h, table, frame_size, size_blobs)?
+        }
+        // v5 ZSTD: one frame for the whole region (no per-frame table).
+        2 => zstd_decompress(h.rest(), size_blobs)?,
+        other => return Err(DecodeError::Kv3Compression(other)),
+    };
+
+    let mut blobs = Vec::with_capacity(count);
+    let mut p = 0usize;
+    for len in lengths {
+        let end = p
+            .checked_add(len)
+            .ok_or(DecodeError::Kv3("blob slice overflow"))?;
+        let bytes = blob_buf
+            .get(p..end)
+            .ok_or(DecodeError::Kv3("blob region underrun"))?;
+        blobs.push(bytes.to_vec());
+        p = end;
+    }
+    Ok(blobs)
+}
+
+/// Decompresses the chained-LZ4 blob frames. Each frame decodes against all
+/// previously decoded blob bytes as its dictionary (LZ4 match offsets reach
+/// back at most 64 KB, a subset of the prior output). `table` is the `u16`
+/// compressed-size-per-frame list.
+fn decompress_blob_frames(
+    h: &mut Cursor,
+    table: &[u8],
+    frame_size: usize,
+    size_blobs: usize,
+) -> Result<Vec<u8>, DecodeError> {
+    if frame_size == 0 {
+        return Err(DecodeError::Kv3("zero blob frame size"));
+    }
+    let mut out = vec![0u8; size_blobs];
+    let mut done = 0usize;
+    for fs in table.chunks_exact(2) {
+        if done >= size_blobs {
+            break;
+        }
+        let comp = usize::from(u16::from_le_bytes([fs[0], fs[1]]));
+        let want = frame_size.min(size_blobs - done);
+        let input = h.bytes(comp)?;
+        let (dict, rest) = out.split_at_mut(done);
+        let n = lz4_flex::block::decompress_into_with_dict(input, &mut rest[..want], dict)
+            .map_err(|e| DecodeError::Kv3Lz4(e.to_string()))?;
+        if n != want {
+            return Err(DecodeError::Kv3Lz4(format!(
+                "blob frame: expected {want}, got {n}"
+            )));
+        }
+        done += n;
+    }
+    if done != size_blobs {
+        return Err(DecodeError::Kv3("blob size mismatch"));
+    }
+    Ok(out)
 }
 
 /// v5 auxiliary buffer: `[b1][align2 b2][align4 b4][align8 b8]`, where the
@@ -259,13 +403,22 @@ fn layout_aux_v5<'a>(
     Ok((aux, strings))
 }
 
+/// What [`layout_main_v5`] carves from buffer 2: the four scalar sub-buffers,
+/// the object-length table, the type stream, and the offset just past `types`
+/// (where the trailer or the blob section begins).
+type MainLayout<'a> = (Buffers<'a>, &'a [u8], &'a [u8], usize);
+
 /// v5 main buffer: `[object_lengths][b1][align2 b2][align4 b4][align8 b8][types][trailer]`.
+/// Returns the offset just past `types`: the document trailer sits there when
+/// there are no blobs (and is checked), or the blob length/trailer/frame table
+/// when `count_blocks > 0` (read by the caller).
 fn layout_main_v5<'a>(
     buf: &'a [u8],
     counts: &SubCounts,
     obj_count: i64,
     count_types: i64,
-) -> Result<(Buffers<'a>, &'a [u8], &'a [u8]), DecodeError> {
+    count_blocks: i64,
+) -> Result<MainLayout<'a>, DecodeError> {
     let mut off = 0usize;
     let ol_start = off;
     let ol_len = usize_of(obj_count)? * 4;
@@ -278,7 +431,9 @@ fn layout_main_v5<'a>(
     let types_start = off;
     let types_len = usize_of(count_types)?;
     off += types_len;
-    check_trailer(buf, off)?;
+    if count_blocks == 0 {
+        check_trailer(buf, off)?;
+    }
 
     let buffers = Buffers {
         b1: Cursor::new(slice(buf, b1_start, usize_of(counts.b1)?)?),
@@ -288,7 +443,7 @@ fn layout_main_v5<'a>(
     };
     let object_lengths = slice(buf, ol_start, ol_len)?;
     let types = slice(buf, types_start, types_len)?;
-    Ok((buffers, object_lengths, types))
+    Ok((buffers, object_lengths, types, off))
 }
 
 /// v1..=4 single buffer: `[b1][align2 b2][align4 b4][align8 b8][strings][types][trailer]`.
@@ -358,6 +513,8 @@ fn layout_single(
             b4: Cursor::new(&[]),
             b8: Cursor::new(&[]),
         },
+        blobs: Vec::new(),
+        next_blob: 0,
     })
 }
 
@@ -457,6 +614,15 @@ fn read_value(ctx: &mut Ctx, datatype: u8) -> Result<Value, DecodeError> {
             }
             Ok(Value::Object(pairs))
         }
+        BINARY_BLOB => {
+            let blob = ctx
+                .blobs
+                .get_mut(ctx.next_blob)
+                .map(std::mem::take)
+                .ok_or(DecodeError::Kv3("blob index out of range"))?;
+            ctx.next_blob += 1;
+            Ok(Value::Binary(blob))
+        }
         other => Err(DecodeError::Kv3NodeType(other)),
     }
 }
@@ -503,6 +669,12 @@ impl<'a> Cursor<'a> {
 
     fn bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         self.take(n)
+    }
+
+    /// The unread remainder (the trailing ZSTD blob frame lives here, after both
+    /// compressed buffers).
+    fn rest(&self) -> &'a [u8] {
+        &self.data[self.pos..]
     }
 
     fn u8(&mut self) -> Result<u8, DecodeError> {

@@ -1,0 +1,379 @@
+{
+  "bone_count": 62,
+  "bone_names": [
+    "a_hair_braid_0",
+    "a_hair_braid_1",
+    "a_hair_braid_2",
+    "a_hair_braid_3",
+    "a_hair_braid_4",
+    "a_hair_braid_5",
+    "a_hair_braid_6",
+    "a_hair_braid_7",
+    "a_hair_braid_8",
+    "a_hair_braid_9",
+    "a_hair_braid_end",
+    "ankle_L",
+    "ankle_R",
+    "arm_lower_L",
+    "arm_lower_R",
+    "arm_upper_L",
+    "arm_upper_R",
+    "ball_L",
+    "ball_R",
+    "base_0",
+    "base_1",
+    "bell_0",
+    "bell_1",
+    "clavicle_L",
+    "clavicle_R",
+    "finger_index_meta_L",
+    "finger_index_meta_R",
+    "finger_middle_0_L",
+    "finger_middle_0_R",
+    "finger_middle_1_L",
+    "finger_middle_1_R",
+    "finger_middle_2_L",
+    "finger_middle_2_R",
+    "finger_middle_meta_L",
+    "finger_middle_meta_R",
+    "finger_thumb_0_L",
+    "finger_thumb_0_R",
+    "foot_L_IK_target",
+    "foot_R_IK_target",
+    "hand_L",
+    "hand_L_IK_target",
+    "hand_R",
+    "hand_R_IK_target",
+    "head",
+    "lefthand_ik_target",
+    "leg_L_IKTARGET",
+    "leg_R_IKTARGET",
+    "leg_lower_L",
+    "leg_lower_R",
+    "leg_upper_L",
+    "leg_upper_R",
+    "muzzle_fx",
+    "neck_0",
+    "pelvis",
+    "root_motion",
+    "spine_0",
+    "spine_1",
+    "spine_2",
+    "spine_3",
+    "weaponHand_L",
+    "weaponHand_R",
+    "weapon_bone"
+  ],
+  "meshes": [
+    {
+      "name": "body",
+      "mesh_index": 0,
+      "scene_min": [
+        -23.647148,
+        -16.127806,
+        0.29506138
+      ],
+      "scene_max": [
+        12.257376,
+        15.926753,
+        90.368225
+      ],
+      "vertex_buffers": [
+        {
+          "element_count": 56899,
+          "element_size": 56,
+          "fields": [
+            {
+              "semantic": "POSITION",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 0
+            },
+            {
+              "semantic": "TEXCOORD",
+              "semantic_index": 0,
+              "format": 16,
+              "offset": 12
+            },
+            {
+              "semantic": "NORMAL",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 20
+            },
+            {
+              "semantic": "TANGENT",
+              "semantic_index": 0,
+              "format": 2,
+              "offset": 32
+            },
+            {
+              "semantic": "BLENDINDICES",
+              "semantic_index": 0,
+              "format": 30,
+              "offset": 48
+            },
+            {
+              "semantic": "BLENDWEIGHT",
+              "semantic_index": 0,
+              "format": 28,
+              "offset": 52
+            }
+          ]
+        },
+        {
+          "element_count": 5726,
+          "element_size": 60,
+          "fields": [
+            {
+              "semantic": "POSITION",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 0
+            },
+            {
+              "semantic": "TEXCOORD",
+              "semantic_index": 0,
+              "format": 16,
+              "offset": 12
+            },
+            {
+              "semantic": "NORMAL",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 20
+            },
+            {
+              "semantic": "TANGENT",
+              "semantic_index": 0,
+              "format": 2,
+              "offset": 32
+            },
+            {
+              "semantic": "COLOR",
+              "semantic_index": 0,
+              "format": 28,
+              "offset": 48
+            },
+            {
+              "semantic": "BLENDINDICES",
+              "semantic_index": 0,
+              "format": 30,
+              "offset": 52
+            },
+            {
+              "semantic": "BLENDWEIGHT",
+              "semantic_index": 0,
+              "format": 28,
+              "offset": 56
+            }
+          ]
+        }
+      ],
+      "index_buffers": [
+        {
+          "element_count": 311070,
+          "element_size": 2
+        },
+        {
+          "element_count": 26910,
+          "element_size": 2
+        }
+      ],
+      "primitives": [
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 14837,
+          "index_count": 87324,
+          "material": "models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat"
+        },
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 25261,
+          "index_count": 64905,
+          "material": "models/heroes_staging/hornet_v3/materials/vindicta_hair.vmat"
+        },
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 45029,
+          "index_count": 95637,
+          "material": "models/heroes_staging/vindicta/materials/vindicta_dress.vmat"
+        },
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 56899,
+          "index_count": 63204,
+          "material": "models/heroes_staging/vindicta/materials/vindicta_props.vmat"
+        },
+        {
+          "vertex_buffer": 1,
+          "vertex_count": 5726,
+          "index_count": 26910,
+          "material": "models/heroes_staging/hornet_v3/materials/vindicta_head.vmat"
+        }
+      ]
+    },
+    {
+      "name": "gun",
+      "mesh_index": 1,
+      "scene_min": [
+        -3.1208866,
+        -22.603374,
+        -0.11211304
+      ],
+      "scene_max": [
+        13.225784,
+        -8.252039,
+        68.26384
+      ],
+      "vertex_buffers": [
+        {
+          "element_count": 11750,
+          "element_size": 52,
+          "fields": [
+            {
+              "semantic": "POSITION",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 0
+            },
+            {
+              "semantic": "TEXCOORD",
+              "semantic_index": 0,
+              "format": 16,
+              "offset": 12
+            },
+            {
+              "semantic": "NORMAL",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 20
+            },
+            {
+              "semantic": "TANGENT",
+              "semantic_index": 0,
+              "format": 2,
+              "offset": 32
+            },
+            {
+              "semantic": "BLENDINDICES",
+              "semantic_index": 0,
+              "format": 30,
+              "offset": 48
+            }
+          ]
+        }
+      ],
+      "index_buffers": [
+        {
+          "element_count": 76329,
+          "element_size": 2
+        }
+      ],
+      "primitives": [
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 11750,
+          "index_count": 76329,
+          "material": "models/heroes_staging/vindicta/materials/vindicta_gun.vmat"
+        }
+      ]
+    },
+    {
+      "name": "ghost_glow",
+      "mesh_index": 2,
+      "scene_min": [
+        -24.269566,
+        -16.279654,
+        -0.37636122
+      ],
+      "scene_max": [
+        9.158159,
+        16.399466,
+        90.931335
+      ],
+      "vertex_buffers": [
+        {
+          "element_count": 3736,
+          "element_size": 56,
+          "fields": [
+            {
+              "semantic": "POSITION",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 0
+            },
+            {
+              "semantic": "TEXCOORD",
+              "semantic_index": 0,
+              "format": 16,
+              "offset": 12
+            },
+            {
+              "semantic": "NORMAL",
+              "semantic_index": 0,
+              "format": 6,
+              "offset": 20
+            },
+            {
+              "semantic": "TANGENT",
+              "semantic_index": 0,
+              "format": 2,
+              "offset": 32
+            },
+            {
+              "semantic": "BLENDINDICES",
+              "semantic_index": 0,
+              "format": 30,
+              "offset": 48
+            },
+            {
+              "semantic": "BLENDWEIGHT",
+              "semantic_index": 0,
+              "format": 28,
+              "offset": 52
+            }
+          ]
+        }
+      ],
+      "index_buffers": [
+        {
+          "element_count": 12618,
+          "element_size": 2
+        }
+      ],
+      "primitives": [
+        {
+          "vertex_buffer": 0,
+          "vertex_count": 3736,
+          "index_count": 12618,
+          "material": "models/heroes_staging/hornet_v3/materials/vindicta_glow.vmat"
+        }
+      ]
+    }
+  ],
+  "unique_vertices": 78111,
+  "gltf_vertices": 248808,
+  "total_indices": 426927,
+  "material_count": 7,
+  "materials": [
+    "models/heroes_staging/hornet_v3/materials/vindicta_glow.vmat",
+    "models/heroes_staging/hornet_v3/materials/vindicta_hair.vmat",
+    "models/heroes_staging/hornet_v3/materials/vindicta_head.vmat",
+    "models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat",
+    "models/heroes_staging/vindicta/materials/vindicta_dress.vmat",
+    "models/heroes_staging/vindicta/materials/vindicta_gun.vmat",
+    "models/heroes_staging/vindicta/materials/vindicta_props.vmat"
+  ],
+  "bbox_min": [
+    -24.269566,
+    -22.603374,
+    -0.37636122
+  ],
+  "bbox_max": [
+    13.225784,
+    16.399466,
+    90.931335
+  ],
+  "vrf_version": "19.1.0.0"
+}

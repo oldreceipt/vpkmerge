@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    extract_portraits, merge, split, CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate,
-    PortraitInfo, SoundEvents, SplitOptions, SplitOutput,
+    export_hero_model, export_model, extract_portraits, inspect_models, merge, split, AnimOptions,
+    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SoundEvents,
+    SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -48,6 +49,10 @@ enum Command {
 
     /// Extract and decode hero portrait/card art from a VPK to PNG.
     Portrait(PortraitCmd),
+
+    /// Inspect compiled models (`.vmdl_c`) in a VPK: block structure,
+    /// mesh-part count, embedded geometry, and skeleton/physics presence.
+    Model(ModelCmd),
 
     /// Decode a soundevents (`.vsndevts_c`) file to JSON, optionally edit clip
     /// paths / params and re-emit an uncompressed (loadable) file.
@@ -105,6 +110,64 @@ struct PortraitCmd {
     /// Write the JSON manifest to this file instead of stdout.
     #[arg(long, value_name = "FILE")]
     manifest: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct ModelCmd {
+    /// VPK to inspect (block structure, mesh/skeleton presence). Omit when
+    /// using a subcommand such as `export`.
+    input: Option<PathBuf>,
+
+    #[command(subcommand)]
+    action: Option<ModelAction>,
+}
+
+#[derive(Subcommand)]
+enum ModelAction {
+    /// Export a model entry to a textured binary glTF (`.glb`).
+    Export(ModelExportArgs),
+}
+
+#[derive(Args)]
+struct ModelExportArgs {
+    /// VPK containing the `.vmdl_c` (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// VPK-internal model path, e.g.
+    /// `models/heroes_staging/hornet_v3/hornet.vmdl_c`. Mutually exclusive with
+    /// `--hero`.
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "hero",
+        conflicts_with = "hero"
+    )]
+    entry: Option<String>,
+
+    /// Hero codename (e.g. `hornet`, `bookworm`) whose body model
+    /// (`<dir>/<codename>.vmdl_c`) is auto-discovered. Mutually exclusive with
+    /// `--entry`.
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Base `pak01_dir.vpk` that referenced materials/textures resolve against
+    /// when the skin VPK does not ship them.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Exclude all animation clips (export the static mesh + skeleton only).
+    #[arg(long, conflicts_with = "clip")]
+    no_anim: bool,
+
+    /// Only export the named clip(s) (e.g. `--clip primary_stand_idle`).
+    /// Repeatable. Omit to export every clip the model carries.
+    #[arg(long, value_name = "NAME")]
+    clip: Vec<String>,
+
+    /// Output `.glb` path.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
 }
 
 #[derive(Args)]
@@ -186,9 +249,69 @@ fn main() -> Result<()> {
     match cli.cmd {
         Some(Command::Split(args)) => run_split(args),
         Some(Command::Portrait(args)) => run_portrait(args),
+        Some(Command::Model(args)) => run_model(args),
         Some(Command::Soundevents(args)) => run_soundevents(args),
         None => run_merge(cli),
     }
+}
+
+fn run_model(args: ModelCmd) -> Result<()> {
+    if let Some(ModelAction::Export(e)) = args.action {
+        let anim = AnimOptions {
+            no_anim: e.no_anim,
+            clips: e.clip.clone(),
+        };
+        match (&e.entry, &e.hero) {
+            (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &anim, &e.out)
+                .with_context(|| format!("exporting {entry} from {}", e.vpk.display()))?,
+            (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &anim, &e.out)
+                .with_context(|| format!("exporting hero {hero} from {}", e.vpk.display()))?,
+            (None, None) => anyhow::bail!("model export: provide --entry or --hero"),
+        }
+        println!("wrote {}", e.out.display());
+        return Ok(());
+    }
+
+    let input = args.input.context(
+        "model: provide a VPK to inspect, or use `model export --vpk <vpk> --entry <path> --out <file.glb>`",
+    )?;
+    let models = inspect_models(&input)
+        .with_context(|| format!("inspecting models in {}", input.display()))?;
+
+    if models.is_empty() {
+        println!("{}: no .vmdl_c entries found", input.display());
+        return Ok(());
+    }
+
+    for m in &models {
+        let i = &m.info;
+        println!("\n{}", m.path);
+        println!(
+            "  mesh parts: {}   index buffers: {}   vertex bytes: {}",
+            i.mesh_parts, i.index_buffers, i.vertex_bytes
+        );
+        println!(
+            "  embedded geometry: {}   skeleton/anim: {}   physics: {}",
+            i.has_embedded_geometry, i.has_skeleton_anim, i.has_physics
+        );
+
+        // Collapse the block table into a "KINDxCOUNT (bytes)" histogram so a
+        // model with 8 MVTX/MIDX pairs reads at a glance instead of 29 lines.
+        let mut counts: std::collections::BTreeMap<&str, (usize, u64)> =
+            std::collections::BTreeMap::new();
+        for b in &i.blocks {
+            let e = counts.entry(b.kind.as_str()).or_insert((0, 0));
+            e.0 += 1;
+            e.1 += u64::from(b.size);
+        }
+        let histogram: Vec<String> = counts
+            .iter()
+            .map(|(k, (n, sz))| format!("{k}x{n} ({sz}B)"))
+            .collect();
+        println!("  blocks: {}", histogram.join("  "));
+    }
+
+    Ok(())
 }
 
 fn run_merge(cli: Cli) -> Result<()> {

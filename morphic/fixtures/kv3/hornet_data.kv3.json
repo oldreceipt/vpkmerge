@@ -1,0 +1,2909 @@
+{
+  "m_name": "models/heroes_staging/hornet_v3/hornet.vmdl",
+  "m_modelInfo": {
+    "m_nFlags": 8389632,
+    "m_vHullMin": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_vHullMax": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_vViewMin": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_vViewMax": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_flMass": {
+      "$f64": "0x0000000000000000"
+    },
+    "m_vEyePosition": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_flMaxEyeDeflection": {
+      "$f64": "0x0000000000000000"
+    },
+    "m_sSurfaceProperty": "",
+    "m_keyValueText": "\u003C!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:vmdlkeys4:version{9f5c1002-f19f-470c-bd42-c3c26c063d33} --\u003E\n{\n\tAttachmentCameraData = \n\t[\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022portrait_camera\u0022\n\t\t\tscreen_width = 512\n\t\t\tscreen_height = 384\n\t\t\tfov = 25\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022near_00\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022near_01\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022near_02\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022far_00\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022far_01\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022far_02\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 90\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022gunaim_00\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 42\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022gunaim_01\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 42\n\t\t},\n\t\t{\n\t\t\tcamera_name = \u0022\u0022\n\t\t\tattachment_name = \u0022gunaim_02\u0022\n\t\t\tscreen_width = 1920\n\t\t\tscreen_height = 1080\n\t\t\tfov = 42\n\t\t},\n\t]\n\tCCitadelHeroModelGameData_t = \n\t{\n\t\tm_UIAnimGraph = resource:\u0022\u0022\n\t\tm_UIShopAnimGraph = resource:\u0022\u0022\n\t\tm_hAmbientParticle = resource_name:\u0022\u0022\n\t\tm_vecAmbientParticleSettings = [  ]\n\t\tm_flTurnThreshold = 90.0\n\t\tm_flTurnDuration = 0.47\n\t}\n\tCitadelCameraSettings_t = \n\t{\n\t\tm_flCameraSideOffset = -28.8\n\t\tm_flCameraBackOffset = 98.88\n\t\tm_flCameraBackOffsetAiming = 80.64\n\t\tm_flCameraHeightStanding = 84.48\n\t\tm_flCameraHeightCrouching = 48.0\n\t\tm_flCameraSideOffsetZiplining = 0.0\n\t\tm_flCameraHeightOffsetZiplining = 0.0\n\t\tm_vCameraParrotOffset = [ -10.0, -10.0, 10.0 ]\n\t}\n\tCitadelModelParticleSettings_t = \n\t{\n\t\tm_flScale = 0.83\n\t}\n\tCitadelModelSceneData_t = \n\t{\n\t\tm_scenes = \n\t\t{\n\t\t\thero_selection = \n\t\t\t{\n\t\t\t\tm_settings = \n\t\t\t\t{\n\t\t\t\t\thero_root = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_strAttachmentName = \u0022portrait_camera\u0022\n\t\t\t\t\t\tm_flFOV = 25.0\n\t\t\t\t\t\tm_flZNear = 5.0\n\t\t\t\t\t\tm_flZFar = 600.0\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\tmainmenu = \n\t\t\t{\n\t\t\t\tm_settings = \n\t\t\t\t{\n\t\t\t\t\thero_root = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_strAttachmentName = \u0022portrait_camera\u0022\n\t\t\t\t\t\tm_flFOV = 25.0\n\t\t\t\t\t\tm_flZNear = 5.0\n\t\t\t\t\t\tm_flZFar = 600.0\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\tCitadelTaggedSoundSettings_t = \n\t{\n\t\tm_taggedSounds = \n\t\t[\n\t\t\tresource:\u0022scripts/tagged_sounds/vindicta_anim_sounds.vdata\u0022,\n\t\t]\n\t}\n\tCitadelUnitStatusSettings_t = \n\t{\n\t\tm_vUnitStatusOffset = [ 0.0, 0.0, 85.0 ]\n\t\tm_vHealthbarOffset = [ 0.0, 0.0, 0.0 ]\n\t\tm_vDamageNumbersOffset = [ 0.0, 15.0, 85.0 ]\n\t\tm_vStatusEffectsOffset = [ 0.0, 0.0, 0.0 ]\n\t}\n\tFeetSettings = \n\t{\n\t\tfoot_L = \n\t\t{\n\t\t\tm_name = \u0022foot_L\u0022\n\t\t\tm_ankleBoneName = \u0022ankle_L\u0022\n\t\t\tm_toeBoneName = \u0022ball_L\u0022\n\t\t\tm_vBallOffset = [ 0.0, 0.0, 0.0 ]\n\t\t\tm_vHeelOffset = [ 0.0, 0.0, 0.0 ]\n\t\t\tm_flFootLength = 0.0\n\t\t\tm_flBindPoseDirectionMS = 0.0\n\t\t\tm_flTraceHeight = 10.0\n\t\t\tm_flTraceRadius = 4.0\n\t\t}\n\t\tfoot_R = \n\t\t{\n\t\t\tm_name = \u0022foot_R\u0022\n\t\t\tm_ankleBoneName = \u0022ankle_R\u0022\n\t\t\tm_toeBoneName = \u0022ball_R\u0022\n\t\t\tm_vBallOffset = [ 0.0, 0.0, 0.0 ]\n\t\t\tm_vHeelOffset = [ 0.0, 0.0, 0.0 ]\n\t\t\tm_flFootLength = 0.0\n\t\t\tm_flBindPoseDirectionMS = 0.0\n\t\t\tm_flTraceHeight = 10.0\n\t\t\tm_flTraceRadius = 4.0\n\t\t}\n\t}\n\tMovementSettings = \n\t{\n\t\tenable_crouch_speeds = false\n\t\tstandard_speeds = \n\t\t{\n\t\t\tSlow = \n\t\t\t{\n\t\t\t\tspeed = 75.0\n\t\t\t\tuses_range = false\n\t\t\t\tstop_distance_range = 0.0\n\t\t\t\thop_distance_range = 0.0\n\t\t\t\tstart_distance = 0.0\n\t\t\t\tmin_turn_radius = 0.0\n\t\t\t\tm_capabilities = \u0022\u0022\n\t\t\t}\n\t\t\tFast = \n\t\t\t{\n\t\t\t\tspeed = 150.0\n\t\t\t\tuses_range = false\n\t\t\t\tstop_distance_range = 0.0\n\t\t\t\thop_distance_range = 0.0\n\t\t\t\tstart_distance = 0.0\n\t\t\t\tmin_turn_radius = 0.0\n\t\t\t\tm_capabilities = \u0022\u0022\n\t\t\t}\n\t\t}\n\t\tspeeds = [  ]\n\t\tmaxSpringTension = 100.0\n\t\tspringConstant = 10.0\n\t\tuseSmoothPaths = true\n\t\tsharpStartAngle = 180.0\n\t\tminIdleTurnAngle = 10.0\n\t}\n\tLookAtList = \n\t{\n\t\tchest_aim = \n\t\t{\n\t\t\tname = \u0022chest_aim\u0022\n\t\t\tbones = \n\t\t\t[\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_1\u0022\n\t\t\t\t\tweight = 0.339\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_2\u0022\n\t\t\t\t\tweight = 0.714\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_3\u0022\n\t\t\t\t\tweight = 1.0\n\t\t\t\t},\n\t\t\t]\n\t\t}\n\t\tNeck_and_head = \n\t\t{\n\t\t\tname = \u0022Neck_and_head\u0022\n\t\t\tbones = \n\t\t\t[\n\t\t\t\t{\n\t\t\t\t\tname = \u0022neck_0\u0022\n\t\t\t\t\tweight = 1.0\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022head\u0022\n\t\t\t\t\tweight = 1.0\n\t\t\t\t},\n\t\t\t]\n\t\t}\n\t\tshop_ui_lookat = \n\t\t{\n\t\t\tname = \u0022shop_ui_lookat\u0022\n\t\t\tbones = \n\t\t\t[\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_3\u0022\n\t\t\t\t\tweight = 0.51\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022neck_0\u0022\n\t\t\t\t\tweight = 0.66\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022head\u0022\n\t\t\t\t\tweight = 1.0\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_2\u0022\n\t\t\t\t\tweight = 0.27\n\t\t\t\t},\n\t\t\t]\n\t\t}\n\t\tzipline_lookat = \n\t\t{\n\t\t\tname = \u0022zipline_lookat\u0022\n\t\t\tbones = \n\t\t\t[\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_2\u0022\n\t\t\t\t\tweight = 0.5\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022spine_3\u0022\n\t\t\t\t\tweight = 0.5\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022neck_0\u0022\n\t\t\t\t\tweight = 0.8\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tname = \u0022head\u0022\n\t\t\t\t\tweight = 1.0\n\t\t\t\t},\n\t\t\t]\n\t\t}\n\t}\n\tikdata = \n\t{\n\t\tm_IKChains = \n\t\t[\n\t\t\t{\n\t\t\t\tm_Name = \u0022left_arm\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_upper_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_lower_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022hand_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022weapon_ik_target\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022r_hand_weapon_lock\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_upper_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_lower_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022hand_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022hand_R_IK_target\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022Leg_L\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022leg_upper_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022leg_lower_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022ankle_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022ankle_L\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022Leg_R\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022leg_upper_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022leg_lower_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022ankle_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022ankle_R\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022arm_L\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_upper_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_lower_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022hand_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022hand_L_IK_target\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022arm_R\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_upper_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_lower_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022hand_R\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022hand_R_IK_target\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t\t{\n\t\t\t\tm_Name = \u0022left_hand\u0022\n\t\t\t\tm_Joints = \n\t\t\t\t[\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_upper_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022arm_lower_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t\t{\n\t\t\t\t\t\tm_Bone = \n\t\t\t\t\t\t{\n\t\t\t\t\t\t\tm_Name = \u0022hand_L\u0022\n\t\t\t\t\t\t}\n\t\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t\t},\n\t\t\t\t]\n\t\t\t\tm_EndEffectorFixedOffsetAttachment = \n\t\t\t\t{\n\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t}\n\t\t\t\tm_ParentJoint = \n\t\t\t\t{\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_JointConstraintData = [  ]\n\t\t\t\t\tm_qFixupRotation = [ 0.0, 0.0, 0.0, 1.0 ]\n\t\t\t\t}\n\t\t\t\tm_bDoBonesOrientAlongPositiveX = true\n\t\t\t\tm_DefaultSolverSettings = \n\t\t\t\t{\n\t\t\t\t\tm_SolverType = \u0022IKSOLVER_TwoBone\u0022\n\t\t\t\t\tm_nNumIterations = 6\n\t\t\t\t\tm_EndEffectorRotationFixUpMode = \u0022None\u0022\n\t\t\t\t}\n\t\t\t\tm_DefaultTargetSettings = \n\t\t\t\t{\n\t\t\t\t\tm_TargetSource = \u0022Bone\u0022\n\t\t\t\t\tm_Bone = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_Name = \u0022weapon_bone\u0022\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNamePosition = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_AnimgraphParameterNameOrientation = \n\t\t\t\t\t{\n\t\t\t\t\t\tm_id = 4294967295\n\t\t\t\t\t}\n\t\t\t\t\tm_TargetCoordSystem = \u0022World Space\u0022\n\t\t\t\t}\n\t\t\t\tm_bParentJointRequiresAlignment = true\n\t\t\t\tm_PoleVectorForAxis = \u0022IKChainDataPoleVectorForAxis::Y\u0022\n\t\t\t\tm_bUseNewPoleVectorForAxis = false\n\t\t\t},\n\t\t]\n\t}\n}"
+  },
+  "m_ExtParts": [],
+  "m_refMeshes": [],
+  "m_refMeshGroupMasks": [
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615,
+    18446744073709551615
+  ],
+  "m_refPhysGroupMasks": [],
+  "m_refLODGroupMasks": [
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    4,
+    4,
+    8,
+    8
+  ],
+  "m_lodGroupSwitchDistances": [
+    {
+      "$f64": "0x0000000000000000"
+    },
+    {
+      "$f64": "0x402C000000000000"
+    },
+    {
+      "$f64": "0x4039000000000000"
+    },
+    {
+      "$f64": "0x4044000000000000"
+    }
+  ],
+  "m_refPhysicsData": [],
+  "m_refPhysicsHitboxData": [],
+  "m_refAnimGroups": [],
+  "m_refSequenceGroups": [],
+  "m_meshGroups": [],
+  "m_materialGroups": [],
+  "m_nDefaultMeshGroupMask": 18446744073709551615,
+  "m_modelSkeleton": {
+    "m_boneName": [
+      "root_motion",
+      "pelvis",
+      "spine_0",
+      "spine_1",
+      "spine_2",
+      "spine_3",
+      "neck_0",
+      "head",
+      "clavicle_L",
+      "arm_upper_L",
+      "arm_lower_L",
+      "hand_L",
+      "clavicle_R",
+      "arm_upper_R",
+      "arm_lower_R",
+      "hand_R",
+      "weapon_bone",
+      "lefthand_ik_target",
+      "muzzle_fx",
+      "leg_upper_L",
+      "leg_lower_L",
+      "ankle_L",
+      "ball_L",
+      "leg_upper_R",
+      "leg_lower_R",
+      "ankle_R",
+      "ball_R",
+      "hand_R_IK_target",
+      "foot_L_IK_target",
+      "foot_R_IK_target",
+      "base_0",
+      "base_1",
+      "a_hair_braid_0",
+      "a_hair_braid_1",
+      "a_hair_braid_2",
+      "a_hair_braid_3",
+      "a_hair_braid_4",
+      "a_hair_braid_5",
+      "a_hair_braid_6",
+      "a_hair_braid_7",
+      "a_hair_braid_8",
+      "finger_middle_meta_L",
+      "finger_middle_0_L",
+      "finger_middle_1_L",
+      "finger_middle_2_L",
+      "finger_index_meta_L",
+      "finger_thumb_0_L",
+      "weaponHand_L",
+      "finger_middle_meta_R",
+      "finger_middle_0_R",
+      "finger_middle_1_R",
+      "finger_middle_2_R",
+      "finger_index_meta_R",
+      "finger_thumb_0_R",
+      "bell_0",
+      "bell_1",
+      "hand_L_IK_target",
+      "weaponHand_R",
+      "leg_L_IKTARGET",
+      "leg_R_IKTARGET",
+      "a_hair_braid_9",
+      "a_hair_braid_end"
+    ],
+    "m_nParent": [
+      -1,
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      5,
+      8,
+      9,
+      10,
+      5,
+      12,
+      13,
+      14,
+      15,
+      16,
+      16,
+      1,
+      19,
+      20,
+      21,
+      1,
+      23,
+      24,
+      25,
+      0,
+      0,
+      0,
+      7,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      11,
+      41,
+      42,
+      43,
+      11,
+      11,
+      17,
+      15,
+      48,
+      49,
+      50,
+      15,
+      15,
+      3,
+      54,
+      0,
+      27,
+      28,
+      29,
+      40,
+      60
+    ],
+    "m_boneSphere": [
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x403AEFCCE0000000"
+      },
+      {
+        "$f64": "0x4032E87620000000"
+      },
+      {
+        "$f64": "0x402486C640000000"
+      },
+      {
+        "$f64": "0x40229FFD40000000"
+      },
+      {
+        "$f64": "0x4025993A80000000"
+      },
+      {
+        "$f64": "0x4011B28CA0000000"
+      },
+      {
+        "$f64": "0x4028A69F80000000"
+      },
+      {
+        "$f64": "0x4024B972A0000000"
+      },
+      {
+        "$f64": "0x402BC8A620000000"
+      },
+      {
+        "$f64": "0x402A77E9E0000000"
+      },
+      {
+        "$f64": "0x401D8C3EE0000000"
+      },
+      {
+        "$f64": "0x4024B97740000000"
+      },
+      {
+        "$f64": "0x402BC8A720000000"
+      },
+      {
+        "$f64": "0x402A77E9E0000000"
+      },
+      {
+        "$f64": "0x401D8C3B40000000"
+      },
+      {
+        "$f64": "0x40477C6120000000"
+      },
+      {
+        "$f64": "0x403769AF20000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x40412D06E0000000"
+      },
+      {
+        "$f64": "0x403C800AC0000000"
+      },
+      {
+        "$f64": "0x4021DBE120000000"
+      },
+      {
+        "$f64": "0x401BC18C80000000"
+      },
+      {
+        "$f64": "0x404104AA40000000"
+      },
+      {
+        "$f64": "0x403DF92640000000"
+      },
+      {
+        "$f64": "0x4021DBE520000000"
+      },
+      {
+        "$f64": "0x401BC187E0000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x40302F7960000000"
+      },
+      {
+        "$f64": "0x402B1379C0000000"
+      },
+      {
+        "$f64": "0x40321314A0000000"
+      },
+      {
+        "$f64": "0x402FC4C600000000"
+      },
+      {
+        "$f64": "0x403874E4C0000000"
+      },
+      {
+        "$f64": "0x4032FAE0A0000000"
+      },
+      {
+        "$f64": "0x4035D80300000000"
+      },
+      {
+        "$f64": "0x4030987FA0000000"
+      },
+      {
+        "$f64": "0x403162AC40000000"
+      },
+      {
+        "$f64": "0x402A333D00000000"
+      },
+      {
+        "$f64": "0x402576DB00000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x400B0AA4A0000000"
+      },
+      {
+        "$f64": "0x400BF56260000000"
+      },
+      {
+        "$f64": "0x400C934400000000"
+      },
+      {
+        "$f64": "0x400D6A1300000000"
+      },
+      {
+        "$f64": "0x40119BA740000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x400B0AA260000000"
+      },
+      {
+        "$f64": "0x400BF55E60000000"
+      },
+      {
+        "$f64": "0x400C9333C0000000"
+      },
+      {
+        "$f64": "0x400D6A16E0000000"
+      },
+      {
+        "$f64": "0x40119BA9C0000000"
+      },
+      {
+        "$f64": "0x40308518C0000000"
+      },
+      {
+        "$f64": "0x401C6EC400000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      },
+      {
+        "$f64": "0x0000000000000000"
+      }
+    ],
+    "m_nFlag": [
+      15584,
+      15864,
+      15568,
+      15560,
+      15856,
+      15592,
+      15568,
+      15864,
+      15568,
+      15832,
+      15824,
+      15856,
+      15568,
+      15824,
+      15824,
+      15856,
+      15560,
+      15584,
+      15584,
+      15824,
+      15824,
+      15824,
+      15584,
+      15824,
+      15824,
+      15824,
+      15584,
+      15584,
+      15584,
+      15584,
+      15552,
+      15560,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      4209864,
+      15424,
+      15552,
+      15552,
+      15552,
+      15552,
+      15552,
+      15552,
+      15424,
+      15552,
+      15552,
+      15552,
+      15552,
+      15552,
+      4209864,
+      4209864,
+      15552,
+      15552,
+      15552,
+      15552,
+      4209800,
+      4209800
+    ],
+    "m_bonePosParent": [
+      [
+        {
+          "$f64": "0xBFE094CA20000000"
+        },
+        {
+          "$f64": "0x8000000000000000"
+        },
+        {
+          "$f64": "0x8000000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3EE7FFFEE0000000"
+        },
+        {
+          "$f64": "0x404B449580000000"
+        },
+        {
+          "$f64": "0xBFE094C480000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FF094C800000000"
+        },
+        {
+          "$f64": "0x3FD094CFC0000000"
+        },
+        {
+          "$f64": "0x3ECFFFFF00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4013440E00000000"
+        },
+        {
+          "$f64": "0xBEDA000000000000"
+        },
+        {
+          "$f64": "0xBEDFFFFDC0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4014586E00000000"
+        },
+        {
+          "$f64": "0x3EF6000000000000"
+        },
+        {
+          "$f64": "0x3ED0000880000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40190A9400000000"
+        },
+        {
+          "$f64": "0xBEC4000000000000"
+        },
+        {
+          "$f64": "0x3EE0000D00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4014054C00000000"
+        },
+        {
+          "$f64": "0xBEEF800000000000"
+        },
+        {
+          "$f64": "0xBEDFEA8E00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4015683C00000000"
+        },
+        {
+          "$f64": "0x3F10000000000000"
+        },
+        {
+          "$f64": "0x3EA5000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40002CB800000000"
+        },
+        {
+          "$f64": "0x40002BE020000000"
+        },
+        {
+          "$f64": "0x3FE29B2AE0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401E03E060000000"
+        },
+        {
+          "$f64": "0x3EE4000000000000"
+        },
+        {
+          "$f64": "0xBF44400000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x402BDC6380000000"
+        },
+        {
+          "$f64": "0x3EF4E00000000000"
+        },
+        {
+          "$f64": "0x3F30C00000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4026E5D900000000"
+        },
+        {
+          "$f64": "0x3F2E400000000000"
+        },
+        {
+          "$f64": "0xBF38200000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40002CC000000000"
+        },
+        {
+          "$f64": "0x40002BE200000000"
+        },
+        {
+          "$f64": "0xBFE29B2D20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC01E03DF80000000"
+        },
+        {
+          "$f64": "0xBEE5000000000000"
+        },
+        {
+          "$f64": "0x3F44800000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC02BDC6700000000"
+        },
+        {
+          "$f64": "0xBEF0600000000000"
+        },
+        {
+          "$f64": "0xBF30600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC026E5D980000000"
+        },
+        {
+          "$f64": "0xBF2EC00000000000"
+        },
+        {
+          "$f64": "0x3F38000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC00AAA1E00000000"
+        },
+        {
+          "$f64": "0xBFFACCCE00000000"
+        },
+        {
+          "$f64": "0x3FEAF35F00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x400CEBDA00000000"
+        },
+        {
+          "$f64": "0xBFC193D000000000"
+        },
+        {
+          "$f64": "0x402AE01600000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F42400000000000"
+        },
+        {
+          "$f64": "0x4004B19C00000000"
+        },
+        {
+          "$f64": "0x40476D1980000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFFBA3F800000000"
+        },
+        {
+          "$f64": "0x3FE73D8320000000"
+        },
+        {
+          "$f64": "0x4011747540000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40382220C0000000"
+        },
+        {
+          "$f64": "0xBE90000000000000"
+        },
+        {
+          "$f64": "0x3EE4000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4039445440000000"
+        },
+        {
+          "$f64": "0x3ED7000000000000"
+        },
+        {
+          "$f64": "0x3EF1000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401BA587C0000000"
+        },
+        {
+          "$f64": "0x3EE6000000000000"
+        },
+        {
+          "$f64": "0xBEF2000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFFBA3EC00000000"
+        },
+        {
+          "$f64": "0x3FE73D8360000000"
+        },
+        {
+          "$f64": "0xC0117472E0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC0382220A0000000"
+        },
+        {
+          "$f64": "0xBEB4000000000000"
+        },
+        {
+          "$f64": "0x3EB0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC0394454E0000000"
+        },
+        {
+          "$f64": "0xBED1800000000000"
+        },
+        {
+          "$f64": "0xBEE0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC01BA588A0000000"
+        },
+        {
+          "$f64": "0xBEEC800000000000"
+        },
+        {
+          "$f64": "0x3EF3000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC02B715BC0000000"
+        },
+        {
+          "$f64": "0x4048B31FC0000000"
+        },
+        {
+          "$f64": "0x40114ABCE0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40241028A0000000"
+        },
+        {
+          "$f64": "0x400E7ED2C0000000"
+        },
+        {
+          "$f64": "0xBFF3C05E00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC0241028E0000000"
+        },
+        {
+          "$f64": "0x400E7ED300000000"
+        },
+        {
+          "$f64": "0xBFF3C05FE0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401A7C3000000000"
+        },
+        {
+          "$f64": "0xC009CC5BA0000000"
+        },
+        {
+          "$f64": "0xBFA40C1500000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40175D2E00000000"
+        },
+        {
+          "$f64": "0xBF37C00000000000"
+        },
+        {
+          "$f64": "0xBEDD8C0000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4014E97600000000"
+        },
+        {
+          "$f64": "0xBF3E600000000000"
+        },
+        {
+          "$f64": "0x3EA9200000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017614800000000"
+        },
+        {
+          "$f64": "0xBF42600000000000"
+        },
+        {
+          "$f64": "0x3EAE600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017612400000000"
+        },
+        {
+          "$f64": "0xBF41500000000000"
+        },
+        {
+          "$f64": "0x3ED4600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017610200000000"
+        },
+        {
+          "$f64": "0xBF40D00000000000"
+        },
+        {
+          "$f64": "0x3EB4400000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401760FD00000000"
+        },
+        {
+          "$f64": "0xBF42A00000000000"
+        },
+        {
+          "$f64": "0x3EB7C00000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401760DA00000000"
+        },
+        {
+          "$f64": "0xBF47400000000000"
+        },
+        {
+          "$f64": "0x3EBB400000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017610300000000"
+        },
+        {
+          "$f64": "0xBF49700000000000"
+        },
+        {
+          "$f64": "0x3EBD600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017614500000000"
+        },
+        {
+          "$f64": "0xBF51000000000000"
+        },
+        {
+          "$f64": "0x3ED8580000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4017617A00000000"
+        },
+        {
+          "$f64": "0xBF54A00000000000"
+        },
+        {
+          "$f64": "0x3E97800000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE5493800000000"
+        },
+        {
+          "$f64": "0x3FB7E88000000000"
+        },
+        {
+          "$f64": "0xBFD3568800000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x400A092000000000"
+        },
+        {
+          "$f64": "0x3F04000000000000"
+        },
+        {
+          "$f64": "0xBF03000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FFFE70C00000000"
+        },
+        {
+          "$f64": "0xBF40B00000000000"
+        },
+        {
+          "$f64": "0xBF30600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FF896E800000000"
+        },
+        {
+          "$f64": "0xBF39600000000000"
+        },
+        {
+          "$f64": "0xBF34200000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE4F07000000000"
+        },
+        {
+          "$f64": "0x3FE1676C00000000"
+        },
+        {
+          "$f64": "0xBFF2B3ED00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FF02EB800000000"
+        },
+        {
+          "$f64": "0x3FE7FF3C00000000"
+        },
+        {
+          "$f64": "0xBFFD601A00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F28C00000000000"
+        },
+        {
+          "$f64": "0xBF34D00000000000"
+        },
+        {
+          "$f64": "0x3F46A00000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFE5493800000000"
+        },
+        {
+          "$f64": "0xBFB7E8A000000000"
+        },
+        {
+          "$f64": "0x3FD3568800000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xC00A093200000000"
+        },
+        {
+          "$f64": "0xBF12000000000000"
+        },
+        {
+          "$f64": "0x3F00800000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFFFE72C00000000"
+        },
+        {
+          "$f64": "0x3F3FC00000000000"
+        },
+        {
+          "$f64": "0x3F31000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFF8973000000000"
+        },
+        {
+          "$f64": "0x3F38000000000000"
+        },
+        {
+          "$f64": "0x3F32800000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFE4F0A000000000"
+        },
+        {
+          "$f64": "0xBFE167A800000000"
+        },
+        {
+          "$f64": "0x3FF2B3DC80000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFF02EBC00000000"
+        },
+        {
+          "$f64": "0xBFE7FF7000000000"
+        },
+        {
+          "$f64": "0x3FFD600F80000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x4003CB8A00000000"
+        },
+        {
+          "$f64": "0x3FFD704500000000"
+        },
+        {
+          "$f64": "0x4018201320000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x402374E500000000"
+        },
+        {
+          "$f64": "0x3F13800000000000"
+        },
+        {
+          "$f64": "0xBF21000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x402B715E80000000"
+        },
+        {
+          "$f64": "0x4048B31EE0000000"
+        },
+        {
+          "$f64": "0x40114ABEA0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F00000000000000"
+        },
+        {
+          "$f64": "0x3EF4000000000000"
+        },
+        {
+          "$f64": "0x3ED2000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E80000000000000"
+        },
+        {
+          "$f64": "0xBE90000000000000"
+        },
+        {
+          "$f64": "0x3EB0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE90000000000000"
+        },
+        {
+          "$f64": "0xBEA0000000000000"
+        },
+        {
+          "$f64": "0xBEB0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x40159B7880000000"
+        },
+        {
+          "$f64": "0xBF59680000000000"
+        },
+        {
+          "$f64": "0x3ED2600000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x401761D0C0000000"
+        },
+        {
+          "$f64": "0xBF5DA80000000000"
+        },
+        {
+          "$f64": "0x3EC7200000000000"
+        }
+      ]
+    ],
+    "m_boneRotParent": [
+      [
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        },
+        {
+          "$f64": "0x3FE0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E60000020000000"
+        },
+        {
+          "$f64": "0x3E5FFFFFC0000000"
+        },
+        {
+          "$f64": "0x3FAD3608E0000000"
+        },
+        {
+          "$f64": "0x3FEFF2A820000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E70000020000000"
+        },
+        {
+          "$f64": "0x3E5FFFFFE0000000"
+        },
+        {
+          "$f64": "0xBFC45A1E20000000"
+        },
+        {
+          "$f64": "0x3FEF97C920000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE70000020000000"
+        },
+        {
+          "$f64": "0xBCE2161EE0000000"
+        },
+        {
+          "$f64": "0x3FB8FE7CC0000000"
+        },
+        {
+          "$f64": "0x3FEFD8DCE0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3C80000C20000000"
+        },
+        {
+          "$f64": "0xBE5FFFFFE0000000"
+        },
+        {
+          "$f64": "0x3F73AE3FE0000000"
+        },
+        {
+          "$f64": "0x3FEFFFE7C0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBF796DD7C0000000"
+        },
+        {
+          "$f64": "0xBF47650000000000"
+        },
+        {
+          "$f64": "0x3FBD401840000000"
+        },
+        {
+          "$f64": "0x3FEFCA3080000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F2719F940000000"
+        },
+        {
+          "$f64": "0x3F57102FE0000000"
+        },
+        {
+          "$f64": "0xBFBD3FA920000000"
+        },
+        {
+          "$f64": "0x3FEFCA5920000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FB3F36EE0000000"
+        },
+        {
+          "$f64": "0xBFE7007860000000"
+        },
+        {
+          "$f64": "0xBFB5EE4F40000000"
+        },
+        {
+          "$f64": "0x3FE5EF9360000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FBDCE0000000000"
+        },
+        {
+          "$f64": "0xBFE2858920000000"
+        },
+        {
+          "$f64": "0x3FC2DB7B60000000"
+        },
+        {
+          "$f64": "0x3FE964CF60000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E48554AA0000000"
+        },
+        {
+          "$f64": "0xBE733B6880000000"
+        },
+        {
+          "$f64": "0x3FC51FCC00000000"
+        },
+        {
+          "$f64": "0x3FEF8FAC00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE530B420000000"
+        },
+        {
+          "$f64": "0xBFB0C86480000000"
+        },
+        {
+          "$f64": "0xBFC233B480000000"
+        },
+        {
+          "$f64": "0x3FE772FF80000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE7007860000000"
+        },
+        {
+          "$f64": "0x3FB3F37320000000"
+        },
+        {
+          "$f64": "0x3FE5EF9340000000"
+        },
+        {
+          "$f64": "0x3FB5EE4A20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FBDCE00A0000000"
+        },
+        {
+          "$f64": "0xBFE2858900000000"
+        },
+        {
+          "$f64": "0x3FC2DB7DC0000000"
+        },
+        {
+          "$f64": "0x3FE964CF40000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE6038DB60000000"
+        },
+        {
+          "$f64": "0xBE72A14BE0000000"
+        },
+        {
+          "$f64": "0x3FC51FCBE0000000"
+        },
+        {
+          "$f64": "0x3FEF8FAC00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE530B340000000"
+        },
+        {
+          "$f64": "0xBFB0C863A0000000"
+        },
+        {
+          "$f64": "0xBFC233B500000000"
+        },
+        {
+          "$f64": "0x3FE7730020000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE3C491C0000000"
+        },
+        {
+          "$f64": "0xBFE03D90E0000000"
+        },
+        {
+          "$f64": "0xBFD9256360000000"
+        },
+        {
+          "$f64": "0x3FDD143C20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F7BAAB880000000"
+        },
+        {
+          "$f64": "0x3FEF54B7C0000000"
+        },
+        {
+          "$f64": "0x3FC27876C0000000"
+        },
+        {
+          "$f64": "0xBFC254F420000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE877F8E40000000"
+        },
+        {
+          "$f64": "0x3E78EF8760000000"
+        },
+        {
+          "$f64": "0xBE77FF8C00000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FB00F74E0000000"
+        },
+        {
+          "$f64": "0xBFC318CDA0000000"
+        },
+        {
+          "$f64": "0x3FEF929CE0000000"
+        },
+        {
+          "$f64": "0x3F92ADE320000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E6C0822A0000000"
+        },
+        {
+          "$f64": "0xBE6FF94760000000"
+        },
+        {
+          "$f64": "0x3FA85EB1A0000000"
+        },
+        {
+          "$f64": "0x3FEFF6B720000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FEAD984E0000000"
+        },
+        {
+          "$f64": "0xBFE1636C60000000"
+        },
+        {
+          "$f64": "0xBF993D8E40000000"
+        },
+        {
+          "$f64": "0xBF85E18EA0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F9859B1E0000000"
+        },
+        {
+          "$f64": "0x3F9C995AC0000000"
+        },
+        {
+          "$f64": "0x3FCD37A540000000"
+        },
+        {
+          "$f64": "0x3FEF2211A0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFC318CDC0000000"
+        },
+        {
+          "$f64": "0xBFB00F7580000000"
+        },
+        {
+          "$f64": "0xBF92ADD1E0000000"
+        },
+        {
+          "$f64": "0x3FEF929D00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE4004A620000000"
+        },
+        {
+          "$f64": "0xBE708CCD80000000"
+        },
+        {
+          "$f64": "0x3FA85EAEA0000000"
+        },
+        {
+          "$f64": "0x3FEFF6B720000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FEAD98500000000"
+        },
+        {
+          "$f64": "0xBFE1636C20000000"
+        },
+        {
+          "$f64": "0xBF993D9CC0000000"
+        },
+        {
+          "$f64": "0xBF85E19FA0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F9859ADA0000000"
+        },
+        {
+          "$f64": "0x3F9C9960E0000000"
+        },
+        {
+          "$f64": "0x3FCD37A580000000"
+        },
+        {
+          "$f64": "0x3FEF2211A0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBF9362ADA0000000"
+        },
+        {
+          "$f64": "0x3FA4FBA2A0000000"
+        },
+        {
+          "$f64": "0x3FE2544580000000"
+        },
+        {
+          "$f64": "0x3FEA30D360000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FC64A7BA0000000"
+        },
+        {
+          "$f64": "0xBFE2B4E0C0000000"
+        },
+        {
+          "$f64": "0xBFC41AD8A0000000"
+        },
+        {
+          "$f64": "0x3FE8DAC120000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE8DAC100000000"
+        },
+        {
+          "$f64": "0x3FC41AD800000000"
+        },
+        {
+          "$f64": "0xBFE2B4E0C0000000"
+        },
+        {
+          "$f64": "0xBFC64A7D40000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFC008F1C0000000"
+        },
+        {
+          "$f64": "0x3FEFBF7740000000"
+        },
+        {
+          "$f64": "0x3EA17325A0000000"
+        },
+        {
+          "$f64": "0xBE937A82C0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E780FECE0000000"
+        },
+        {
+          "$f64": "0xBE6807ECC0000000"
+        },
+        {
+          "$f64": "0x3F517125C0000000"
+        },
+        {
+          "$f64": "0x3FEFFFFEC0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3CB8000000000000"
+        },
+        {
+          "$f64": "0xBDCFFFD900000000"
+        },
+        {
+          "$f64": "0x3E47FFE5E0000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE7002A180000000"
+        },
+        {
+          "$f64": "0x3E7803F220000000"
+        },
+        {
+          "$f64": "0x3FA2A0ACA0000000"
+        },
+        {
+          "$f64": "0x3FEFFA93A0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E70013A60000000"
+        },
+        {
+          "$f64": "0xBE6FF67360000000"
+        },
+        {
+          "$f64": "0x3F9A0BBBC0000000"
+        },
+        {
+          "$f64": "0x3FEFFD5980000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E7FEFD980000000"
+        },
+        {
+          "$f64": "0xBE83FFE7C0000000"
+        },
+        {
+          "$f64": "0x3F71DF3060000000"
+        },
+        {
+          "$f64": "0x3FEFFFEC00000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE6FE05820000000"
+        },
+        {
+          "$f64": "0x3E80002C40000000"
+        },
+        {
+          "$f64": "0xBF890531E0000000"
+        },
+        {
+          "$f64": "0x3FEFFF6380000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E700FD9E0000000"
+        },
+        {
+          "$f64": "0xBE7FFFB3C0000000"
+        },
+        {
+          "$f64": "0x3F5604AF20000000"
+        },
+        {
+          "$f64": "0x3FEFFFFE20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE5FC73860000000"
+        },
+        {
+          "$f64": "0x3E5FDF3DE0000000"
+        },
+        {
+          "$f64": "0xBFA611D920000000"
+        },
+        {
+          "$f64": "0x3FEFF862E0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE78023B80000000"
+        },
+        {
+          "$f64": "0xBE80017CE0000000"
+        },
+        {
+          "$f64": "0xBF9D50B980000000"
+        },
+        {
+          "$f64": "0x3FEFFCA480000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3E800D1900000000"
+        },
+        {
+          "$f64": "0x3E60051620000000"
+        },
+        {
+          "$f64": "0xBFAA050400000000"
+        },
+        {
+          "$f64": "0x3FEFF56A20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FB9ABEDE0000000"
+        },
+        {
+          "$f64": "0x3FBF84DEC0000000"
+        },
+        {
+          "$f64": "0xBF808D0FC0000000"
+        },
+        {
+          "$f64": "0x3FEF97CA40000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBF88AA10A0000000"
+        },
+        {
+          "$f64": "0xBF8AA79960000000"
+        },
+        {
+          "$f64": "0x3FC20EF9C0000000"
+        },
+        {
+          "$f64": "0x3FEFACC300000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F3B6F77C0000000"
+        },
+        {
+          "$f64": "0x3F3F60EBA0000000"
+        },
+        {
+          "$f64": "0x3FB59B6980000000"
+        },
+        {
+          "$f64": "0x3FEFE2C460000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F49FBE8A0000000"
+        },
+        {
+          "$f64": "0x3F501CB3C0000000"
+        },
+        {
+          "$f64": "0x3FC241DF40000000"
+        },
+        {
+          "$f64": "0x3FEFAC3BA0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FBE9CA620000000"
+        },
+        {
+          "$f64": "0x3FC34D5040000000"
+        },
+        {
+          "$f64": "0xBFB0931C80000000"
+        },
+        {
+          "$f64": "0x3FEF5557C0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE918B840000000"
+        },
+        {
+          "$f64": "0x3FD8A78880000000"
+        },
+        {
+          "$f64": "0x3F8A959FA0000000"
+        },
+        {
+          "$f64": "0x3FDF1D5780000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFA3814C60000000"
+        },
+        {
+          "$f64": "0x3FE05F1F60000000"
+        },
+        {
+          "$f64": "0x3FEB71F520000000"
+        },
+        {
+          "$f64": "0x3FA1E26900000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FB9ABF060000000"
+        },
+        {
+          "$f64": "0x3FBF84E220000000"
+        },
+        {
+          "$f64": "0xBF808D0480000000"
+        },
+        {
+          "$f64": "0x3FEF97CA20000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBF88AA0360000000"
+        },
+        {
+          "$f64": "0xBF8AA78100000000"
+        },
+        {
+          "$f64": "0x3FC20EFAE0000000"
+        },
+        {
+          "$f64": "0x3FEFACC300000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F3B6EF8C0000000"
+        },
+        {
+          "$f64": "0x3F3F5EEB40000000"
+        },
+        {
+          "$f64": "0x3FB59B6B20000000"
+        },
+        {
+          "$f64": "0x3FEFE2C460000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3F49FD5E80000000"
+        },
+        {
+          "$f64": "0x3F501CF7A0000000"
+        },
+        {
+          "$f64": "0x3FC241DF80000000"
+        },
+        {
+          "$f64": "0x3FEFAC3BA0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FBE9CA840000000"
+        },
+        {
+          "$f64": "0x3FC34D50E0000000"
+        },
+        {
+          "$f64": "0xBFB0931B40000000"
+        },
+        {
+          "$f64": "0x3FEF5557A0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FE918B840000000"
+        },
+        {
+          "$f64": "0x3FD8A78920000000"
+        },
+        {
+          "$f64": "0x3F8A95AEE0000000"
+        },
+        {
+          "$f64": "0x3FDF1D56E0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBFD0B66300000000"
+        },
+        {
+          "$f64": "0x3FE155CE20000000"
+        },
+        {
+          "$f64": "0x3FE5696E60000000"
+        },
+        {
+          "$f64": "0xBFDBF15300000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE777FFC00000000"
+        },
+        {
+          "$f64": "0xBE3FFFFA00000000"
+        },
+        {
+          "$f64": "0x3E5DFFFB00000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3FEA30D380000000"
+        },
+        {
+          "$f64": "0xBFE2544580000000"
+        },
+        {
+          "$f64": "0x3FA4FBB060000000"
+        },
+        {
+          "$f64": "0x3F93628DC0000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBEA1F7FFC0000000"
+        },
+        {
+          "$f64": "0x3E99DFFF40000000"
+        },
+        {
+          "$f64": "0xBEBBF05F40000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE7B000060000000"
+        },
+        {
+          "$f64": "0x3E48000060000000"
+        },
+        {
+          "$f64": "0xBE40000040000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE60000020000000"
+        },
+        {
+          "$f64": "0xBE62000040000000"
+        },
+        {
+          "$f64": "0xBE40000020000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0xBE7003D2E0000000"
+        },
+        {
+          "$f64": "0x3E5FE79E00000000"
+        },
+        {
+          "$f64": "0xBFA6C78740000000"
+        },
+        {
+          "$f64": "0x3FEFF7E360000000"
+        }
+      ],
+      [
+        {
+          "$f64": "0x3DEFFF8080000000"
+        },
+        {
+          "$f64": "0xBE600FBCC0000000"
+        },
+        {
+          "$f64": "0x3E4FFF7840000000"
+        },
+        {
+          "$f64": "0x3FF0000000000000"
+        }
+      ]
+    ],
+    "m_boneScaleParent": [
+      {
+        "$f64": "0x3FEFFFFFC0000000"
+      },
+      {
+        "$f64": "0x3FEFFFFF40000000"
+      },
+      {
+        "$f64": "0x3FEFFFFF80000000"
+      },
+      {
+        "$f64": "0x3FF0000060000000"
+      },
+      {
+        "$f64": "0x3FF00000A0000000"
+      },
+      {
+        "$f64": "0x3FF0000300000000"
+      },
+      {
+        "$f64": "0x3FF0000500000000"
+      },
+      {
+        "$f64": "0x3FF0000D20000000"
+      },
+      {
+        "$f64": "0x3FF0000520000000"
+      },
+      {
+        "$f64": "0x3FF0000780000000"
+      },
+      {
+        "$f64": "0x3FF00015E0000000"
+      },
+      {
+        "$f64": "0x3FF0000D40000000"
+      },
+      {
+        "$f64": "0x3FF0000520000000"
+      },
+      {
+        "$f64": "0x3FF00007C0000000"
+      },
+      {
+        "$f64": "0x3FF0001660000000"
+      },
+      {
+        "$f64": "0x3FF0000D80000000"
+      },
+      {
+        "$f64": "0x3FF0001060000000"
+      },
+      {
+        "$f64": "0x3FF0004EC0000000"
+      },
+      {
+        "$f64": "0x3FF0004D80000000"
+      },
+      {
+        "$f64": "0x3FEFFFFEE0000000"
+      },
+      {
+        "$f64": "0x3FEFFFFFA0000000"
+      },
+      {
+        "$f64": "0x3FF0000080000000"
+      },
+      {
+        "$f64": "0x3FF0000160000000"
+      },
+      {
+        "$f64": "0x3FEFFFFEE0000000"
+      },
+      {
+        "$f64": "0x3FEFFFFF80000000"
+      },
+      {
+        "$f64": "0x3FF0000080000000"
+      },
+      {
+        "$f64": "0x3FF0000160000000"
+      },
+      {
+        "$f64": "0x3FF0000000000000"
+      },
+      {
+        "$f64": "0x3FEFFFFF60000000"
+      },
+      {
+        "$f64": "0x3FEFFFFFA0000000"
+      },
+      {
+        "$f64": "0x3FF0000AA0000000"
+      },
+      {
+        "$f64": "0x3FF0000DC0000000"
+      },
+      {
+        "$f64": "0x3FF0001160000000"
+      },
+      {
+        "$f64": "0x3FF0001560000000"
+      },
+      {
+        "$f64": "0x3FF0001980000000"
+      },
+      {
+        "$f64": "0x3FF0001DC0000000"
+      },
+      {
+        "$f64": "0x3FF0002280000000"
+      },
+      {
+        "$f64": "0x3FF00027A0000000"
+      },
+      {
+        "$f64": "0x3FF0002C80000000"
+      },
+      {
+        "$f64": "0x3FF0003180000000"
+      },
+      {
+        "$f64": "0x3FF0003720000000"
+      },
+      {
+        "$f64": "0x3FF00001E0000000"
+      },
+      {
+        "$f64": "0x3FF0004060000000"
+      },
+      {
+        "$f64": "0x3FF0001800000000"
+      },
+      {
+        "$f64": "0x3FF0001BC0000000"
+      },
+      {
+        "$f64": "0x3FF00010E0000000"
+      },
+      {
+        "$f64": "0x3FF00010E0000000"
+      },
+      {
+        "$f64": "0x3FF0001640000000"
+      },
+      {
+        "$f64": "0x3FF00001A0000000"
+      },
+      {
+        "$f64": "0x3FF00040A0000000"
+      },
+      {
+        "$f64": "0x3FF0001760000000"
+      },
+      {
+        "$f64": "0x3FF0001AA0000000"
+      },
+      {
+        "$f64": "0x3FF0001080000000"
+      },
+      {
+        "$f64": "0x3FF0001080000000"
+      },
+      {
+        "$f64": "0x3FF00000C0000000"
+      },
+      {
+        "$f64": "0x3FF00002C0000000"
+      },
+      {
+        "$f64": "0x3FEFFFFF60000000"
+      },
+      {
+        "$f64": "0x3FF0000080000000"
+      },
+      {
+        "$f64": "0x3FEFFFFFA0000000"
+      },
+      {
+        "$f64": "0x3FEFFFFFE0000000"
+      },
+      {
+        "$f64": "0x3FF0003D40000000"
+      },
+      {
+        "$f64": "0x3FF00043C0000000"
+      }
+    ]
+  },
+  "m_remappingTable": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    8,
+    12,
+    37,
+    9,
+    13,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    15,
+    40,
+    16,
+    60,
+    17,
+    54,
+    27,
+    28,
+    29,
+    61,
+    11,
+    47,
+    18,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    8,
+    12,
+    37,
+    9,
+    13,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    15,
+    40,
+    16,
+    60,
+    17,
+    54,
+    27,
+    28,
+    29,
+    61,
+    11,
+    47,
+    18,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    8,
+    12,
+    37,
+    9,
+    13,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    15,
+    40,
+    16,
+    60,
+    17,
+    54,
+    27,
+    28,
+    29,
+    61,
+    11,
+    47,
+    18,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    8,
+    12,
+    37,
+    9,
+    13,
+    38,
+    10,
+    14,
+    39,
+    11,
+    15,
+    19,
+    23,
+    40,
+    42,
+    49,
+    20,
+    24,
+    60,
+    43,
+    17,
+    50,
+    54,
+    21,
+    25,
+    27,
+    28,
+    29,
+    61,
+    44,
+    45,
+    46,
+    47,
+    18,
+    51,
+    52,
+    53,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25,
+    0,
+    1,
+    4,
+    5,
+    7,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    15,
+    40,
+    16,
+    60,
+    17,
+    54,
+    27,
+    28,
+    29,
+    61,
+    11,
+    47,
+    18,
+    55,
+    22,
+    26,
+    56,
+    57,
+    58,
+    59,
+    7,
+    7,
+    4,
+    19,
+    20,
+    21,
+    9,
+    10,
+    11,
+    1,
+    15,
+    14,
+    13,
+    24,
+    23,
+    25
+  ],
+  "m_remappingTableStarts": [
+    0,
+    75,
+    125,
+    193,
+    268,
+    318,
+    386,
+    461,
+    511,
+    586
+  ],
+  "m_boneFlexDrivers": [],
+  "m_pModelConfigList": null,
+  "m_BodyGroupsHiddenInTools": [],
+  "m_refAnimIncludeModels": [],
+  "m_AnimatedMaterialAttributes": [],
+  "m_animGraph2Refs": [
+    {
+      "m_sIdentifier": "",
+      "m_hGraph": "animgraphs/animgraph2/hero/hero.vnmgraph\u002Bvindicta.vnmgraph"
+    },
+    {
+      "m_sIdentifier": "ui",
+      "m_hGraph": "animgraphs/animgraph2/hero/hero_ui.vnmgraph\u002Bvindicta.vnmgraph"
+    }
+  ],
+  "m_vecNmSkeletonRefs": [
+    "models/heroes_staging/hornet_v3/hornet.vnmskel"
+  ]
+}

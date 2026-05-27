@@ -1,0 +1,136 @@
+{
+  "name": "models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat",
+  "shader_name": "pbr.vfx",
+  "texture_params": {
+    "g_tAmbientOcclusion": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_ao_png_af72220e.vtex",
+    "g_tColor": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_color_png_2b9a36b1.vtex",
+    "g_tNormalRoughness": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_rough_png_a335ed3b.vtex",
+    "g_tNprOutlineMask": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_vmat_g_tnproutlinemask_2b2ebb3f.vtex",
+    "g_tNprTransmissiveColor": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_vmat_g_tnprtransmissivecolor_ec512685.vtex",
+    "g_tSelfIllumMask": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_emissive_png_2d26d6b6.vtex",
+    "g_tTintMaskRimLightMask": "models/heroes_staging/hornet_v3/materials/vindicta_headv2_vmat_g_ttintmaskrimlightmask_4c581a98.vtex"
+  },
+  "int_params": {
+    "F_SELF_ILLUM": 1,
+    "F_USE_NPR_LIGHTING": 1,
+    "F_USE_STATUS_EFFECTS_PROXY": 1,
+    "F_WRITE_DEPTH_BEFORE_ALPHA_BLENDING": 1,
+    "g_bMaskColorTint1": 0,
+    "g_bMaskVertexColorTint1": 1,
+    "g_nScaleTexCoord2UByModelScaleAxis": 0,
+    "g_nScaleTexCoord2UByModelScaleOrigin": 0,
+    "g_nScaleTexCoord2VByModelScaleAxis": 0,
+    "g_nScaleTexCoord2VByModelScaleOrigin": 2,
+    "g_nScaleTexCoordUByModelScaleAxis": 0,
+    "g_nScaleTexCoordUByModelScaleOrigin": 0,
+    "g_nScaleTexCoordVByModelScaleAxis": 0,
+    "g_nScaleTexCoordVByModelScaleOrigin": 2,
+    "g_nTextureColorTintMode1": 0
+  },
+  "float_params": {
+    "g_fVertexColorStrength1": 1,
+    "g_flHighlightAOStrength1": 1,
+    "g_flHighlightCoverage1": 0,
+    "g_flHighlightHardness1": 0,
+    "g_flHighlightNormalStrength1": 64,
+    "g_flHighlightRadius1": 256,
+    "g_flHighlightTintBrightness1": 1,
+    "g_flInvertHighlight1": 0,
+    "g_flSelfIllumAlbedoFactor1": 0,
+    "g_flSelfIllumFresnelMaskExponent": 5,
+    "g_flSelfIllumScale1": 3.5
+  },
+  "vector_params": {
+    "TextureNprOutlineMask1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "TextureNprTramsissiveColor1": [
+      0,
+      0.615686,
+      1,
+      0
+    ],
+    "TextureRimLightMask1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "TextureTintMask1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "g_vAlbedoContrastSaturationBrightness1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "g_vAlbedoScrollSpeed1": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "g_vColorTint1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "g_vHighlightPositionWs1": [
+      0,
+      0,
+      72,
+      0
+    ],
+    "g_vHighlightTint1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "g_vNormalAndRoughnessScrollSpeed1": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "g_vSelfIllumFresnelMaskTint1": [
+      1,
+      1,
+      1,
+      0
+    ],
+    "g_vSelfIllumScrollSpeed1": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "g_vSelfIllumTint1": [
+      0.176471,
+      0.701961,
+      0.945098,
+      0
+    ],
+    "g_vSolidOutlineAdditive": [
+      0.011765,
+      0.011765,
+      0.011765,
+      0
+    ],
+    "g_vSolidOutlineTint": [
+      0.101961,
+      0.101961,
+      0.101961,
+      0
+    ]
+  },
+  "vrf_version": "19.1.0.0"
+}

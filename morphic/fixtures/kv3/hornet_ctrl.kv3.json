@@ -1,0 +1,1457 @@
+{
+  "embedded_meshes": [
+    {
+      "m_Name": "body",
+      "m_nMeshIndex": 0,
+      "m_nDataBlock": 5,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 0,
+          "m_nElementCount": 56899,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        },
+        {
+          "m_nBlockIndex": 3,
+          "m_nElementCount": 5726,
+          "m_nElementSizeInBytes": 60,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "COLOR",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "Color"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 56,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 1,
+          "m_nElementCount": 311070,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        },
+        {
+          "m_nBlockIndex": 4,
+          "m_nElementCount": 26910,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 2,
+          "m_nElementCount": 56899,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "gun",
+      "m_nMeshIndex": 1,
+      "m_nDataBlock": 8,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 6,
+          "m_nElementCount": 11750,
+          "m_nElementSizeInBytes": 52,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 7,
+          "m_nElementCount": 76329,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "ghost_glow",
+      "m_nMeshIndex": 2,
+      "m_nDataBlock": 12,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 9,
+          "m_nElementCount": 3736,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 10,
+          "m_nElementCount": 12618,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 11,
+          "m_nElementCount": 3736,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "body_lod1",
+      "m_nMeshIndex": 3,
+      "m_nDataBlock": 18,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 13,
+          "m_nElementCount": 39515,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        },
+        {
+          "m_nBlockIndex": 16,
+          "m_nElementCount": 4619,
+          "m_nElementSizeInBytes": 60,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "COLOR",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "Color"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 56,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 14,
+          "m_nElementCount": 209049,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        },
+        {
+          "m_nBlockIndex": 17,
+          "m_nElementCount": 21663,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 15,
+          "m_nElementCount": 39515,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "gun_lod1",
+      "m_nMeshIndex": 4,
+      "m_nDataBlock": 21,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 19,
+          "m_nElementCount": 7381,
+          "m_nElementSizeInBytes": 52,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 20,
+          "m_nElementCount": 47148,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "ghost_glow_lod1",
+      "m_nMeshIndex": 5,
+      "m_nDataBlock": 25,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 22,
+          "m_nElementCount": 2643,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 23,
+          "m_nElementCount": 7686,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 24,
+          "m_nElementCount": 2643,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "body_lod2",
+      "m_nMeshIndex": 6,
+      "m_nDataBlock": 31,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 26,
+          "m_nElementCount": 20059,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        },
+        {
+          "m_nBlockIndex": 29,
+          "m_nElementCount": 1587,
+          "m_nElementSizeInBytes": 60,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "COLOR",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "Color"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 56,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 27,
+          "m_nElementCount": 99252,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        },
+        {
+          "m_nBlockIndex": 30,
+          "m_nElementCount": 6594,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 28,
+          "m_nElementCount": 20059,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "gun_lod2",
+      "m_nMeshIndex": 7,
+      "m_nDataBlock": 34,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 32,
+          "m_nElementCount": 4131,
+          "m_nElementSizeInBytes": 52,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 33,
+          "m_nElementCount": 22776,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "body_lod3",
+      "m_nMeshIndex": 8,
+      "m_nDataBlock": 40,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 35,
+          "m_nElementCount": 6041,
+          "m_nElementSizeInBytes": 56,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        },
+        {
+          "m_nBlockIndex": 38,
+          "m_nElementCount": 598,
+          "m_nElementSizeInBytes": 60,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "COLOR",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "Color"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 52,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            },
+            {
+              "m_pSemanticName": "blendweight",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 56,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 36,
+          "m_nElementCount": 24561,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        },
+        {
+          "m_nBlockIndex": 39,
+          "m_nElementCount": 1530,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [
+        {
+          "m_nBlockIndex": 37,
+          "m_nElementCount": 6041,
+          "m_nElementSizeInBytes": 4,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": true,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "color",
+              "m_nSemanticIndex": 0,
+              "m_Format": 28,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": ""
+            }
+          ]
+        }
+      ],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    },
+    {
+      "m_Name": "gun_lod3",
+      "m_nMeshIndex": 9,
+      "m_nDataBlock": 43,
+      "m_nMorphBlock": -1,
+      "m_vertexBuffers": [
+        {
+          "m_nBlockIndex": 41,
+          "m_nElementCount": 2495,
+          "m_nElementSizeInBytes": 52,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 1,
+          "m_inputLayoutFields": [
+            {
+              "m_pSemanticName": "POSITION",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 0,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "PosXyz"
+            },
+            {
+              "m_pSemanticName": "TEXCOORD",
+              "m_nSemanticIndex": 0,
+              "m_Format": 16,
+              "m_nOffset": 12,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "LowPrecisionUv"
+            },
+            {
+              "m_pSemanticName": "NORMAL",
+              "m_nSemanticIndex": 0,
+              "m_Format": 6,
+              "m_nOffset": 20,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "CompressedTangentFrame"
+            },
+            {
+              "m_pSemanticName": "TANGENT",
+              "m_nSemanticIndex": 0,
+              "m_Format": 2,
+              "m_nOffset": 32,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "TangentU_SignV"
+            },
+            {
+              "m_pSemanticName": "BLENDINDICES",
+              "m_nSemanticIndex": 0,
+              "m_Format": 30,
+              "m_nOffset": 48,
+              "m_nSlot": 0,
+              "m_nSlotType": "RENDER_SLOT_PER_VERTEX",
+              "m_szShaderSemantic": "BlendIndices"
+            }
+          ]
+        }
+      ],
+      "m_indexBuffers": [
+        {
+          "m_nBlockIndex": 42,
+          "m_nElementCount": 11040,
+          "m_nElementSizeInBytes": 2,
+          "m_bMeshoptCompressed": true,
+          "m_bMeshoptIndexSequence": false,
+          "m_bCompressedZSTD": false,
+          "m_bCreateBufferSRV": false,
+          "m_bCreateBufferUAV": false,
+          "m_bCreateRawBuffer": false,
+          "m_bCreatePooledBuffer": false,
+          "m_nBufferUsage": 2,
+          "m_inputLayoutFields": []
+        }
+      ],
+      "m_toolsBuffers": [],
+      "m_nVBIBBlock": -1,
+      "m_nToolsVBBlock": -1
+    }
+  ],
+  "embedded_animation": {
+    "group_data_block": 47,
+    "anim_data_block": 45,
+    "seqgroup_data_block": 46
+  },
+  "embedded_physics": {
+    "phys_data_block": 48
+  },
+  "embedded_distancefield": {
+    "distancefield_data_block": 44
+  }
+}

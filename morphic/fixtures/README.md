@@ -23,8 +23,38 @@ fixtures/
   bc7/                    (M6)
   bc6h/                   (M7)
   rgba16f/                (M8)
+  kv3/                    raw KV3 blocks + .kv3.json goldens (model exporter M1)
+  meshopt/                raw MVTX/MIDX blocks + .meshopt.json goldens (M2)
   _local/                 gitignored, oracle-populated stress corpus
 ```
+
+The `kv3/` tier differs from the texture tiers: each `*.kv3bin` is a raw KV3
+block sliced out of a `.vmdl_c`, and its sibling `*.kv3.json` is the canonical
+JSON the morphic KV3 parser is diffed against (see `tools/morphic-oracle`,
+`kv3-dump`). Re-bless with `just kv3-goldens`. The committed blocks are
+hornet's `DATA` (model skeleton + remap tables + LOD masks), `MDAT[0]` (the
+body mesh's draw calls + scene bounds), and `CTRL` (the embedded-mesh buffer
+registry: vertex/index layouts + meshopt flags).
+
+The `material/` tier holds a full committed `.vmat_c` resource (not a sliced
+block) plus a `*.material.json` golden from `morphic-oracle material-meta` (VRF's
+shader name + int/float/vector/texture parameter tables). `morphic::material::parse`
+is diffed against it. Re-bless with `just material-meta`.
+
+`kv3/hornet_model_meta.json` is a higher-level golden (not a raw block): the
+compact model summary the M3 mesh/skeleton decoder is diffed against, produced
+by `morphic-oracle model-meta`. It holds the sorted bone-name set, per-LOD0-mesh
+vertex layouts + draw calls + materials + scene bounds, the vertex/index totals,
+and a source-space position bbox. The committed `model::tests` reproduce the
+buffer-free parts of it from the `DATA`/`CTRL`/`MDAT[0]` blocks above; the gated
+`tests/model_local.rs` reproduces the whole thing from a real VPK. Re-bless with
+`just model-meta`.
+
+The `meshopt/` tier holds raw `*.meshopt` MVTX/MIDX payloads sliced from
+hornet's embedded meshes, each with a sibling `*.meshopt.json` golden
+(decoded length + SHA-256 from VRF). The morphic meshopt decoders are diffed
+byte-for-byte against these. Committed fixtures span vertex strides 52/56/60
+and both index buffers. Re-bless with `just mesh-buffers`.
 
 ## Provenance
 
@@ -32,6 +62,11 @@ fixtures/
 |-----------------------------------------------|----------------------------------------------------------------------|
 | `rgba8/minimap_circle.vtex_c`                 | `materials/minimap/minimap_circle.vtex_c`                            |
 | `dxt1/default_color_tga_99901565.vtex_c`      | `materials/default/default_color_tga_99901565.vtex_c`                |
+| `kv3/hornet_data.kv3bin`                      | `DATA` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`      |
+| `kv3/hornet_mdat0.kv3bin`                     | `MDAT[0]` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`   |
+| `kv3/hornet_ctrl.kv3bin`                      | `CTRL` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`      |
+| `kv3/hornet_model_meta.json`                  | `model-meta` summary of `models/heroes_staging/hornet_v3/hornet.vmdl_c` |
+| `material/vindicta_headv2.vmat_c`             | `models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c`  |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the
