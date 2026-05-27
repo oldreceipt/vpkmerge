@@ -266,7 +266,7 @@ pub fn assemble(
     let mdat_bytes = blocks
         .block(embedded.data_block)
         .ok_or(DecodeError::Model("MDAT block index out of range"))?;
-    let mdat = crate::kv3::parse(mdat_bytes)?;
+    let mdat = crate::kv3::decode(mdat_bytes)?;
 
     let weight_count = bone_weight_count(&mdat);
     let skinned = weight_count > 0 && remap.is_some();

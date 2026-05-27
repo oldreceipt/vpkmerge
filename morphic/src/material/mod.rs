@@ -63,7 +63,7 @@ pub struct PbrSlots<'a> {
 /// Parses a compiled `.vmat_c` resource into a [`Material`].
 pub fn parse(bytes: &[u8]) -> Result<Material, DecodeError> {
     let resource = Resource::parse(bytes)?;
-    let data = kv3::parse(resource.data_block()?)?;
+    let data = kv3::decode(resource.data_block()?)?;
     Material::from_data(&data)
 }
 

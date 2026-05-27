@@ -135,11 +135,11 @@ impl mesh::BlockSource for Resource<'_> {
 pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
     let resource = Resource::parse(bytes)?;
 
-    let data = crate::kv3::parse(resource.data_block()?)?;
+    let data = crate::kv3::decode(resource.data_block()?)?;
     let ctrl_bytes = resource
         .find_block(CTRL)
         .ok_or(DecodeError::Model("model has no CTRL block"))?;
-    let ctrl = crate::kv3::parse(ctrl_bytes)?;
+    let ctrl = crate::kv3::decode(ctrl_bytes)?;
 
     let skeleton = Skeleton::from_model_data(&data)?;
     let embedded = mesh::EmbeddedMesh::parse_all(&ctrl)?;
@@ -167,7 +167,7 @@ pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
 /// (no buffer decode); useful for bone-name retarget checks.
 pub fn decode_skeleton(bytes: &[u8]) -> Result<Skeleton, DecodeError> {
     let resource = Resource::parse(bytes)?;
-    let data = crate::kv3::parse(resource.data_block()?)?;
+    let data = crate::kv3::decode(resource.data_block()?)?;
     Skeleton::from_model_data(&data)
 }
 

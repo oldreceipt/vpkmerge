@@ -68,7 +68,7 @@ fn fixtures() -> PathBuf {
 
 fn parse_fixture(name: &str) -> Value {
     let bytes = std::fs::read(fixtures().join(name)).expect("read kv3 fixture");
-    kv3::parse(&bytes).expect("parse kv3 fixture")
+    kv3::decode(&bytes).expect("parse kv3 fixture")
 }
 
 fn load_golden() -> Golden {

@@ -3,8 +3,8 @@ use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
     export_hero_model, export_model, extract_portraits, inspect_models, merge, split, AnimOptions,
-    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SplitOptions,
-    SplitOutput,
+    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SoundEvents,
+    SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -53,6 +53,44 @@ enum Command {
     /// Inspect compiled models (`.vmdl_c`) in a VPK: block structure,
     /// mesh-part count, embedded geometry, and skeleton/physics presence.
     Model(ModelCmd),
+
+    /// Decode a soundevents (`.vsndevts_c`) file to JSON, optionally edit clip
+    /// paths / params and re-emit an uncompressed (loadable) file.
+    Soundevents(SoundeventsCmd),
+}
+
+#[derive(Args)]
+struct SoundeventsCmd {
+    /// Path to a `.vsndevts_c` file, or (with --from-vpk) an entry path inside a VPK.
+    input: PathBuf,
+
+    /// Read INPUT as an entry path inside this VPK instead of a file on disk
+    /// (e.g. `--from-vpk pak01_dir.vpk soundevents/hero/gigawatt.vsndevts_c`).
+    #[arg(long, value_name = "VPK")]
+    from_vpk: Option<PathBuf>,
+
+    /// After applying edits, re-encode (uncompressed v4) to this loose file.
+    #[arg(long, value_name = "FILE")]
+    encode: Option<PathBuf>,
+
+    /// After applying edits, re-encode and pack into a standalone VPK at this
+    /// path. The encoded file lands at its VPK entry path (see --vpk-entry).
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: Option<PathBuf>,
+
+    /// Entry path for the file inside --encode-vpk. Defaults to INPUT when
+    /// reading with --from-vpk; required for a loose-file INPUT.
+    #[arg(long = "vpk-entry", value_name = "PATH")]
+    vpk_entry: Option<String>,
+
+    /// Replace a clip path everywhere in the tree: --swap-vsnd OLD=NEW (repeatable).
+    #[arg(long = "swap-vsnd", value_name = "OLD=NEW")]
+    swap_vsnd: Vec<String>,
+
+    /// Set a numeric field on one event: --set EVENT/FIELD=NUMBER (repeatable),
+    /// e.g. --set "Seven.Wpn.Fire/volume=0.25".
+    #[arg(long = "set", value_name = "EVENT/FIELD=NUMBER")]
+    set: Vec<String>,
 }
 
 #[derive(Args)]
@@ -212,6 +250,7 @@ fn main() -> Result<()> {
         Some(Command::Split(args)) => run_split(args),
         Some(Command::Portrait(args)) => run_portrait(args),
         Some(Command::Model(args)) => run_model(args),
+        Some(Command::Soundevents(args)) => run_soundevents(args),
         None => run_merge(cli),
     }
 }
@@ -420,6 +459,110 @@ fn run_portrait(args: PortraitCmd) -> Result<()> {
         std::fs::write(path, &json).with_context(|| format!("writing {}", path.display()))?;
         eprintln!("manifest: {}", path.display());
     } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn run_soundevents(args: SoundeventsCmd) -> Result<()> {
+    let SoundeventsCmd {
+        input,
+        from_vpk,
+        encode,
+        encode_vpk,
+        vpk_entry,
+        swap_vsnd,
+        set,
+    } = args;
+
+    let label = match &from_vpk {
+        Some(vpk) => format!("{} @ {}", input.display(), vpk.display()),
+        None => input.display().to_string(),
+    };
+
+    let mut se = match &from_vpk {
+        Some(vpk) => SoundEvents::from_vpk(vpk, &input.to_string_lossy())?,
+        None => SoundEvents::from_file(&input)?,
+    };
+
+    // Apply edits (Phase 2). All edits log to stderr.
+    for spec in &swap_vsnd {
+        let (from, to) = spec
+            .split_once('=')
+            .with_context(|| format!("--swap-vsnd expects OLD=NEW, got {spec:?}"))?;
+        let n = se.swap_vsnd(from, to);
+        eprintln!("swap-vsnd: {n} path(s) rewritten {from} -> {to}");
+    }
+    for spec in &set {
+        let (lhs, num) = spec
+            .rsplit_once('=')
+            .with_context(|| format!("--set expects EVENT/FIELD=NUMBER, got {spec:?}"))?;
+        let (event, field) = lhs
+            .rsplit_once('/')
+            .with_context(|| format!("--set expects EVENT/FIELD=NUMBER, got {spec:?}"))?;
+        let value: f64 = num
+            .parse()
+            .with_context(|| format!("--set value must be a number, got {num:?}"))?;
+        if !se.set_event_field(event, field, value) {
+            anyhow::bail!("--set: no event named {event:?} in {label}");
+        }
+        eprintln!("set: {event}/{field} = {value}");
+    }
+
+    // Human-readable summary to stderr.
+    let summaries = se.summaries();
+    eprintln!(
+        "{label}: {} event{}",
+        summaries.len(),
+        if summaries.len() == 1 { "" } else { "s" }
+    );
+    for s in &summaries {
+        let base = s
+            .base
+            .as_deref()
+            .map_or(String::new(), |b| format!("  base={b}"));
+        let vol = s.volume.map_or(String::new(), |v| format!("  volume={v}"));
+        eprintln!(
+            "  {:<34} {} sound{}{base}{vol}",
+            s.name,
+            s.vsnd_count,
+            if s.vsnd_count == 1 { "" } else { "s" }
+        );
+    }
+
+    // Outputs: a loose file (--encode), a standalone VPK (--encode-vpk), or
+    // (if neither) the decoded JSON on stdout. --encode and --encode-vpk can be
+    // combined; encode once and reuse the bytes.
+    if encode.is_some() || encode_vpk.is_some() {
+        let bytes = se.encode()?;
+        if let Some(out) = &encode {
+            std::fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
+            eprintln!(
+                "wrote {}: {} bytes uncompressed (original was {} bytes)",
+                out.display(),
+                bytes.len(),
+                se.original_len()
+            );
+        }
+        if let Some(out) = &encode_vpk {
+            let entry = match (&vpk_entry, &from_vpk) {
+                (Some(e), _) => e.clone(),
+                (None, Some(_)) => input.to_string_lossy().into_owned(),
+                (None, None) => anyhow::bail!(
+                    "--encode-vpk needs an entry path for a loose-file input: pass \
+                     --vpk-entry <PATH> (or read with --from-vpk, which defaults the \
+                     entry to INPUT)"
+                ),
+            };
+            vpkmerge_core::pack(&[(entry.as_str(), bytes.as_slice())], out)?;
+            eprintln!(
+                "wrote {}: 1 entry ({entry}) {} bytes uncompressed",
+                out.display(),
+                bytes.len(),
+            );
+        }
+    } else {
+        let json = serde_json::to_string_pretty(&se.to_json()).context("serializing JSON")?;
         println!("{json}");
     }
     Ok(())

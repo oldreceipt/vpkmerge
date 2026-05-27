@@ -1963,9 +1963,6 @@ name = "lz4_flex"
 version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
-dependencies = [
- "twox-hash",
-]
 
 [[package]]
 name = "markup5ever"
@@ -2028,7 +2025,7 @@ dependencies = [
 
 [[package]]
 name = "morphic"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bcdec_rs",
  "bitflags 2.11.1",
@@ -2988,6 +2985,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
@@ -4138,7 +4136,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vpkmerge-cli"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4149,17 +4147,18 @@ dependencies = [
 
 [[package]]
 name = "vpkmerge-core"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "morphic",
+ "serde_json",
  "tempfile",
  "valve_pak",
 ]
 
 [[package]]
 name = "vpkmerge-gui"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "half",

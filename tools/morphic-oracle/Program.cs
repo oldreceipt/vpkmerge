@@ -53,6 +53,7 @@ internal static class Program
                 "survey"   => Survey(args[1..]),
                 "model"    => ModelExport(args[1..]),
                 "kv3-dump" => Kv3Dump(args[1..]),
+                "kv3dump"  => Kv3Check(args[1..]),
                 "mesh-buffers" => MeshBuffers(args[1..]),
                 "model-meta" => ModelMeta(args[1..]),
                 "anim-meta" => AnimMeta(args[1..]),
@@ -981,6 +982,50 @@ internal static class Program
 
     // ---------- helpers ----------
 
+    // ---------- kv3dump (soundevents re-encode validation) ----------
+    //
+    // Independent validation: load a resource file with VRF and confirm the
+    // DATA block parses as binary KV3. Used to check that morphic's
+    // uncompressed re-encode is spec-valid (not just self-consistent). Distinct
+    // from `kv3-dump` (the block-by-FOURCC golden dumper above).
+    private static int Kv3Check(string[] args)
+    {
+        string? file = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--file": file = args[++i]; break;
+                default: return Fail($"kv3dump: unknown flag {args[i]}");
+            }
+        }
+        if (file is null)
+        {
+            return Fail("kv3dump: --file is required");
+        }
+
+        using var resource = new Resource();
+        resource.Read(file);
+
+        var blockTypes = new List<string>();
+        foreach (var b in resource.Blocks)
+        {
+            blockTypes.Add(b.Type.ToString());
+        }
+        Console.Error.WriteLine($"loaded {file}: blocks=[{string.Join(",", blockTypes)}]");
+
+        var data = resource.DataBlock;
+        if (data is BinaryKV3 kv3)
+        {
+            Console.Error.WriteLine("OK: DataBlock parsed as BinaryKV3");
+            Console.WriteLine(kv3.ToString());
+            return 0;
+        }
+
+        Console.Error.WriteLine($"FAIL: DataBlock is {data?.GetType().Name ?? "null"}, not BinaryKV3");
+        return 1;
+    }
+
     private static string TryReadKv3Magic(byte[] resourceBytes, Resource resource)
     {
         // DATA block magic is KV3 if it starts with 'VKV\x03' or one of the
@@ -1045,6 +1090,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle survey   --vpk PATH --out CSV");
         Console.WriteLine("  morphic-oracle model    --vpk PATH --entry NAME [--base PATH] --out GLB [--no-materials]");
         Console.WriteLine("  morphic-oracle kv3-dump --vpk PATH --entry NAME --block FOURCC [--nth N] --out JSON [--raw KV3BIN]");
+        Console.WriteLine("  morphic-oracle kv3dump  --file FILE  (validate a re-encoded KV3 file parses)");
         Console.WriteLine("  morphic-oracle mesh-buffers --vpk PATH --entry NAME --out-dir DIR");
         Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle anim-meta --vpk PATH --entry NAME --out JSON");

@@ -1,8 +1,17 @@
 # vpkmerge
 
-Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many.
+Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many. Plus a small toolkit for the assets inside: decode Source 2 textures, extract hero portraits, and read/edit soundevents.
 
 Built for **Deadlock** modding: the game caps mounted mod VPKs at roughly 100, so pre-merging several mods into one VPK lets players run more mods than the engine would otherwise allow. Splitting is the inverse operation for mod managers that want per-feature granularity (e.g. one ability slot at a time).
+
+What it does:
+
+- **Merge** many VPKs into one, with collision policies and per-path overrides.
+- **Split** one VPK into many by path predicate (the inverse of merge).
+- **Portrait**: extract and decode hero card/portrait art from a VPK to PNG.
+- **Soundevents**: decode a Deadlock `.vsndevts_c` file to JSON, edit clip paths and params (volume, pitch), and re-emit a file the engine can load.
+- **Desktop GUI**: drag-and-drop merging with a visual conflict resolver, plus a Browse tab to walk a VPK's file tree and preview textures.
+- **`morphic`**: a pure-Rust Source 2 `.vtex_c` decoder/encoder and binary KeyValues3 codec underpinning the texture previews and soundevents editing (no .NET runtime required).
 
 ## Download
 
@@ -40,10 +49,10 @@ On Linux/macOS, run `chmod +x vpkmerge-*` once after downloading, then call it f
 
 This repo is a Cargo workspace with four crates:
 
-- [`vpkmerge-core/`](./vpkmerge-core) (v0.3) — pure Rust library with the merge and split engines. No UI dependencies. Reusable from any Rust project.
-- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.2) — the `vpkmerge` command-line binary.
-- [`gui/src-tauri/`](./gui/src-tauri) (v0.2) — Tauri v2 desktop app with a visual conflict resolver, themeable paper UI, and texture preview for Source 2 `.vtex_c` collisions (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
-- [`morphic/`](./morphic) (v0.0) — pure-Rust Source 2 `.vtex_c` texture decoder. Used by the GUI to render thumbnails of conflicting textures so you can decide which mod wins by sight, not by filename. See [`morphic/README.md`](./morphic/README.md).
+- [`vpkmerge-core/`](./vpkmerge-core) (v0.4): pure Rust library with the merge and split engines plus the portrait-extraction and soundevents layers. No UI dependencies. Reusable from any Rust project.
+- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.3): the `vpkmerge` command-line binary (`merge`, `split`, `portrait`, `soundevents`).
+- [`gui/src-tauri/`](./gui/src-tauri) (v0.3): Tauri v2 desktop app with a visual conflict resolver, a Browse tab for walking a VPK's file tree, a themeable paper UI, and texture preview for Source 2 `.vtex_c` entries (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
+- [`morphic/`](./morphic) (v0.1): pure-Rust Source 2 `.vtex_c` texture decoder/encoder and binary KeyValues3 codec. Decodes LDR and HDR (BC6H) formats, selects mips/cubemap faces, re-encodes, and reads/writes `.vsndevts_c`. Powers the GUI texture previews and the soundevents layer. See [`morphic/README.md`](./morphic/README.md).
 
 ## CLI
 
@@ -96,6 +105,47 @@ By default each path goes to the FIRST matching output. `--all-matches` routes e
 
 See `vpkmerge split --help` for the full option list, and [`docs/splicing.md`](./docs/splicing.md) for the design spec and the motivating use case.
 
+### Portrait
+
+```bash
+vpkmerge portrait <input_dir.vpk> --out <dir> [--hero <codename>] [--manifest <file.json>]
+```
+
+Find hero card/portrait textures in a VPK and decode them to PNG. Without `--hero` it extracts every hero in the VPK; pass a codename (e.g. `--hero hornet`) to limit it to one. A JSON manifest describing each texture (hero, variant, dimensions, format, output path, and a skip reason for anything not decodable) prints to stdout, or to `--manifest <file>` if given.
+
+```bash
+vpkmerge portrait pak01_dir.vpk --out ./portraits --hero hornet
+```
+
+### Soundevents
+
+```bash
+vpkmerge soundevents <file.vsndevts_c | entry-path> \
+  [--from-vpk <vpk>] \
+  [--swap-vsnd OLD=NEW]... \
+  [--set EVENT/FIELD=NUMBER]... \
+  [--encode <out.vsndevts_c>]
+```
+
+Decode a Deadlock soundevents file (binary KeyValues3) to JSON, optionally edit it, and re-emit a file the engine can load. Read a file on disk, or read an entry from inside a VPK with `--from-vpk`.
+
+| Flag | Description |
+|------|-------------|
+| `--from-vpk <vpk>` | Read the positional argument as an entry path inside this VPK instead of a file on disk |
+| `--swap-vsnd OLD=NEW` | Rewrite a clip path everywhere in the tree (repeatable) |
+| `--set EVENT/FIELD=NUMBER` | Set a numeric field on one event, e.g. `--set "Seven.Wpn.Fire/volume=0.25"` (repeatable) |
+| `--encode <out>` | After edits, write an uncompressed v4 file (loadable by the engine). Without it, the decoded tree prints as JSON |
+
+```bash
+# Read from the game VPK, halve an ability's volume, write a loadable file.
+vpkmerge soundevents soundevents/hero/gigawatt.vsndevts_c \
+  --from-vpk pak01_dir.vpk \
+  --set "Seven.Wpn.Fire/volume=0.5" \
+  --encode gigawatt.vsndevts_c
+```
+
+See [`docs/spike-vsndevts-kv3.md`](./docs/spike-vsndevts-kv3.md) for the format writeup.
+
 ### Example (merge)
 
 ```bash
@@ -111,8 +161,9 @@ Drop the resulting `combined_dir.vpk` into `citadel/addons/` to mount it as a si
 
 Tauri v2 desktop app that wraps the same engine. Features:
 
-- Drag-and-drop file input, reorderable mod priority, per-conflict overrides
-- Visual conflict resolver with texture thumbnails for `.vtex_c` entries (powered by `morphic`)
+- Drag-and-drop file input, reorderable mod priority, per-conflict overrides (top of the list wins by default)
+- Visual conflict resolver with texture thumbnails for `.vtex_c` entries (powered by `morphic`), HDR textures tone-mapped so they preview instead of erroring
+- **Browse tab**: auto-loads your local Deadlock `pak01_dir.vpk`, walks the VPK file tree with a filter, and previews any selected texture
 - Custom paper-stationery theme: light / dark / system, four doodle backgrounds (arcane, celestial, botanical, nautical), and an optional candle-light vignette
 - Settings persist across launches via `localStorage`
 
@@ -131,7 +182,7 @@ To use the merge / split engines from another Rust project:
 
 ```toml
 [dependencies]
-vpkmerge-core = "0.3"
+vpkmerge-core = "0.4"
 ```
 
 ```rust
@@ -154,7 +205,7 @@ let outputs = vec![
 split("source_dir.vpk", &outputs, &SplitOptions::default())?;
 ```
 
-Also exposes `inspect(path)` (list a VPK's contents) and `detect_conflicts(inputs)` (preview path collisions without writing anything).
+Also exposes `inspect(path)` (list a VPK's contents) and `detect_conflicts(inputs)` (preview path collisions without writing anything), plus two higher-level layers: `extract_portraits(vpk, hero, out_dir)` for decoding hero art to PNG, and `SoundEvents` (`from_file` / `from_vpk`, `to_json`, `swap_vsnd`, `set_event_field`, `encode`) for reading and editing `.vsndevts_c` files.
 
 ## License
 

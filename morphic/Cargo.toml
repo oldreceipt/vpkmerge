@@ -1,6 +1,6 @@
 [package]
 name = "morphic"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Pure-Rust Source 2 .vtex_c texture decoder. Algorithms adapted from ValveResourceFormat (MIT)."
 license = "MIT"
@@ -13,6 +13,9 @@ workspace = true
 bitflags = "2"
 byteorder = "1"
 thiserror = "1"
+# Pure-Rust LZ4 block codec. Source 2 ships binary KV3 (.vsndevts_c et al.)
+# with LZ4-compressed buffers; we only need the single-shot block decoder.
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
 half = { version = "2", features = ["bytemuck"] }
 bytemuck = "1"
 # Safe, pure-Rust port of bcdec.h. Covers BC1..BC5, BC6H, BC7.
@@ -25,9 +28,6 @@ intel_tex_2 = "0.5"
 # textures store the payload as a literal compressed image inside the DATA
 # block's pixel region. `image` parses just what it needs.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-# Pure-Rust LZ4 block decode for KV3 v5 model/material blocks (compression
-# method 1). KV3 packs each buffer as a single raw LZ4 block (no size prefix).
-lz4_flex = "0.11"
 # Pure-Rust glTF 2.0 document builder for the model exporter's .glb writer. The
 # JSON document is built with this; the binary GLB container is framed by hand.
 # `names` keeps node names (the bone names Grimoire retargets clips against).

@@ -70,9 +70,9 @@ pub fn decode_all(resource: &Resource<'_>, skeleton: &Skeleton) -> Result<Vec<Cl
         return Ok(Vec::new());
     };
 
-    let anim = kv3::parse(anim_bytes)?;
-    let agrp = kv3::parse(agrp_bytes)?;
-    let aseq = resource.find_block(*b"ASEQ").map(kv3::parse).transpose()?;
+    let anim = kv3::decode(anim_bytes)?;
+    let agrp = kv3::decode(agrp_bytes)?;
+    let aseq = resource.find_block(*b"ASEQ").map(kv3::decode).transpose()?;
 
     let decode_key = agrp
         .get("m_decodeKey")
