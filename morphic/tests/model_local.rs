@@ -359,6 +359,13 @@ fn decode_hornet_local() {
     assert_glb_roundtrip(&model);
 }
 
+/// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
+/// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
+fn is_shell(s: &str) -> bool {
+    let lc = s.to_ascii_lowercase();
+    lc.contains("outline") || (lc.contains("glow") && !lc.contains("noglow"))
+}
+
 /// M5a: write the `.glb`, re-read it with the `gltf` crate (which validates the
 /// container + accessors), and confirm the structure survived. The file is left
 /// at `MORPHIC_GLB_OUT` (default /tmp/hornet.glb) for a maintainer to open in a
@@ -373,8 +380,23 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
     assert!(gltf.blob.is_some(), "glb carries its binary blob");
     let doc = &gltf.document;
 
-    let gltf_meshes = doc.meshes().count();
-    assert_eq!(gltf_meshes, model.meshes.len(), "glb mesh count");
+    // The GLB writer drops parts that are entirely non-renderable NPR shells
+    // (inverted-hull `*_outline` and additive `*_glow`), so the glTF carries the
+    // model's renderable parts, not every part. Mirror that rule and check the
+    // surviving meshes are exactly those parts (by name).
+    let mut expected_meshes: Vec<&str> = model
+        .meshes
+        .iter()
+        .filter(|p| !is_shell(&p.name) && p.primitives.iter().any(|pr| !is_shell(&pr.material)))
+        .map(|p| p.name.as_str())
+        .collect();
+    expected_meshes.sort_unstable();
+    let mut glb_mesh_names: Vec<&str> = doc.meshes().filter_map(|m| m.name()).collect();
+    glb_mesh_names.sort_unstable();
+    assert_eq!(
+        glb_mesh_names, expected_meshes,
+        "glb keeps exactly the renderable (non-shell) parts"
+    );
 
     let skin = doc.skins().next().expect("glb has a skin");
     assert_eq!(
@@ -411,6 +433,10 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
             );
         }
     }
-    assert_eq!(prim_total, 7, "hornet LOD0 primitive count");
-    eprintln!("glb re-read OK: {gltf_meshes} meshes, {prim_total} primitives, valid skin");
+    // body (5) + gun (1); the `ghost_glow` shell part (1 prim) is dropped.
+    assert_eq!(prim_total, 6, "hornet LOD0 primitive count");
+    eprintln!(
+        "glb re-read OK: {} meshes, {prim_total} primitives, valid skin",
+        glb_mesh_names.len()
+    );
 }
