@@ -18,6 +18,8 @@ Adds a static *posed* model export for still previews (a hero card), and stops D
 - New `bake_pose(model, clips, frame)`: folds one animation frame into the mesh by linear-blend skinning (each hero's own clip on its own skeleton, so no retargeting), returning a static `Model` with no skeleton, skin weights, or clips. Vertex buffers with no joints pass through unchanged, so a prop posed by its own bone (a held weapon) follows the pose while truly static decor stays put.
 - New `bake_pose_from(model, donor, clips, frame)`: bakes `model`'s mesh using a donor model's clips, mapped onto `model`'s skeleton by bone name. For posing a clipless skin with its base-game hero's clip.
 - The GLB writer now drops Deadlock's additive glow-effect shells (mesh part `ghost_glow`, `*_glow` materials) alongside the existing inverted-hull `*_outline` shells. As plain glTF geometry both collapse to an opaque "white halo" over the model; their in-game NPR shaders are a renderer-side concern. `*_noglow` materials are kept.
+- The vertex decoder now handles 8-influence skinning, unblocking the current Dynamo and Apollo (`fencer`) body models, which previously failed with `unexpected BLENDWEIGHT format`. Their meshes pack up to 8 bones per vertex (an 8-wide `BLENDINDICES` paired with an `R16G16B16A16_UNORM` weight stream of 8 `u8`s). Since the glTF pipeline is fixed at 4 influences, a vertex carrying more keeps its 4 highest-weight bones with the weights renormalized to sum 1; 4-influence meshes are unchanged.
+- Texcoord decode now accepts the 1-component `R32_FLOAT` format (V zero-filled), which unblocks the `prof_dynamo` staging model that paired it with the 8-influence skinning above.
 
 ## v0.5.0
 
