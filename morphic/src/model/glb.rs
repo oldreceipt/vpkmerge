@@ -374,21 +374,24 @@ impl Builder {
     }
 
     /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
-    /// accessors), or `None` if every primitive was an outline. Inverted-hull
-    /// NPR outline primitives (Deadlock's toon outline, conventionally
-    /// `*_outline` materials) are dropped: as solid glTF geometry they form a
-    /// shell that occludes the model. Reproducing the outline is a renderer-side
-    /// (three.js) concern, not a baked one.
+    /// accessors), or `None` when the whole part is a non-renderable shell.
+    /// Deadlock's NPR shells (the inverted-hull `*_outline` and the additive
+    /// `*_glow` effect meshes) are dropped: as plain glTF geometry they collapse
+    /// to an opaque hull that whitewashes the model. Reproducing them is a
+    /// renderer-side (three.js) concern, not a baked one.
     fn add_mesh(
         &mut self,
         part: &MeshPart,
         mat_index: &mut BTreeMap<String, json::Index<json::Material>>,
         files: Option<&dyn FileResolver>,
     ) -> Option<json::Index<json::Mesh>> {
+        if is_shell(&part.name) {
+            return None;
+        }
         let renderable: Vec<_> = part
             .primitives
             .iter()
-            .filter(|p| !is_outline_material(&p.material))
+            .filter(|p| !is_shell(&p.material))
             .collect();
         if renderable.is_empty() {
             return None;
@@ -786,6 +789,23 @@ pub(crate) fn is_outline_material(path: &str) -> bool {
     path.to_ascii_lowercase().contains("outline")
 }
 
+/// True for Deadlock's additive glow-effect shells (mesh part `ghost_glow`,
+/// material `*_glow.vmat`). In-game an additive NPR shader draws them; as plain
+/// glTF geometry they collapse to an opaque shell ("white halo") over the model,
+/// so they are dropped. Excludes `*noglow*` (a normal material with glow turned
+/// off, e.g. `astro_barrelv2_noglow`), which must be kept.
+pub(crate) fn is_glow_material(path: &str) -> bool {
+    let lc = path.to_ascii_lowercase();
+    lc.contains("glow") && !lc.contains("noglow")
+}
+
+/// True for any mesh part or material that exports as a non-renderable shell:
+/// the toon outline (`is_outline_material`) or the additive glow
+/// (`is_glow_material`). Such geometry is dropped from the GLB.
+pub(crate) fn is_shell(name: &str) -> bool {
+    is_outline_material(name) || is_glow_material(name)
+}
+
 /// Appends `_c` to a source resource path unless it is already a compiled path.
 fn compiled(path: &str) -> String {
     if path.ends_with("_c") {
@@ -933,7 +953,7 @@ fn bounds(positions: &[[f32; 3]]) -> (json::Value, json::Value) {
 
 /// VRF's default weights for a mesh with joints but no weight stream:
 /// `1/bone_weight_count` spread over the first `bone_weight_count` influences.
-fn default_weights(count: usize, bone_weight_count: usize) -> Vec<[f32; 4]> {
+pub(crate) fn default_weights(count: usize, bone_weight_count: usize) -> Vec<[f32; 4]> {
     let bwc = bone_weight_count.clamp(1, 4);
     let w = 1.0 / bwc as f32;
     let mut row = [0.0f32; 4];

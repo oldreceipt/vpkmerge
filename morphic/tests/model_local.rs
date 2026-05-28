@@ -171,6 +171,88 @@ fn export_glb_from_env() {
     );
 }
 
+/// Lists hero body-model entries in a VPK: `<dir>/<name>/<name>.vmdl_c` under a
+/// `models/heroes*` path (the body model convention, skipping LODs/backups/props).
+/// Set `MORPHIC_DIAG_VPK`; skipped otherwise. Cheap (path listing only, no decode).
+#[test]
+fn list_heroes() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut hits: Vec<String> = vpk
+        .file_paths()
+        .filter(|p| p.ends_with(".vmdl_c") && p.contains("/heroes"))
+        .filter(|p| {
+            let stem = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".vmdl_c");
+            let parent = p.rsplit('/').nth(1).unwrap_or("");
+            stem == parent
+        })
+        .cloned()
+        .collect();
+    hits.sort();
+    hits.dedup();
+    for h in &hits {
+        eprintln!("HERO {h}");
+    }
+    eprintln!("HEROCOUNT {}", hits.len());
+}
+
+/// Lists EVERY `.vmdl_c` under `/heroes` (minus obvious non-body parts), for
+/// finding a hero's real/current body model (which may be in a `_vN` dir, e.g.
+/// `hornet_v3/hornet.vmdl_c`). Set `MORPHIC_DIAG_VPK`; optional `MORPHIC_DIAG_GREP`
+/// filters by substring. Cheap (path listing only).
+#[test]
+fn list_hero_vmdl_all() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let needle = std::env::var("MORPHIC_DIAG_GREP").unwrap_or_default().to_lowercase();
+    let skip = [
+        "_lod", "lod0", "lod1", "lod2", "lod3", "backup", "/clips/", "abilities", "particle",
+        "/materials/", "_dbg", "destruction",
+    ];
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut hits: Vec<String> = vpk
+        .file_paths()
+        .filter(|p| p.ends_with(".vmdl_c") && p.contains("/heroes"))
+        .filter(|p| {
+            let lc = p.to_lowercase();
+            !skip.iter().any(|s| lc.contains(s)) && (needle.is_empty() || lc.contains(&needle))
+        })
+        .cloned()
+        .collect();
+    hits.sort();
+    hits.dedup();
+    for h in &hits {
+        eprintln!("VMDL {h}");
+    }
+    eprintln!("VMDLCOUNT {}", hits.len());
+}
+
+/// Lists the animation clips a model carries. Set `MORPHIC_DIAG_VPK`
+/// (+ optional `MORPHIC_DIAG_ENTRY`); skipped otherwise. Diagnostic for picking a
+/// `--pose` clip.
+#[test]
+fn list_clips() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_DIAG_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+    let model = morphic::model::decode(&bytes).expect("decode");
+    eprintln!("CLIPS {} ({} total):", entry, model.animations.len());
+    for c in &model.animations {
+        eprintln!("  {} ({} frames)", c.name, c.frame_count);
+    }
+}
+
 #[test]
 fn decode_hornet_local() {
     let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {

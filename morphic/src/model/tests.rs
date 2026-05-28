@@ -448,3 +448,244 @@ fn outline_materials_are_detected() {
         "models/heroes_staging/hornet_v3/materials/skinmaterial.vmat"
     ));
 }
+
+#[test]
+fn glow_shells_are_detected_but_noglow_is_kept() {
+    // The additive glow effect shell (mesh part `ghost_glow`, material
+    // `*_glow.vmat`) is a shell to drop.
+    assert!(super::glb::is_glow_material("ghost_glow"));
+    assert!(super::glb::is_glow_material(
+        "models/heroes_staging/hornet_v3/materials/vindicta_glow.vmat"
+    ));
+    assert!(super::glb::is_shell("ghost_glow"));
+    // A normal material that merely has glow turned off must be kept.
+    assert!(!super::glb::is_glow_material(
+        "models/heroes_staging/astro/materials/astro_barrelv2_noglow.vmat"
+    ));
+    assert!(!super::glb::is_shell(
+        "models/heroes_staging/astro/materials/astro_barrelv2_noglow.vmat"
+    ));
+    assert!(!super::glb::is_shell("body"));
+}
+
+mod pose_bake {
+    use super::super::animation::{BoneTrack, Clip};
+    use super::super::math::{Mat4, Quat, Vec3};
+    use super::super::mesh::{MeshPart, Primitive, VertexBuffer};
+    use super::super::skeleton::{Bone, Skeleton};
+    use super::super::{bake_pose, bake_pose_from, Model};
+
+    const ID: Quat = Quat {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    };
+
+    fn root_bone() -> Bone {
+        Bone {
+            name: "root".into(),
+            parent: None,
+            flags: 0,
+            position: Vec3::default(),
+            rotation: ID,
+            local_bind: Mat4::IDENTITY,
+            global_bind: Mat4::IDENTITY,
+            inverse_bind: Mat4::IDENTITY,
+        }
+    }
+
+    fn skinned_vertex(pos: [f32; 3]) -> VertexBuffer {
+        VertexBuffer {
+            element_count: 1,
+            stride: 0,
+            positions: vec![pos],
+            normals: vec![[0.0, 1.0, 0.0]],
+            tangents: vec![],
+            texcoords: vec![],
+            joints: vec![[0, 0, 0, 0]],
+            weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            layout: vec![],
+        }
+    }
+
+    fn one_part(vb: VertexBuffer) -> MeshPart {
+        MeshPart {
+            name: "body".into(),
+            mesh_index: 0,
+            primitives: vec![Primitive {
+                vertex_buffer: 0,
+                material: "body".into(),
+                vertex_count: vb.element_count,
+                indices: vec![0],
+            }],
+            vertex_buffers: vec![vb],
+            min_bounds: [0.0; 3],
+            max_bounds: [0.0; 3],
+            bone_weight_count: 1,
+        }
+    }
+
+    fn single_bone_clip(name: &str, t: Vec3) -> Clip {
+        Clip {
+            name: name.into(),
+            fps: 30.0,
+            frame_count: 1,
+            looping: false,
+            tracks: vec![BoneTrack {
+                bone: 0,
+                translations: Some(vec![t]),
+                rotations: Some(vec![ID]),
+                scales: None,
+            }],
+        }
+    }
+
+    fn approx(a: [f32; 3], b: [f32; 3]) {
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() < 1e-4, "{a:?} vs {b:?}");
+        }
+    }
+
+    #[test]
+    fn bind_pose_clip_leaves_vertices_unchanged() {
+        let model = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![single_bone_clip("ui_hero_pose", Vec3::default())],
+        };
+        let baked = bake_pose(&model, &["ui_hero_pose"], 0);
+        assert!(baked.skeleton.bones.is_empty(), "skeleton stripped");
+        assert!(baked.animations.is_empty(), "animations stripped");
+        let vb = &baked.meshes[0].vertex_buffers[0];
+        assert!(vb.joints.is_empty() && vb.weights.is_empty(), "skin stripped");
+        approx(vb.positions[0], [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn translation_pose_shifts_vertices() {
+        let model = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![single_bone_clip(
+                "ui_hero_pose",
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            )],
+        };
+        let baked = bake_pose(&model, &["ui_hero_pose"], 0);
+        approx(
+            baked.meshes[0].vertex_buffers[0].positions[0],
+            [11.0, 2.0, 3.0],
+        );
+    }
+
+    #[test]
+    fn no_matching_clip_falls_back_to_static_bind() {
+        let model = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([4.0, 5.0, 6.0]))],
+            animations: vec![single_bone_clip(
+                "walk",
+                Vec3 {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            )],
+        };
+        let baked = bake_pose(&model, &["ui_hero_pose"], 0);
+        assert!(baked.skeleton.bones.is_empty());
+        let vb = &baked.meshes[0].vertex_buffers[0];
+        assert!(vb.joints.is_empty() && vb.weights.is_empty());
+        approx(vb.positions[0], [4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn prop_without_skeleton_passes_through() {
+        let model = Model {
+            skeleton: Skeleton { bones: vec![] },
+            meshes: vec![one_part(skinned_vertex([5.0, 6.0, 7.0]))],
+            animations: vec![],
+        };
+        let baked = bake_pose(&model, &["ui_hero_pose"], 0);
+        let vb = &baked.meshes[0].vertex_buffers[0];
+        assert!(vb.joints.is_empty() && vb.weights.is_empty());
+        approx(vb.positions[0], [5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn donor_clip_poses_a_clipless_skin_by_bone_name() {
+        // The skin ships the mesh + rig but no clips (like a real skin mod).
+        let skin = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![],
+        };
+        // The base hero supplies the clip; same bone name "root".
+        let donor = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![],
+            animations: vec![single_bone_clip(
+                "ui_hero_pose",
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            )],
+        };
+        let baked = bake_pose_from(&skin, &donor, &["ui_hero_pose"], 0);
+        approx(
+            baked.meshes[0].vertex_buffers[0].positions[0],
+            [11.0, 2.0, 3.0],
+        );
+    }
+
+    #[test]
+    fn donor_bone_name_mismatch_keeps_bind_pose() {
+        let skin = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![],
+        };
+        let mut donor_bone = root_bone();
+        donor_bone.name = "unrelated".into();
+        let donor = Model {
+            skeleton: Skeleton {
+                bones: vec![donor_bone],
+            },
+            meshes: vec![],
+            animations: vec![single_bone_clip(
+                "ui_hero_pose",
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            )],
+        };
+        // The donor's clip targets "unrelated"; the skin has "root", so no bone
+        // matches and the vertex stays at its bind position.
+        let baked = bake_pose_from(&skin, &donor, &["ui_hero_pose"], 0);
+        approx(
+            baked.meshes[0].vertex_buffers[0].positions[0],
+            [1.0, 2.0, 3.0],
+        );
+    }
+}
