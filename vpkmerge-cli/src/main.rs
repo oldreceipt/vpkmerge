@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    export_hero_model, export_model, extract_portraits, inspect_models, merge, split, AnimOptions,
-    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection,
-    SoundEvents, SplitOptions, SplitOutput,
+    edit_model_geometry, export_hero_model, export_model, extract_portraits, inspect_models, merge,
+    model_vertex_targets, split, AnimOptions, CollisionPolicy, GeometryEdit, MergeOptions,
+    OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection, SoundEvents, SplitOptions,
+    SplitOutput,
 };
 
 #[derive(Parser)]
@@ -126,6 +127,11 @@ struct ModelCmd {
 enum ModelAction {
     /// Export a model entry to a textured binary glTF (`.glb`).
     Export(ModelExportArgs),
+
+    /// Reshape a model's existing geometry (vertex displacement) and pack the
+    /// edited `.vmdl_c` into an addon VPK. Topology is preserved; this moves
+    /// vertices, it does not add or remove them.
+    Edit(ModelEditArgs),
 }
 
 #[derive(Args)]
@@ -181,6 +187,50 @@ struct ModelExportArgs {
     /// Output `.glb` path.
     #[arg(long, value_name = "FILE")]
     out: PathBuf,
+}
+
+#[derive(Args)]
+struct ModelEditArgs {
+    /// VPK containing the `.vmdl_c` to edit (a mesh skin, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// VPK-internal model path, e.g.
+    /// `models/heroes_staging/hornet_v3/hornet.vmdl_c`.
+    #[arg(long, value_name = "PATH")]
+    entry: String,
+
+    /// Base `pak01_dir.vpk` to read the model from when `--vpk` is a texture-only
+    /// skin that does not ship the mesh. Rarely needed for a geometry edit.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// List the model's editable vertex buffers (mesh part, block index, vertex
+    /// count) and exit without editing.
+    #[arg(long)]
+    list: bool,
+
+    /// Edit only the mesh part with this name (see `--list`). Omit to edit every
+    /// displacement-editable part.
+    #[arg(long, value_name = "NAME")]
+    part: Option<String>,
+
+    /// Uniform scale about each edited part's centroid (1.0 = unchanged).
+    #[arg(long, default_value_t = 1.0, value_name = "S")]
+    scale: f32,
+
+    /// Translate edited geometry by `x,y,z` in model space (applied after scale).
+    #[arg(long, value_name = "x,y,z")]
+    translate: Option<String>,
+
+    /// Output addon VPK. Packs the edited model at `--entry` (or `--vpk-entry`)
+    /// so it overrides the base pak.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: Option<PathBuf>,
+
+    /// Entry path for the edited model inside `--encode-vpk` (defaults to `--entry`).
+    #[arg(long, value_name = "PATH")]
+    vpk_entry: Option<String>,
 }
 
 #[derive(Args)]
@@ -288,22 +338,10 @@ fn parse_pose(spec: &str) -> Result<PoseSelection> {
 }
 
 fn run_model(args: ModelCmd) -> Result<()> {
-    if let Some(ModelAction::Export(e)) = args.action {
-        let pose = e.pose.as_deref().map(parse_pose).transpose()?;
-        let anim = AnimOptions {
-            no_anim: e.no_anim,
-            clips: e.clip.clone(),
-            pose,
-        };
-        match (&e.entry, &e.hero) {
-            (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &anim, &e.out)
-                .with_context(|| format!("exporting {entry} from {}", e.vpk.display()))?,
-            (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &anim, &e.out)
-                .with_context(|| format!("exporting hero {hero} from {}", e.vpk.display()))?,
-            (None, None) => anyhow::bail!("model export: provide --entry or --hero"),
-        }
-        println!("wrote {}", e.out.display());
-        return Ok(());
+    match args.action {
+        Some(ModelAction::Export(e)) => return run_model_export(&e),
+        Some(ModelAction::Edit(e)) => return run_model_edit(e),
+        None => {}
     }
 
     let input = args.input.context(
@@ -346,6 +384,109 @@ fn run_model(args: ModelCmd) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_model_export(e: &ModelExportArgs) -> Result<()> {
+    let pose = e.pose.as_deref().map(parse_pose).transpose()?;
+    let anim = AnimOptions {
+        no_anim: e.no_anim,
+        clips: e.clip.clone(),
+        pose,
+    };
+    match (&e.entry, &e.hero) {
+        (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &anim, &e.out)
+            .with_context(|| format!("exporting {entry} from {}", e.vpk.display()))?,
+        (None, Some(hero)) => export_hero_model(&e.vpk, hero, e.base.as_deref(), &anim, &e.out)
+            .with_context(|| format!("exporting hero {hero} from {}", e.vpk.display()))?,
+        (None, None) => anyhow::bail!("model export: provide --entry or --hero"),
+    }
+    println!("wrote {}", e.out.display());
+    Ok(())
+}
+
+fn run_model_edit(e: ModelEditArgs) -> Result<()> {
+    // --list: enumerate vertex buffers and exit.
+    if e.list {
+        let targets = model_vertex_targets(&e.vpk, &e.entry, e.base.as_deref())
+            .with_context(|| format!("listing targets for {}", e.entry))?;
+        println!("{}: {} vertex buffer(s)", e.entry, targets.len());
+        for t in &targets {
+            println!(
+                "  {:<16} block {:<3} {:>7} verts  stride {:<3} {}",
+                t.mesh_name,
+                t.block_index,
+                t.vertex_count,
+                t.stride,
+                if t.editable {
+                    "editable"
+                } else {
+                    "not editable"
+                },
+            );
+        }
+        return Ok(());
+    }
+
+    // Guard against a no-op (which would just repack the model unchanged): no
+    // scale change and no translate given.
+    if (e.scale - 1.0).abs() < f32::EPSILON && e.translate.is_none() {
+        anyhow::bail!("model edit: nothing to do (set --scale and/or --translate, or use --list)");
+    }
+
+    let translate = e
+        .translate
+        .as_deref()
+        .map(parse_translate)
+        .transpose()?
+        .unwrap_or([0.0; 3]);
+
+    let out = e.encode_vpk.context(
+        "model edit: provide --encode-vpk <OUT_dir.vpk> to write the edited model (or --list)",
+    )?;
+
+    let edit = GeometryEdit {
+        part: e.part.clone(),
+        scale: e.scale,
+        translate,
+    };
+    let report = edit_model_geometry(
+        &e.vpk,
+        &e.entry,
+        e.base.as_deref(),
+        &edit,
+        &out,
+        e.vpk_entry.as_deref(),
+    )
+    .with_context(|| format!("editing {} from {}", e.entry, e.vpk.display()))?;
+
+    eprintln!(
+        "edited {} buffer(s) across part(s) [{}], {} vertices moved",
+        report.edited_buffers,
+        report.edited_parts.join(", "),
+        report.edited_vertices,
+    );
+    println!(
+        "wrote {}: 1 entry ({}) edited model",
+        out.display(),
+        report.vpk_entry,
+    );
+    Ok(())
+}
+
+/// Parses a `--translate` value `x,y,z` into a 3-float vector.
+fn parse_translate(spec: &str) -> Result<[f32; 3]> {
+    let parts: Vec<&str> = spec.split(',').collect();
+    if parts.len() != 3 {
+        anyhow::bail!("--translate expects x,y,z (three comma-separated numbers), got {spec:?}");
+    }
+    let mut out = [0.0f32; 3];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p
+            .trim()
+            .parse()
+            .with_context(|| format!("--translate component {:?} is not a number", p.trim()))?;
+    }
+    Ok(out)
 }
 
 fn run_merge(cli: Cli) -> Result<()> {

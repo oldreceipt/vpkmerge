@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use morphic::model::{BlockSummary, ModelInfo};
+pub use morphic::model::{BlockSummary, ModelInfo, VertexTarget};
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
 /// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
@@ -202,6 +202,184 @@ fn discover_hero_entry(vpks: &[valve_pak::VPK], codename: &str) -> Option<String
     None
 }
 
+/// A geometric transform applied to a model's editable vertex buffers (Tier-0
+/// displacement: reshape existing geometry, topology unchanged). Scale is uniform
+/// about each buffer's centroid; translation is applied after, in model space.
+#[derive(Debug, Clone)]
+pub struct GeometryEdit {
+    /// Edit only the mesh part with this exact name (e.g. `body`, `gun`); `None`
+    /// edits every displacement-editable buffer in the model.
+    pub part: Option<String>,
+    /// Uniform scale about each buffer's centroid. `1.0` leaves size unchanged.
+    pub scale: f32,
+    /// Translation in model space, applied after scaling.
+    pub translate: [f32; 3],
+}
+
+impl Default for GeometryEdit {
+    fn default() -> Self {
+        Self {
+            part: None,
+            scale: 1.0,
+            translate: [0.0; 3],
+        }
+    }
+}
+
+/// What an [`edit_model_geometry`] run touched.
+#[derive(Debug, Clone)]
+pub struct GeometryEditReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    /// Names of the mesh parts whose geometry was moved.
+    pub edited_parts: Vec<String>,
+    pub edited_buffers: usize,
+    pub edited_vertices: usize,
+}
+
+/// Lists the vertex buffers in a model entry (which mesh parts can be edited, and
+/// the block index / vertex count of each). The CLI uses this for `--list` and to
+/// resolve a `--part` name to a block index.
+pub fn model_vertex_targets(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+) -> Result<Vec<VertexTarget>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    morphic::model::vertex_targets(&bytes).with_context(|| format!("reading targets for {entry}"))
+}
+
+/// Applies a geometric transform to a model's editable vertex buffers and packs
+/// the edited `.vmdl_c` into a standalone addon VPK at `vpk_entry` (defaulting to
+/// `entry`, so it overrides the base pak). The geometry analog of
+/// `soundevents --encode-vpk`: read from a VPK, edit, re-encode, pack.
+///
+/// Note: the model's stored bounds (`MDAT` per-mesh AABB) are not recomputed, so
+/// large transforms can drift culling bounds; small reshapes are unaffected.
+pub fn edit_model_geometry(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    edit: &GeometryEdit,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<GeometryEditReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let mut bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let targets = morphic::model::vertex_targets(&bytes)
+        .with_context(|| format!("reading vertex targets for {entry}"))?;
+
+    // Select the buffers to edit: editable, and matching --part if given.
+    let selected: Vec<&VertexTarget> = targets
+        .iter()
+        .filter(|t| t.editable)
+        .filter(|t| edit.part.as_deref().is_none_or(|p| t.mesh_name == p))
+        .collect();
+
+    if let Some(part) = &edit.part {
+        if !targets.iter().any(|t| &t.mesh_name == part) {
+            anyhow::bail!(
+                "no mesh part named {part:?} in {entry} (parts: {})",
+                part_list(&targets)
+            );
+        }
+    }
+    if selected.is_empty() {
+        anyhow::bail!(
+            "no displacement-editable vertex buffer to edit in {entry} \
+             (need meshopt-compressed geometry with a float POSITION)"
+        );
+    }
+
+    // Read every selected buffer's positions first, then scale them all about a
+    // single shared centroid. Scaling each buffer about its own centroid would
+    // pull a multi-buffer part (hornet's body is two buffers) or a whole-model
+    // edit apart; one shared centroid keeps the selection rigid as it grows.
+    let mut buffers: Vec<(usize, &str, Vec<[f32; 3]>)> = Vec::with_capacity(selected.len());
+    for t in &selected {
+        let positions = morphic::model::read_vertex_positions(&bytes, t.block_index)
+            .with_context(|| format!("reading positions for {} buffer", t.mesh_name))?;
+        buffers.push((t.block_index, t.mesh_name.as_str(), positions));
+    }
+    let centroid = shared_centroid(buffers.iter().map(|(_, _, p)| p.as_slice()));
+
+    let mut edited_parts: Vec<String> = Vec::new();
+    let mut edited_vertices = 0usize;
+    let edited_buffers = buffers.len();
+    for (block_index, mesh_name, positions) in &buffers {
+        let moved = transform_about(positions, centroid, edit);
+        bytes = morphic::model::replace_vertex_positions(&bytes, *block_index, &moved)
+            .with_context(|| format!("splicing {mesh_name} buffer"))?;
+        edited_vertices += positions.len();
+        if !edited_parts.iter().any(|n| n == mesh_name) {
+            edited_parts.push((*mesh_name).to_string());
+        }
+    }
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), bytes.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(GeometryEditReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        edited_parts,
+        edited_buffers,
+        edited_vertices,
+    })
+}
+
+/// Mean position over all the given buffers (the shared scale pivot).
+// The vertex count -> f32 cast is an averaging divisor; precision loss at
+// realistic mesh sizes does not meaningfully move the centroid.
+#[allow(clippy::cast_precision_loss)]
+fn shared_centroid<'a>(buffers: impl Iterator<Item = &'a [[f32; 3]]>) -> [f32; 3] {
+    let mut sum = [0.0f32; 3];
+    let mut count = 0usize;
+    for positions in buffers {
+        for p in positions {
+            for k in 0..3 {
+                sum[k] += p[k];
+            }
+        }
+        count += positions.len();
+    }
+    if count == 0 {
+        return [0.0; 3];
+    }
+    let n = count as f32;
+    [sum[0] / n, sum[1] / n, sum[2] / n]
+}
+
+/// Scale each position about `centroid`, then translate.
+fn transform_about(
+    positions: &[[f32; 3]],
+    centroid: [f32; 3],
+    edit: &GeometryEdit,
+) -> Vec<[f32; 3]> {
+    positions
+        .iter()
+        .map(|p| {
+            [
+                (p[0] - centroid[0]) * edit.scale + centroid[0] + edit.translate[0],
+                (p[1] - centroid[1]) * edit.scale + centroid[1] + edit.translate[1],
+                (p[2] - centroid[2]) * edit.scale + centroid[2] + edit.translate[2],
+            ]
+        })
+        .collect()
+}
+
+fn part_list(targets: &[VertexTarget]) -> String {
+    let mut names: Vec<&str> = targets.iter().map(|t| t.mesh_name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(", ")
+}
+
 /// Reads a VPK entry from the first of `vpks` that contains it.
 fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
     for vpk in vpks {
@@ -245,4 +423,56 @@ pub fn inspect_models(vpk_path: impl AsRef<Path>) -> Result<Vec<ModelEntry>> {
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    // The transform arithmetic here is exact (scale 2.0, integer inputs), so the
+    // tests assert exact float-array equality deliberately.
+    #![allow(clippy::float_cmp)]
+
+    use super::*;
+
+    #[test]
+    fn shared_centroid_is_the_mean_across_buffers() {
+        let a = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let b = [[0.0, 4.0, 0.0], [2.0, 4.0, 0.0]];
+        let c = shared_centroid([a.as_slice(), b.as_slice()].into_iter());
+        assert_eq!(c, [1.0, 2.0, 0.0]);
+    }
+
+    /// Two buffers scaled about one shared centroid stay rigid relative to each
+    /// other (the bug a per-buffer centroid would introduce): a point and the
+    /// centroid keep the same scaled offset regardless of which buffer it is in.
+    #[test]
+    fn scale_about_shared_centroid_keeps_buffers_aligned() {
+        let centroid = [1.0, 2.0, 0.0];
+        let edit = GeometryEdit {
+            part: None,
+            scale: 2.0,
+            translate: [0.0; 3],
+        };
+        // A vertex at the centroid stays put under a pure scale.
+        let at_centroid = transform_about(&[centroid], centroid, &edit);
+        assert_eq!(at_centroid[0], centroid);
+        // A vertex 1 unit from the centroid moves to 2 units (scale 2x), same
+        // rule in any buffer.
+        let off = transform_about(&[[2.0, 2.0, 0.0]], centroid, &edit);
+        assert_eq!(off[0], [3.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn translate_is_uniform_and_centroid_independent() {
+        let edit = GeometryEdit {
+            part: None,
+            scale: 1.0,
+            translate: [10.0, -5.0, 1.0],
+        };
+        let out = transform_about(
+            &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            [99.0, 99.0, 99.0],
+            &edit,
+        );
+        assert_eq!(out, vec![[10.0, -5.0, 1.0], [11.0, -4.0, 2.0]]);
+    }
 }

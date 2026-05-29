@@ -375,6 +375,106 @@ fn decode_hornet_local() {
     assert_glb_roundtrip(&model);
 }
 
+/// Tier-0 displacement edit, end to end on the real hornet model: enumerate
+/// vertex targets, translate one buffer's positions, splice it back, and confirm
+/// the edited `.vmdl_c` (a) re-decodes, (b) shows exactly that buffer's positions
+/// shifted by the delta, and (c) leaves every other attribute and buffer
+/// byte-identical. Gated on `MORPHIC_MODEL_VPK`; run with the local Deadlock pak.
+#[test]
+fn displacement_edit_round_trips_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping local displacement edit");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("locate entry");
+    let bytes = vf.read_all().expect("read entry");
+
+    // Pick the first displacement-editable vertex buffer.
+    let targets = morphic::model::vertex_targets(&bytes).expect("targets");
+    let target = targets
+        .iter()
+        .find(|t| t.editable)
+        .expect("at least one editable vertex buffer");
+    eprintln!(
+        "editing buffer: mesh={} block={} verts={} stride={}",
+        target.mesh_name, target.block_index, target.vertex_count, target.stride
+    );
+
+    // Translate the whole buffer by a fixed delta.
+    let delta = [5.0f32, -3.0, 2.0];
+    let orig_pos = morphic::model::read_vertex_positions(&bytes, target.block_index).expect("read");
+    assert_eq!(orig_pos.len(), target.vertex_count, "position count");
+    let moved: Vec<[f32; 3]> = orig_pos
+        .iter()
+        .map(|p| [p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]])
+        .collect();
+
+    let edited = morphic::model::replace_vertex_positions(&bytes, target.block_index, &moved)
+        .expect("splice");
+
+    // (a) The edited buffer's positions read back shifted by exactly the delta.
+    let new_pos =
+        morphic::model::read_vertex_positions(&edited, target.block_index).expect("read edited");
+    assert_eq!(new_pos.len(), orig_pos.len(), "edited position count");
+    for (o, n) in orig_pos.iter().zip(&new_pos) {
+        for k in 0..3 {
+            assert!(
+                (n[k] - (o[k] + delta[k])).abs() <= 1e-3,
+                "position not shifted by delta: {o:?} -> {n:?}"
+            );
+        }
+    }
+
+    // (b)+(c) Full re-decode: same structure; only the edited buffer's positions
+    // changed, everything else (normals/uv/joints/weights/indices) byte-identical.
+    let before = morphic::model::decode(&bytes).expect("decode original");
+    let after = morphic::model::decode(&edited).expect("decode edited");
+    assert_eq!(
+        before.meshes.len(),
+        after.meshes.len(),
+        "mesh count preserved"
+    );
+    assert_eq!(
+        before.total_indices(),
+        after.total_indices(),
+        "index total preserved"
+    );
+
+    let mut changed_buffers = 0usize;
+    for (mb, ma) in before.meshes.iter().zip(&after.meshes) {
+        assert_eq!(mb.name, ma.name, "mesh name");
+        assert_eq!(
+            mb.vertex_buffers.len(),
+            ma.vertex_buffers.len(),
+            "buffer count"
+        );
+        for (vb, va) in mb.vertex_buffers.iter().zip(&ma.vertex_buffers) {
+            // Non-position attributes are always preserved.
+            assert_eq!(vb.normals, va.normals, "{}: normals", mb.name);
+            assert_eq!(vb.tangents, va.tangents, "{}: tangents", mb.name);
+            assert_eq!(vb.texcoords, va.texcoords, "{}: texcoords", mb.name);
+            assert_eq!(vb.joints, va.joints, "{}: joints", mb.name);
+            assert_eq!(vb.weights, va.weights, "{}: weights", mb.name);
+            if vb.positions != va.positions {
+                changed_buffers += 1;
+            }
+        }
+        // Primitive indices are unchanged everywhere.
+        for (pb, pa) in mb.primitives.iter().zip(&ma.primitives) {
+            assert_eq!(pb.indices, pa.indices, "{}: indices", mb.name);
+        }
+    }
+    assert_eq!(
+        changed_buffers, 1,
+        "exactly one vertex buffer's positions changed"
+    );
+    eprintln!("displacement edit OK: 1 buffer moved, all other attributes preserved");
+}
+
 /// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
 /// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
 fn is_shell(s: &str) -> bool {

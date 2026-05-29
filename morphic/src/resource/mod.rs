@@ -30,21 +30,45 @@ impl<'a> Resource<'a> {
     /// `new_data`, keeping every other block (e.g. `RED2` edit/dependency info)
     /// byte-for-byte. The block table is recomputed because the new `DATA` may
     /// differ in size from the original.
-    ///
-    /// Blocks are laid out in their original order, each 16-byte aligned (the
-    /// alignment Valve's own files use). Block offsets in the table are what the
-    /// engine reads, so the alignment choice itself is not load-bearing.
     pub fn rebuild_with_data(&self, new_data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+        let idx = self
+            .blocks()
+            .iter()
+            .position(|b| b.kind == BLOCK_TYPE_DATA)
+            .ok_or(DecodeError::MissingDataBlock)?;
+        self.rebuild_with_block(idx, new_data)
+    }
+
+    /// Rebuild the resource container with the block at declaration index
+    /// `block_index` replaced by `new_payload`, every other block copied
+    /// byte-for-byte. Unlike [`Resource::rebuild_with_data`] this targets a block
+    /// positionally, which is what model geometry edits need: a model has several
+    /// `MVTX` blocks (one per mesh part) sharing a FOURCC, addressed by the index
+    /// the `CTRL` buffer registry stores (`m_nBlockIndex`).
+    ///
+    /// Block order and count are preserved, so block indices (and the `CTRL`
+    /// references to them) stay valid across the rebuild; only sizes/offsets
+    /// change. Blocks are laid out in their original order, each 16-byte aligned
+    /// (the alignment Valve's own files use). Block offsets in the table are what
+    /// the engine reads, so the alignment choice itself is not load-bearing.
+    pub fn rebuild_with_block(
+        &self,
+        block_index: usize,
+        new_payload: &[u8],
+    ) -> Result<Vec<u8>, DecodeError> {
         let raw = self.raw();
         let blocks = self.blocks();
         let block_count = blocks.len();
+        if block_index >= block_count {
+            return Err(DecodeError::BadResource("block index out of range"));
+        }
         let resource_version = u16::from_le_bytes([raw[6], raw[7]]);
 
-        // Resolve each block's payload bytes (DATA swapped, others copied).
+        // Resolve each block's payload bytes (the target swapped, others copied).
         let mut payloads: Vec<&[u8]> = Vec::with_capacity(block_count);
-        for b in blocks {
-            if b.kind == BLOCK_TYPE_DATA {
-                payloads.push(new_data);
+        for (i, b) in blocks.iter().enumerate() {
+            if i == block_index {
+                payloads.push(new_payload);
             } else {
                 let start = b.offset as usize;
                 let end = start
@@ -99,4 +123,75 @@ impl<'a> Resource<'a> {
 
 fn align16(n: usize) -> usize {
     (n + 15) & !15
+}
+
+#[cfg(test)]
+mod tests {
+    // Test scaffolding builds a small container by hand; the small known sizes
+    // make the usize -> u32 field casts safe.
+    #![allow(clippy::cast_possible_truncation)]
+
+    use super::*;
+
+    /// Builds a minimal but valid resource container (header + block table +
+    /// 16-byte-aligned payloads) that [`Resource::parse`] accepts.
+    fn build_resource(blocks: &[([u8; 4], &[u8])]) -> Vec<u8> {
+        let table_len = blocks.len() * 12;
+        let mut cursor = align16(HEADER_LEN + table_len);
+        let mut offsets = Vec::with_capacity(blocks.len());
+        for (_, p) in blocks {
+            offsets.push(cursor);
+            cursor = align16(cursor + p.len());
+        }
+        let total = cursor;
+
+        let mut out = vec![0u8; total];
+        out[0..4].copy_from_slice(&(total as u32).to_le_bytes());
+        out[4..6].copy_from_slice(&12u16.to_le_bytes());
+        out[6..8].copy_from_slice(&0u16.to_le_bytes());
+        out[8..12].copy_from_slice(&8u32.to_le_bytes());
+        out[12..16].copy_from_slice(&(blocks.len() as u32).to_le_bytes());
+        for (i, (kind, p)) in blocks.iter().enumerate() {
+            let entry = HEADER_LEN + i * 12;
+            out[entry..entry + 4].copy_from_slice(kind);
+            let off_field = entry + 4;
+            out[off_field..off_field + 4]
+                .copy_from_slice(&((offsets[i] - off_field) as u32).to_le_bytes());
+            out[off_field + 4..off_field + 8].copy_from_slice(&(p.len() as u32).to_le_bytes());
+            out[offsets[i]..offsets[i] + p.len()].copy_from_slice(p);
+        }
+        out
+    }
+
+    #[test]
+    fn rebuild_with_block_swaps_one_and_preserves_others() {
+        // Three blocks; swap the middle one for differently-sized bytes.
+        let bytes = build_resource(&[
+            (*b"AAAA", &[1u8, 2, 3, 4]),
+            (*b"MVTX", &[9u8; 8]),
+            (*b"CCCC", &[7u8, 7, 7]),
+        ]);
+        let res = Resource::parse(&bytes).expect("parse synthetic");
+
+        let new_mid = vec![0xABu8; 40]; // larger than the original 8 bytes
+        let rebuilt = res.rebuild_with_block(1, &new_mid).expect("rebuild");
+
+        let res2 = Resource::parse(&rebuilt).expect("reparse rebuilt");
+        assert_eq!(res2.blocks().len(), 3, "block count preserved");
+        // Kinds and order preserved.
+        assert_eq!(&res2.blocks()[0].kind, b"AAAA");
+        assert_eq!(&res2.blocks()[1].kind, b"MVTX");
+        assert_eq!(&res2.blocks()[2].kind, b"CCCC");
+        // The swapped block reads back as the new payload; neighbours untouched.
+        assert_eq!(res2.get_block_by_index(0).unwrap(), &[1u8, 2, 3, 4]);
+        assert_eq!(res2.get_block_by_index(1).unwrap(), new_mid.as_slice());
+        assert_eq!(res2.get_block_by_index(2).unwrap(), &[7u8, 7, 7]);
+    }
+
+    #[test]
+    fn rebuild_with_block_rejects_out_of_range() {
+        let bytes = build_resource(&[(*b"DATA", &[0u8; 4])]);
+        let res = Resource::parse(&bytes).expect("parse");
+        assert!(res.rebuild_with_block(5, &[0u8; 4]).is_err());
+    }
 }

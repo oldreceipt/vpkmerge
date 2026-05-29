@@ -383,3 +383,121 @@ pub fn decode_vertex_buffer(
     }
     Ok(result)
 }
+
+/// Inverse of [`unzigzag8`]: maps an unsigned byte-delta back to its zigzag
+/// code. `unzigzag8(zigzag8(d)) == d` for all `d` (exhaustively tested).
+#[inline]
+fn zigzag8(d: u8) -> u8 {
+    if d < 128 {
+        d << 1
+    } else {
+        ((255 - d) << 1) | 1
+    }
+}
+
+/// Encodes one vertex block. `vertices` is the block's `block_size * vertex_size`
+/// interleaved bytes; `last_vertex` is the running seed (the previous vertex,
+/// mutated to this block's last vertex on return). Uses the always-valid
+/// encoding: every byte lane is a literal (control nibble `3`) carrying a
+/// byte-wise zigzag-delta residual (channel `0`). Not size-optimal, but it
+/// round-trips exactly through [`decode_vertex_buffer`].
+fn encode_vertex_block(
+    vertices: &[u8],
+    block_size: usize,
+    vertex_size: usize,
+    last_vertex: &mut [u8],
+    out: &mut Vec<u8>,
+) {
+    // residuals[pos * block_size + i] = zigzag-delta byte for lane `pos`, vertex `i`.
+    let mut residuals = vec![0u8; vertex_size * block_size];
+    for pos in 0..vertex_size {
+        let mut prev = last_vertex[pos];
+        for i in 0..block_size {
+            let cur = vertices[i * vertex_size + pos];
+            residuals[pos * block_size + i] = zigzag8(cur.wrapping_sub(prev));
+            prev = cur;
+        }
+    }
+
+    // Control: one byte per 4 lanes, each lane's 2-bit nibble = 3 (literal) -> 0xFF.
+    for _ in 0..(vertex_size / 4) {
+        out.push(0xFF);
+    }
+
+    // Plane data, in decode consumption order: outer lane group `k` (step 4),
+    // inner `j` in 0..4, plane = k + j, each `block_size` residual bytes.
+    let mut k = 0usize;
+    while k < vertex_size {
+        for j in 0..4 {
+            let pos = k + j;
+            out.extend_from_slice(&residuals[pos * block_size..pos * block_size + block_size]);
+        }
+        k += 4;
+    }
+
+    last_vertex
+        .copy_from_slice(&vertices[vertex_size * (block_size - 1)..vertex_size * block_size]);
+}
+
+/// Encodes a raw `vertex_count * vertex_size` interleaved vertex stream into a
+/// meshoptimizer vertex buffer (codec v1, header `0xa1`) that
+/// [`decode_vertex_buffer`] reads back byte-for-byte. This is a correctness-first
+/// encoder (literal lanes, no bit-width compaction), so the output is roughly the
+/// size of the uncompressed stream plus small per-block control overhead; it is
+/// not byte-identical to Valve's own compressor, only round-trip equivalent under
+/// the same (VRF-matched) decoder the engine uses.
+pub fn encode_vertex_buffer(
+    vertex_count: usize,
+    vertex_size: usize,
+    vertices: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    if vertex_size == 0 || vertex_size > 256 {
+        return Err(DecodeError::Meshopt("vertex size out of range"));
+    }
+    if !vertex_size.is_multiple_of(4) {
+        return Err(DecodeError::Meshopt("vertex size not a multiple of 4"));
+    }
+    if vertex_count == 0 {
+        return Err(DecodeError::Meshopt("vertex count zero"));
+    }
+    if vertices.len() != vertex_count * vertex_size {
+        return Err(DecodeError::Meshopt("vertex buffer length mismatch"));
+    }
+
+    let mut out = Vec::new();
+    out.push(VERTEX_HEADER | DECODE_VERTEX_VERSION); // 0xa1
+
+    // The decoder seeds the running "last vertex" from the tail and uses it as
+    // the predecessor of vertex 0. Seeding with the first vertex itself makes
+    // vertex 0 delta to zero, matching meshopt's convention.
+    let first_vertex = vertices[..vertex_size].to_vec();
+    let mut last_vertex = first_vertex.clone();
+
+    let vertex_block_size = get_vertex_block_size(vertex_size);
+    let mut vertex_offset = 0usize;
+    while vertex_offset < vertex_count {
+        let block_size = if vertex_offset + vertex_block_size < vertex_count {
+            vertex_block_size
+        } else {
+            vertex_count - vertex_offset
+        };
+        let start = vertex_offset * vertex_size;
+        encode_vertex_block(
+            &vertices[start..start + block_size * vertex_size],
+            block_size,
+            vertex_size,
+            &mut last_vertex,
+            &mut out,
+        );
+        vertex_offset += block_size;
+    }
+
+    // Tail: optional zero padding up to the minimum, then the seed vertex, then
+    // the per-lane channel descriptors (all 0 = byte-wise zigzag-delta).
+    let tail_size = vertex_size + vertex_size / 4;
+    let tail_size_padded = tail_size.max(TAIL_MIN_SIZE_V1);
+    out.resize(out.len() + (tail_size_padded - tail_size), 0);
+    out.extend_from_slice(&first_vertex);
+    out.resize(out.len() + vertex_size / 4, 0);
+    Ok(out)
+}
