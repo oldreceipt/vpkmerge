@@ -4,13 +4,17 @@
 
 Adds a static *posed* model export for still previews (a hero card), and stops Deadlock's non-renderable effect shells from leaking into the GLB. `vpkmerge model export --pose` bakes a single animation frame into the mesh and drops the skeleton, skin, and clips, producing a plain posed mesh the size of a static prop. Built for Grimoire's Locker hero previews, where a lightweight still beats shipping a multi-megabyte animated rig.
 
+Also lands the first geometry-editing path: `vpkmerge model edit` reshapes a model's existing vertices (scale and/or translate, topology preserved), re-encodes the meshopt vertex buffers, and packs the result into an addon VPK. Confirmed in-game with a scaled-up hornet body model.
+
 ### CLI (`vpkmerge` 0.6)
 
 - New `--pose [CLIP[@FRAME]]` flag on `model export`. Bakes one frame into the vertices and writes a static `.glb` with no skeleton, skin, or animation. Omit the value to try the default menu/roster poses (`ui_hero_pose`, `hero_pose`, `hero_roster_pose`, `hero_roster_ready`, `ui_hero_select`) then generic idles (`idle_loadout`, `primary_stand_idle`) in order, since menu-pose naming differs across heroes; pass a clip name and optional `@frame` to choose explicitly. Mutually exclusive with `--clip` / `--no-anim`.
+- New `model edit` subcommand. Reshapes a model's existing geometry by vertex displacement: uniform `--scale` about each part's centroid plus an optional `--translate x,y,z`, with topology preserved. Writes the edited `.vmdl_c` into a standalone addon VPK via `--encode-vpk` (entry path defaults to `--entry`; `--vpk-entry` overrides). `--list` enumerates the editable vertex buffers (mesh part, block index, vertex count) and exits without editing. Reads the mesh from `--vpk` (or `--base` when the skin is texture-only).
 
 ### Library (`vpkmerge-core` 0.7)
 
 - `AnimOptions` gains an optional `pose: Option<PoseSelection>`; when set, the export bakes a single posed frame and emits a static mesh, overriding clip / no-anim selection. `PoseSelection { clips, frame }` and `DEFAULT_POSE_CLIPS` are exported; an empty clip list uses the defaults.
+- New `edit_model_geometry` plus `GeometryEdit { scale, translate }`, `GeometryEditReport`, and `model_vertex_targets`: decode a `.vmdl_c` from a VPK (or base pak), apply a vertex-displacement edit, re-pack the edited model into an addon VPK, and report the edited parts/buffers/vertices. `model_vertex_targets` lists the editable buffers without editing.
 - **Skin mods are posed from the base game's clips.** Skin VPKs ship the mesh + rig but no animation clips, so when the exported model carries none of the requested clips, the same entry is read from the base pak (`--base`) and its clip is mapped onto the skin by bone name (`morphic::model::bake_pose_from`). Same hero, same rig, so no cross-hero retargeting. A hero with no clips anywhere (e.g. an unfinished model) falls back to the bind pose.
 
 ### morphic (0.3)
@@ -20,6 +24,7 @@ Adds a static *posed* model export for still previews (a hero card), and stops D
 - The GLB writer now drops Deadlock's additive glow-effect shells (mesh part `ghost_glow`, `*_glow` materials) alongside the existing inverted-hull `*_outline` shells. As plain glTF geometry both collapse to an opaque "white halo" over the model; their in-game NPR shaders are a renderer-side concern. `*_noglow` materials are kept.
 - The vertex decoder now handles 8-influence skinning, unblocking the current Dynamo and Apollo (`fencer`) body models, which previously failed with `unexpected BLENDWEIGHT format`. Their meshes pack up to 8 bones per vertex (an 8-wide `BLENDINDICES` paired with an `R16G16B16A16_UNORM` weight stream of 8 `u8`s). Since the glTF pipeline is fixed at 4 influences, a vertex carrying more keeps its 4 highest-weight bones with the weights renormalized to sum 1; 4-influence meshes are unchanged.
 - Texcoord decode now accepts the 1-component `R32_FLOAT` format (V zero-filled), which unblocks the `prof_dynamo` staging model that paired it with the 8-influence skinning above.
+- New meshopt vertex encoder (codec v1), the inverse of the existing decoder, plus a `model::edit` module (`vertex_targets`, `read_vertex_positions`, `replace_vertex_positions`). Together they round-trip an edited vertex buffer back into the Source 2 `VBIB` block, preserving topology and every non-position attribute. This is the primitive behind core's `edit_model_geometry`.
 
 ## v0.5.0
 
