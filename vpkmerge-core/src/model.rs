@@ -219,7 +219,10 @@ fn export_resolved(
 /// dir when several versions ship side by side.
 fn version_rank(path: &str) -> u32 {
     path.split('/')
-        .filter_map(|seg| seg.rsplit_once("_v").and_then(|(_, n)| n.parse::<u32>().ok()))
+        .filter_map(|seg| {
+            seg.rsplit_once("_v")
+                .and_then(|(_, n)| n.parse::<u32>().ok())
+        })
         .max()
         .unwrap_or(0)
 }
@@ -240,8 +243,7 @@ fn discover_hero_entry(vpks: &[valve_pak::VPK], codename: &str) -> Option<String
         let mut matches: Vec<&String> = vpk
             .file_paths()
             .filter(|p| {
-                p.rsplit('/').next().unwrap_or(p.as_str()) == want.as_str()
-                    && p.contains("/heroes")
+                p.rsplit('/').next().unwrap_or(p.as_str()) == want.as_str() && p.contains("/heroes")
             })
             .collect();
         if matches.is_empty() {
