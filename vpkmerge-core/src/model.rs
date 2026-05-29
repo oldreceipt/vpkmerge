@@ -295,18 +295,28 @@ pub fn edit_model_geometry(
         );
     }
 
-    let mut edited_parts = Vec::new();
-    let mut edited_vertices = 0usize;
-    let edited_buffers = selected.len();
+    // Read every selected buffer's positions first, then scale them all about a
+    // single shared centroid. Scaling each buffer about its own centroid would
+    // pull a multi-buffer part (hornet's body is two buffers) or a whole-model
+    // edit apart; one shared centroid keeps the selection rigid as it grows.
+    let mut buffers: Vec<(usize, &str, Vec<[f32; 3]>)> = Vec::with_capacity(selected.len());
     for t in &selected {
         let positions = morphic::model::read_vertex_positions(&bytes, t.block_index)
             .with_context(|| format!("reading positions for {} buffer", t.mesh_name))?;
-        let moved = apply_transform(&positions, edit);
-        bytes = morphic::model::replace_vertex_positions(&bytes, t.block_index, &moved)
-            .with_context(|| format!("splicing {} buffer", t.mesh_name))?;
+        buffers.push((t.block_index, t.mesh_name.as_str(), positions));
+    }
+    let centroid = shared_centroid(buffers.iter().map(|(_, _, p)| p.as_slice()));
+
+    let mut edited_parts: Vec<String> = Vec::new();
+    let mut edited_vertices = 0usize;
+    let edited_buffers = buffers.len();
+    for (block_index, mesh_name, positions) in &buffers {
+        let moved = transform_about(positions, centroid, edit);
+        bytes = morphic::model::replace_vertex_positions(&bytes, *block_index, &moved)
+            .with_context(|| format!("splicing {mesh_name} buffer"))?;
         edited_vertices += positions.len();
-        if !edited_parts.contains(&t.mesh_name) {
-            edited_parts.push(t.mesh_name.clone());
+        if !edited_parts.iter().any(|n| n == mesh_name) {
+            edited_parts.push((*mesh_name).to_string());
         }
     }
 
@@ -323,24 +333,34 @@ pub fn edit_model_geometry(
     })
 }
 
-/// Scale about the centroid, then translate.
-// The vertex count -> f32 cast is for an averaging divisor; precision loss at
+/// Mean position over all the given buffers (the shared scale pivot).
+// The vertex count -> f32 cast is an averaging divisor; precision loss at
 // realistic mesh sizes does not meaningfully move the centroid.
 #[allow(clippy::cast_precision_loss)]
-fn apply_transform(positions: &[[f32; 3]], edit: &GeometryEdit) -> Vec<[f32; 3]> {
-    if positions.is_empty() {
-        return Vec::new();
-    }
-    let n = positions.len() as f32;
-    let mut centroid = [0.0f32; 3];
-    for p in positions {
-        for k in 0..3 {
-            centroid[k] += p[k];
+fn shared_centroid<'a>(buffers: impl Iterator<Item = &'a [[f32; 3]]>) -> [f32; 3] {
+    let mut sum = [0.0f32; 3];
+    let mut count = 0usize;
+    for positions in buffers {
+        for p in positions {
+            for k in 0..3 {
+                sum[k] += p[k];
+            }
         }
+        count += positions.len();
     }
-    for c in &mut centroid {
-        *c /= n;
+    if count == 0 {
+        return [0.0; 3];
     }
+    let n = count as f32;
+    [sum[0] / n, sum[1] / n, sum[2] / n]
+}
+
+/// Scale each position about `centroid`, then translate.
+fn transform_about(
+    positions: &[[f32; 3]],
+    centroid: [f32; 3],
+    edit: &GeometryEdit,
+) -> Vec<[f32; 3]> {
     positions
         .iter()
         .map(|p| {
@@ -403,4 +423,56 @@ pub fn inspect_models(vpk_path: impl AsRef<Path>) -> Result<Vec<ModelEntry>> {
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    // The transform arithmetic here is exact (scale 2.0, integer inputs), so the
+    // tests assert exact float-array equality deliberately.
+    #![allow(clippy::float_cmp)]
+
+    use super::*;
+
+    #[test]
+    fn shared_centroid_is_the_mean_across_buffers() {
+        let a = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let b = [[0.0, 4.0, 0.0], [2.0, 4.0, 0.0]];
+        let c = shared_centroid([a.as_slice(), b.as_slice()].into_iter());
+        assert_eq!(c, [1.0, 2.0, 0.0]);
+    }
+
+    /// Two buffers scaled about one shared centroid stay rigid relative to each
+    /// other (the bug a per-buffer centroid would introduce): a point and the
+    /// centroid keep the same scaled offset regardless of which buffer it is in.
+    #[test]
+    fn scale_about_shared_centroid_keeps_buffers_aligned() {
+        let centroid = [1.0, 2.0, 0.0];
+        let edit = GeometryEdit {
+            part: None,
+            scale: 2.0,
+            translate: [0.0; 3],
+        };
+        // A vertex at the centroid stays put under a pure scale.
+        let at_centroid = transform_about(&[centroid], centroid, &edit);
+        assert_eq!(at_centroid[0], centroid);
+        // A vertex 1 unit from the centroid moves to 2 units (scale 2x), same
+        // rule in any buffer.
+        let off = transform_about(&[[2.0, 2.0, 0.0]], centroid, &edit);
+        assert_eq!(off[0], [3.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn translate_is_uniform_and_centroid_independent() {
+        let edit = GeometryEdit {
+            part: None,
+            scale: 1.0,
+            translate: [10.0, -5.0, 1.0],
+        };
+        let out = transform_about(
+            &[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            [99.0, 99.0, 99.0],
+            &edit,
+        );
+        assert_eq!(out, vec![[10.0, -5.0, 1.0], [11.0, -4.0, 2.0]]);
+    }
 }
