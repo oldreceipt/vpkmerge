@@ -26,7 +26,10 @@ mod vbib;
 mod tests;
 
 pub use animation::{BoneTrack, Clip};
-pub use edit::{read_vertex_positions, replace_vertex_positions, vertex_targets, VertexTarget};
+pub use edit::{
+    apply_edited_glb, export_buffer_for_edit, read_vertex_positions, replace_vertex_positions,
+    vertex_targets, VertexTarget,
+};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};

@@ -475,6 +475,64 @@ fn displacement_edit_round_trips_local() {
     eprintln!("displacement edit OK: 1 buffer moved, all other attributes preserved");
 }
 
+/// Blender-reshape round-trip plumbing on the real model, WITHOUT Blender: export
+/// a buffer to an edit `.glb`, feed the UNEDITED glb straight back through the
+/// importer, and confirm the spliced model's positions are unchanged (an identity
+/// round-trip through the `_ORIGID` carrier + glb reader + splice). Gated on
+/// `MORPHIC_MODEL_VPK`.
+#[test]
+fn edit_glb_identity_round_trips_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping local edit-glb round-trip");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+
+    let target = morphic::model::vertex_targets(&bytes)
+        .expect("targets")
+        .into_iter()
+        .find(|t| t.editable)
+        .expect("an editable buffer");
+    eprintln!(
+        "edit-glb round-trip: mesh={} block={} verts={}",
+        target.mesh_name, target.block_index, target.vertex_count
+    );
+
+    let glb = morphic::model::export_buffer_for_edit(&bytes, target.block_index).expect("export");
+    let edited = morphic::model::apply_edited_glb(&bytes, target.block_index, &glb).expect("apply");
+
+    // Identity edit: the edited buffer's positions match the original within float
+    // round-trip tolerance; every other attribute is byte-identical.
+    let before = morphic::model::decode(&bytes).expect("decode original");
+    let after = morphic::model::decode(&edited).expect("decode edited");
+    let mut compared = 0usize;
+    for (mb, ma) in before.meshes.iter().zip(&after.meshes) {
+        for (vb, va) in mb.vertex_buffers.iter().zip(&ma.vertex_buffers) {
+            assert_eq!(vb.normals, va.normals, "{}: normals", mb.name);
+            assert_eq!(vb.texcoords, va.texcoords, "{}: texcoords", mb.name);
+            assert_eq!(vb.joints, va.joints, "{}: joints", mb.name);
+            assert_eq!(vb.weights, va.weights, "{}: weights", mb.name);
+            for (p0, p1) in vb.positions.iter().zip(&va.positions) {
+                for k in 0..3 {
+                    assert!(
+                        (p0[k] - p1[k]).abs() <= 1e-3,
+                        "{}: position drifted: {p0:?} vs {p1:?}",
+                        mb.name
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 0, "compared some vertices");
+    eprintln!("edit-glb identity round-trip OK: {compared} vertices stable");
+}
+
 /// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
 /// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
 fn is_shell(s: &str) -> bool {

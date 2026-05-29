@@ -391,6 +391,54 @@ pub fn edit_model_geometry(
     })
 }
 
+/// Exports one vertex buffer (by global block index) of a model to a `.glb` for
+/// reshaping in Blender: a single triangle mesh carrying a `_ORIGID` per-vertex
+/// attribute that maps the edit back to the original buffer (see
+/// [`apply_model_edit_glb`]). The model is read from `vpk` (then `base`).
+pub fn export_model_buffer_glb(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    block_index: usize,
+    out_glb: impl AsRef<Path>,
+) -> Result<()> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let glb = morphic::model::export_buffer_for_edit(&bytes, block_index)
+        .with_context(|| format!("exporting buffer at block {block_index} of {entry}"))?;
+    let out = out_glb.as_ref();
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(out, &glb).with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
+/// Applies a Blender-reshaped `.glb` (from [`export_model_buffer_glb`]) back onto
+/// a model: maps the edited positions to the original buffer via `_ORIGID`,
+/// splices, and packs a standalone addon VPK at `vpk_entry` (default `entry`).
+pub fn apply_model_edit_glb(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    block_index: usize,
+    glb_bytes: &[u8],
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<String> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let edited = morphic::model::apply_edited_glb(&bytes, block_index, glb_bytes)
+        .with_context(|| format!("applying edited glb to block {block_index} of {entry}"))?;
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+    Ok(vpk_entry)
+}
+
 /// Mean position over all the given buffers (the shared scale pivot).
 // The vertex count -> f32 cast is an averaging divisor; precision loss at
 // realistic mesh sizes does not meaningfully move the centroid.

@@ -217,10 +217,27 @@ struct ModelEditArgs {
     #[arg(long)]
     list: bool,
 
-    /// Edit only the mesh part with this name (see `--list`). Omit to edit every
-    /// displacement-editable part.
+    /// Edit only the mesh part with this name (see `--list`). For the transform
+    /// edit, omit to edit every editable part. For `--export-glb` / `--from-glb`
+    /// the part must resolve to a single buffer (else pass `--block`).
     #[arg(long, value_name = "NAME")]
     part: Option<String>,
+
+    /// Target a specific vertex buffer by its block index (see `--list`).
+    /// Disambiguates a multi-buffer part for `--export-glb` / `--from-glb`.
+    #[arg(long, value_name = "INDEX")]
+    block: Option<usize>,
+
+    /// Export the chosen buffer to a `.glb` (with a `_ORIGID` carrier) for
+    /// reshaping in Blender, then re-import with `--from-glb`. Needs `--part`
+    /// (single-buffer) or `--block`.
+    #[arg(long = "export-glb", value_name = "FILE", conflicts_with_all = ["from_glb", "list"])]
+    export_glb: Option<PathBuf>,
+
+    /// Apply a Blender-reshaped `.glb` (from `--export-glb`) back onto the buffer
+    /// and pack an addon VPK (needs `--encode-vpk`). Topology must be preserved.
+    #[arg(long = "from-glb", value_name = "FILE", conflicts_with_all = ["export_glb", "list"])]
+    from_glb: Option<PathBuf>,
 
     /// Uniform scale about each edited part's centroid (1.0 = unchanged).
     #[arg(long, default_value_t = 1.0, value_name = "S")]
@@ -441,6 +458,41 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
         return Ok(());
     }
 
+    // --export-glb: write the chosen buffer to a glb for Blender editing.
+    if let Some(out_glb) = &e.export_glb {
+        let block = resolve_edit_block(&e)?;
+        vpkmerge_core::export_model_buffer_glb(&e.vpk, &e.entry, e.base.as_deref(), block, out_glb)
+            .with_context(|| format!("exporting buffer {block} of {}", e.entry))?;
+        println!("wrote {} (block {block} of {})", out_glb.display(), e.entry);
+        return Ok(());
+    }
+
+    // --from-glb: apply a Blender-reshaped glb back and pack an addon VPK.
+    if let Some(in_glb) = &e.from_glb {
+        let block = resolve_edit_block(&e)?;
+        let out = e.encode_vpk.as_ref().context(
+            "model edit --from-glb: provide --encode-vpk <OUT_dir.vpk> for the edited model",
+        )?;
+        let glb_bytes =
+            std::fs::read(in_glb).with_context(|| format!("reading {}", in_glb.display()))?;
+        let vpk_entry = vpkmerge_core::apply_model_edit_glb(
+            &e.vpk,
+            &e.entry,
+            e.base.as_deref(),
+            block,
+            &glb_bytes,
+            out,
+            e.vpk_entry.as_deref(),
+        )
+        .with_context(|| format!("applying {} to {}", in_glb.display(), e.entry))?;
+        println!(
+            "wrote {}: 1 entry ({vpk_entry}) reshaped from {}",
+            out.display(),
+            in_glb.display()
+        );
+        return Ok(());
+    }
+
     // Guard against a no-op (which would just repack the model unchanged): no
     // scale change and no translate given.
     if (e.scale - 1.0).abs() < f32::EPSILON && e.translate.is_none() {
@@ -485,6 +537,44 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
         report.vpk_entry,
     );
     Ok(())
+}
+
+/// Resolves the single vertex buffer (block index) a glb export/import targets,
+/// from `--block` (exact) or `--part` (must name a single-buffer editable part).
+fn resolve_edit_block(e: &ModelEditArgs) -> Result<usize> {
+    let targets = model_vertex_targets(&e.vpk, &e.entry, e.base.as_deref())
+        .with_context(|| format!("reading buffers of {}", e.entry))?;
+
+    if let Some(b) = e.block {
+        let t = targets
+            .iter()
+            .find(|t| t.block_index == b)
+            .with_context(|| format!("no vertex buffer at block {b} (see --list)"))?;
+        if !t.editable {
+            anyhow::bail!("block {b} ({}) is not displacement-editable", t.mesh_name);
+        }
+        return Ok(b);
+    }
+
+    let part = e.part.as_deref().context(
+        "specify --part <name> or --block <index> to choose the buffer to edit (see --list)",
+    )?;
+    let hits: Vec<&vpkmerge_core::VertexTarget> = targets
+        .iter()
+        .filter(|t| t.mesh_name == part && t.editable)
+        .collect();
+    match hits.len() {
+        0 => anyhow::bail!("no editable buffer in part {part:?} (see --list)"),
+        1 => Ok(hits[0].block_index),
+        _ => {
+            let blocks: Vec<String> = hits.iter().map(|t| t.block_index.to_string()).collect();
+            anyhow::bail!(
+                "part {part:?} has {} buffers (blocks {}); pass --block <index>",
+                hits.len(),
+                blocks.join(", ")
+            )
+        }
+    }
 }
 
 /// Parses a `--translate` value `x,y,z` into a 3-float vector.

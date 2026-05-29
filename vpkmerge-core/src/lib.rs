@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 pub mod model;
 pub mod portrait;
 pub use model::{
-    edit_model_geometry, export_hero_model, export_model, inspect_models, model_vertex_targets,
-    AnimOptions, GeometryEdit, GeometryEditReport, ModelEntry, ModelInfo, PoseSelection,
-    VertexTarget, DEFAULT_POSE_CLIPS,
+    apply_model_edit_glb, edit_model_geometry, export_hero_model, export_model,
+    export_model_buffer_glb, inspect_models, model_vertex_targets, AnimOptions, GeometryEdit,
+    GeometryEditReport, ModelEntry, ModelInfo, PoseSelection, VertexTarget, DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
