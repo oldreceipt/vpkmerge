@@ -782,11 +782,19 @@ impl Builder {
     }
 }
 
-/// True for Deadlock's inverted-hull toon-outline materials (conventionally
-/// `*_outline`). Their primitives are dropped from the GLB: rendered as solid
-/// geometry the hull wraps and whitewashes the model.
+/// True for Deadlock's inverted-hull toon-outline shells. Their primitives are
+/// dropped from the GLB: rendered as solid geometry the hull wraps and
+/// whitewashes the model. Two naming conventions in the shipped heroes:
+/// - `*_outline`: the standard inverted hull.
+/// - `*jitter*`: the comic-style inked border (Billy/`punkgoat`, parts
+///   `*_jitter01`/`_bat_jitter`, materials `*_border_jitter01`). NOT the
+///   `g_tJitterMask` texture input many normal materials use for animated edges:
+///   this only ever inspects material + mesh-part *names*, never texture-param
+///   names, and no visible hero-body material is named `*jitter*` (verified
+///   across the roster), so matching the name token is safe.
 pub(crate) fn is_outline_material(path: &str) -> bool {
-    path.to_ascii_lowercase().contains("outline")
+    let lc = path.to_ascii_lowercase();
+    lc.contains("outline") || lc.contains("jitter")
 }
 
 /// True for Deadlock's additive glow-effect shells (mesh part `ghost_glow`,

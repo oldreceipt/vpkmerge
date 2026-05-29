@@ -184,6 +184,13 @@ struct ModelExportArgs {
     )]
     pose: Option<String>,
 
+    /// With `--pose`, error out instead of emitting a static bind/T-pose when the
+    /// model carries no menu/idle pose clip (WIP heroes ship the rig but no baked
+    /// clips). Lets a caller fall back to a 2D portrait rather than show an
+    /// unposed hero.
+    #[arg(long, requires = "pose")]
+    require_pose: bool,
+
     /// Output `.glb` path.
     #[arg(long, value_name = "FILE")]
     out: PathBuf,
@@ -334,7 +341,11 @@ fn parse_pose(spec: &str) -> Result<PoseSelection> {
     } else {
         vec![clip.to_string()]
     };
-    Ok(PoseSelection { clips, frame })
+    Ok(PoseSelection {
+        clips,
+        frame,
+        require: false,
+    })
 }
 
 fn run_model(args: ModelCmd) -> Result<()> {
@@ -387,7 +398,10 @@ fn run_model(args: ModelCmd) -> Result<()> {
 }
 
 fn run_model_export(e: &ModelExportArgs) -> Result<()> {
-    let pose = e.pose.as_deref().map(parse_pose).transpose()?;
+    let pose = e.pose.as_deref().map(parse_pose).transpose()?.map(|mut p| {
+        p.require = e.require_pose;
+        p
+    });
     let anim = AnimOptions {
         no_anim: e.no_anim,
         clips: e.clip.clone(),

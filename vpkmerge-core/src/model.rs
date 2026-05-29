@@ -46,6 +46,12 @@ pub struct PoseSelection {
     pub clips: Vec<String>,
     /// Frame index to sample (clamped to the clip's range).
     pub frame: usize,
+    /// Error out instead of falling back to the static bind pose when neither
+    /// the model nor its base-pak donor carries any candidate clip. Lets a
+    /// caller tell "posed" from "would be an unposed bind/T-pose still" and fall
+    /// back to a 2D portrait. WIP heroes (`models/heroes_wip/...`) ship the rig
+    /// but bake no clips into the `.vmdl_c`, so they only ever bind-pose.
+    pub require: bool,
 }
 
 impl AnimOptions {
@@ -155,18 +161,40 @@ fn export_resolved(
         // base game). When this model carries none of the candidate clips, source
         // them from the same entry in the base pak (vpks after the first) and map
         // by bone name. Same hero, same rig, so no cross-hero retargeting.
-        let has_own_clip = candidates.iter().any(|c| {
-            model
-                .animations
+        let carries_clip = |m: &morphic::model::Model| {
+            candidates
                 .iter()
-                .any(|a| a.name.eq_ignore_ascii_case(c))
-        });
+                .any(|c| m.animations.iter().any(|a| a.name.eq_ignore_ascii_case(c)))
+        };
+        let has_own_clip = carries_clip(&model);
+        // Decode the base-pak donor once (only when needed): it supplies the menu
+        // clip for a clipless skin, and lets --require-pose tell whether a real
+        // pose is reachable before baking.
+        let donor = if has_own_clip {
+            None
+        } else {
+            read_entry(&vpks[1..], entry)
+                .map(|b| {
+                    morphic::model::decode(&b)
+                        .with_context(|| format!("decoding base clips for {entry}"))
+                })
+                .transpose()?
+        };
+        if pose.require {
+            let has_clip = has_own_clip || donor.as_ref().is_some_and(carries_clip);
+            let has_skeleton = !model.skeleton.bones.is_empty();
+            if !has_skeleton || !has_clip {
+                anyhow::bail!(
+                    "{entry} carries no menu/idle pose clip ({}); only a static bind \
+                     pose is available and --require-pose was set",
+                    candidates.join(", ")
+                );
+            }
+        }
         model = if has_own_clip {
             morphic::model::bake_pose(&model, &candidates, pose.frame)
-        } else if let Some(donor_bytes) = read_entry(&vpks[1..], entry) {
-            let donor = morphic::model::decode(&donor_bytes)
-                .with_context(|| format!("decoding base clips for {entry}"))?;
-            morphic::model::bake_pose_from(&model, &donor, &candidates, pose.frame)
+        } else if let Some(donor) = &donor {
+            morphic::model::bake_pose_from(&model, donor, &candidates, pose.frame)
         } else {
             morphic::model::bake_pose(&model, &candidates, pose.frame)
         };
@@ -186,18 +214,46 @@ fn export_resolved(
     Ok(())
 }
 
-/// Finds the hero body model entry for `codename` across `vpks` (first match
-/// wins). The body model's file name is exactly `<codename>.vmdl_c` and it lives
-/// under a `models/heroes...` directory.
+/// Highest `_vN` suffix across a path's segments (`inferno_v4` -> 4,
+/// `hornet_v3` -> 3), or 0 when no segment is versioned. Picks the current model
+/// dir when several versions ship side by side.
+fn version_rank(path: &str) -> u32 {
+    path.split('/')
+        .filter_map(|seg| seg.rsplit_once("_v").and_then(|(_, n)| n.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Finds the hero body model entry for `codename`. The body model's file name is
+/// exactly `<codename>.vmdl_c` and it lives under a `models/heroes...` directory.
+///
+/// VPKs are searched in priority order, so a mesh skin's own model (`vpks[0]`)
+/// wins over the base pak. Within one VPK a hero can ship several matching
+/// `<codename>.vmdl_c` (e.g. an old `heroes_wip/inferno` beside the current
+/// `inferno_v4`). `valve_pak::file_paths()` iterates a `HashMap` (random order),
+/// so taking the first match picks an arbitrary version per run; instead pick
+/// deterministically: prefer a non-`heroes_wip` dir, then the highest `_vN`,
+/// then the lexicographically greatest path.
 fn discover_hero_entry(vpks: &[valve_pak::VPK], codename: &str) -> Option<String> {
     let want = format!("{codename}.vmdl_c");
     for vpk in vpks {
-        for path in vpk.file_paths() {
-            let basename = path.rsplit('/').next().unwrap_or(path);
-            if basename == want && path.contains("/heroes") {
-                return Some(path.clone());
-            }
+        let mut matches: Vec<&String> = vpk
+            .file_paths()
+            .filter(|p| {
+                p.rsplit('/').next().unwrap_or(p.as_str()) == want.as_str()
+                    && p.contains("/heroes")
+            })
+            .collect();
+        if matches.is_empty() {
+            continue;
         }
+        let key = |p: &str| (!p.contains("/heroes_wip/"), version_rank(p));
+        matches.sort_by(|a, b| {
+            key(b.as_str())
+                .cmp(&key(a.as_str()))
+                .then_with(|| b.as_str().cmp(a.as_str()))
+        });
+        return matches.first().map(|p| (*p).clone());
     }
     None
 }

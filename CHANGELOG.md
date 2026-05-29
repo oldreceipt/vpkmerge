@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.0
+
+Hardens the posed-export path that Grimoire's Locker hero previews depend on. Hero body-model discovery is now deterministic, `--pose` can refuse to emit an unposed model, and Deadlock's comic-outline shells no longer leak into the GLB as a white halo.
+
+### CLI (`vpkmerge` 0.7)
+
+- New `--require-pose` flag on `model export`. With `--pose`, errors out instead of baking a static bind/T-pose when the model carries no menu/idle pose clip (WIP heroes ship the rig but no baked clips). Lets a caller fall back to a 2D portrait rather than show an unposed hero.
+- `--hero` body-model discovery is now deterministic: it picks the highest `_vN` model directory consistently instead of relying on VPK enumeration order, so the same hero resolves to the same body model every run.
+
+### Library (`vpkmerge-core` 0.7)
+
+- Pose selection can now signal "no real pose available" so callers can require one (see `--require-pose`); a clipless model no longer silently degrades to the bind pose when a pose was demanded.
+
+### morphic (0.3)
+
+- Drop the non-renderable comic-outline (`*jitter*`) effect shells during GLB export alongside the existing `*_outline` / `*_glow` shells, so they stop collapsing into an opaque white halo in static previews.
+
 ## v0.6.0
 
 Adds a static *posed* model export for still previews (a hero card), and stops Deadlock's non-renderable effect shells from leaking into the GLB. `vpkmerge model export --pose` bakes a single animation frame into the mesh and drops the skeleton, skin, and clips, producing a plain posed mesh the size of a static prop. Built for Grimoire's Locker hero previews, where a lightweight still beats shipping a multi-megabyte animated rig.
