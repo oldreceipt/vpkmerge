@@ -68,6 +68,286 @@ pub fn neutralize_draw_calls(
     Ok(out)
 }
 
+/// One step of a KV3 path: an object member key or an array element index.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Seg {
+    /// Descend into the object member with this name.
+    Key(String),
+    /// Descend into this array element.
+    Index(usize),
+}
+
+/// Sets integer scalar fields located by KV3 path, in place, on a byte-faithful
+/// uncompressed re-wrap of `block` (so value flags + typed arrays are preserved,
+/// as the engine's model loader requires). Each edit is a `(path, value)`: the
+/// path must resolve to exactly one settable integer scalar (`INT32`/`UINT32`/
+/// `INT16`/`UINT16`/`INT32_AS_BYTE` and their 64-bit forms), and `value` must fit
+/// that field's existing on-disk width.
+///
+/// This is the additive cousin of [`neutralize_draw_calls`] (which only zeroes):
+/// it can rewrite a buffer's element count / stride, a layout field's format /
+/// offset, or a draw call's vertex/index counts when replacing a mesh part in
+/// place. It does **not** change a field's storage width: if the new value does
+/// not fit the original encoding (e.g. a byte-stored value growing past 255),
+/// it errors rather than corrupt the block (that needs a structural re-encode).
+///
+/// Errors if the block is not v5, if any path is missing / not an integer scalar
+/// / ambiguous, or if a value does not fit its field's width.
+pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, DecodeError> {
+    let mut out = rewrap_uncompressed(block)?;
+    if out.len() < 120 || u32::from_le_bytes([out[0], out[1], out[2], out[3]]) & 0xFF != 5 {
+        return Err(DecodeError::Kv3("scalar patch requires KV3 v5"));
+    }
+
+    let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
+    let hits = {
+        let mut w = PathWalk::new(&out, &targets)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        w.hits
+    };
+
+    // Every edit must resolve to exactly one settable integer scalar.
+    for i in 0..edits.len() {
+        match hits.iter().filter(|h| h.edit == i).count() {
+            0 => {
+                return Err(DecodeError::Kv3(
+                    "scalar patch path not found or not an integer scalar",
+                ))
+            }
+            1 => {}
+            _ => {
+                return Err(DecodeError::Kv3(
+                    "scalar patch path is ambiguous (matched more than one field)",
+                ))
+            }
+        }
+    }
+
+    for h in &hits {
+        let bytes = fit_scalar(edits[h.edit].1, h.datatype)?;
+        out.get_mut(h.offset..h.offset + bytes.len())
+            .ok_or(DecodeError::Kv3("scalar patch offset out of range"))?
+            .copy_from_slice(&bytes);
+    }
+    Ok(out)
+}
+
+/// Encodes `value` to the little-endian bytes of an integer scalar of node type
+/// `datatype`, erroring if it does not fit (so the field's storage width is never
+/// changed). `INT32_AS_BYTE` reads as an unsigned `u8` (see `reader::read_value`).
+#[allow(clippy::wildcard_imports)] // node constants, mirroring reader::read_value
+fn fit_scalar(value: i64, datatype: u8) -> Result<Vec<u8>, DecodeError> {
+    use node::*;
+    let too_big = || DecodeError::Kv3("scalar value does not fit the field's on-disk width");
+    Ok(match datatype {
+        INT32_AS_BYTE => vec![u8::try_from(value).map_err(|_| too_big())?],
+        INT16 => i16::try_from(value)
+            .map_err(|_| too_big())?
+            .to_le_bytes()
+            .to_vec(),
+        UINT16 => u16::try_from(value)
+            .map_err(|_| too_big())?
+            .to_le_bytes()
+            .to_vec(),
+        INT32 => i32::try_from(value)
+            .map_err(|_| too_big())?
+            .to_le_bytes()
+            .to_vec(),
+        UINT32 => u32::try_from(value)
+            .map_err(|_| too_big())?
+            .to_le_bytes()
+            .to_vec(),
+        INT64 => value.to_le_bytes().to_vec(),
+        UINT64 => u64::try_from(value)
+            .map_err(|_| too_big())?
+            .to_le_bytes()
+            .to_vec(),
+        _ => {
+            return Err(DecodeError::Kv3(
+                "target field is not a settable integer scalar",
+            ))
+        }
+    })
+}
+
+/// A located scalar field: which edit it satisfies, its absolute byte offset, and
+/// its node type (so the value is fitted to the right width).
+struct Hit {
+    edit: usize,
+    offset: usize,
+    datatype: u8,
+}
+
+/// Path-tracking sibling of [`Walk`]: walks the value tree (sharing [`lanes`]),
+/// maintaining the current KV3 path, and records each integer scalar whose path
+/// equals one of `targets`. Used by [`set_scalars`].
+struct PathWalk<'a> {
+    block: &'a [u8],
+    types: Lane,
+    obj_lengths: Lane,
+    main: [Lane; 4],
+    aux: [Lane; 4],
+    strings: Vec<String>,
+    targets: &'a [&'a [Seg]],
+    path: Vec<Seg>,
+    hits: Vec<Hit>,
+}
+
+impl<'a> PathWalk<'a> {
+    fn new(block: &'a [u8], targets: &'a [&'a [Seg]]) -> Result<Self, DecodeError> {
+        let l = lanes(block)?;
+        Ok(PathWalk {
+            block,
+            types: l.types,
+            obj_lengths: l.obj_lengths,
+            main: l.main,
+            aux: l.aux,
+            strings: l.strings,
+            targets,
+            path: Vec::new(),
+            hits: Vec::new(),
+        })
+    }
+
+    fn read_type(&mut self) -> Result<u8, DecodeError> {
+        let mut t = *self
+            .block
+            .get(self.types.at())
+            .ok_or(DecodeError::Kv3("type stream underrun"))?;
+        self.types.pos += 1;
+        if t & 0x80 != 0 {
+            t &= 0x3F;
+            self.types.pos += 1;
+        }
+        Ok(t)
+    }
+
+    fn lane_u32(&mut self, lane: usize) -> Result<u32, DecodeError> {
+        let v = u32_at(self.block, self.main[lane].at())?;
+        self.main[lane].pos += 4;
+        Ok(v)
+    }
+
+    fn lane_u8(&mut self, lane: usize) -> Result<u8, DecodeError> {
+        let v = *self
+            .block
+            .get(self.main[lane].at())
+            .ok_or(DecodeError::Kv3("lane underrun"))?;
+        self.main[lane].pos += 1;
+        Ok(v)
+    }
+
+    fn obj_len(&mut self) -> Result<u32, DecodeError> {
+        let v = u32_at(self.block, self.obj_lengths.at())?;
+        self.obj_lengths.pos += 4;
+        Ok(v)
+    }
+
+    fn key(&self, id: u32) -> &str {
+        if id == u32::MAX {
+            ""
+        } else {
+            self.strings.get(id as usize).map_or("", String::as_str)
+        }
+    }
+
+    /// Records the current scalar as a hit if its path matches a target.
+    fn record(&mut self, lane: usize, datatype: u8) {
+        let offset = self.main[lane].at();
+        let matched = self.targets.iter().position(|t| self.path.as_slice() == *t);
+        if let Some(edit) = matched {
+            self.hits.push(Hit {
+                edit,
+                offset,
+                datatype,
+            });
+        }
+    }
+
+    /// Walks one value, advancing every cursor exactly as the reader does and
+    /// pushing/popping `path` on each descent, recording matching scalars.
+    #[allow(clippy::wildcard_imports)] // node constants, mirroring reader::read_value
+    fn value(&mut self, datatype: u8) -> Result<(), DecodeError> {
+        use node::*;
+        match datatype {
+            INT32 | UINT32 => {
+                self.record(B4, datatype);
+                self.main[B4].pos += 4;
+            }
+            // FLOAT (a b4 value) and STRING (a b4 string id) advance b4 but are
+            // never settable integer targets, so neither records.
+            FLOAT | STRING => self.main[B4].pos += 4,
+            INT64 | UINT64 => {
+                self.record(B8, datatype);
+                self.main[B8].pos += 8;
+            }
+            DOUBLE => self.main[B8].pos += 8,
+            INT16 | UINT16 => {
+                self.record(B2, datatype);
+                self.main[B2].pos += 2;
+            }
+            INT32_AS_BYTE => {
+                self.record(B1, datatype);
+                self.main[B1].pos += 1;
+            }
+            BOOLEAN => self.main[B1].pos += 1,
+            NULL | BOOLEAN_TRUE | BOOLEAN_FALSE | INT64_ZERO | INT64_ONE | DOUBLE_ZERO
+            | DOUBLE_ONE => {}
+            ARRAY => {
+                let n = self.lane_u32(B4)?;
+                for i in 0..n {
+                    let t = self.read_type()?;
+                    self.path.push(Seg::Index(i as usize));
+                    self.value(t)?;
+                    self.path.pop();
+                }
+            }
+            ARRAY_TYPED => {
+                let n = self.lane_u32(B4)?;
+                let sub = self.read_type()?;
+                for i in 0..n {
+                    self.path.push(Seg::Index(i as usize));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+            }
+            ARRAY_TYPE_BYTE_LENGTH => {
+                let n = u32::from(self.lane_u8(B1)?);
+                let sub = self.read_type()?;
+                for i in 0..n {
+                    self.path.push(Seg::Index(i as usize));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+            }
+            ARRAY_TYPE_AUXILIARY_BUFFER => {
+                let n = u32::from(self.lane_u8(B1)?);
+                let sub = self.read_type()?;
+                std::mem::swap(&mut self.main, &mut self.aux);
+                for i in 0..n {
+                    self.path.push(Seg::Index(i as usize));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+                std::mem::swap(&mut self.main, &mut self.aux);
+            }
+            OBJECT => {
+                let n = self.obj_len()?;
+                for _ in 0..n {
+                    let vt = self.read_type()?;
+                    let id = self.lane_u32(B4)?;
+                    self.path.push(Seg::Key(self.key(id).to_string()));
+                    self.value(vt)?;
+                    self.path.pop();
+                }
+            }
+            other => return Err(DecodeError::Kv3NodeType(other)),
+        }
+        Ok(())
+    }
+}
+
 /// Where in the target path the walker currently is. Only the path to
 /// `m_sceneObjects[*].m_drawCalls[*].m_nIndexCount` is tracked; everything else is
 /// [`Where::Other`] and merely skipped (advancing cursors correctly).
@@ -108,99 +388,123 @@ struct Walk<'a> {
     patches: Vec<(usize, usize)>,
 }
 
+/// The lane/cursor layout of a rewrapped, uncompressed v5 KV3 block: where each
+/// typed lane (b1/b2/b4/b8) of the aux and main buffers begins, the type stream
+/// and object-length cursors, and the decoded strings. Shared by every walker so
+/// the (fragile) layout math is computed in exactly one place.
+struct Lanes {
+    types: Lane,
+    obj_lengths: Lane,
+    main: [Lane; 4],
+    aux: [Lane; 4],
+    strings: Vec<String>,
+}
+
+/// Computes the [`Lanes`] of an uncompressed v5 block. Mirrors `reader::decode`'s
+/// field offsets and buffer layout.
+fn lanes(block: &[u8]) -> Result<Lanes, DecodeError> {
+    // Header counts (v5). Aux counts are the "first" count block; main counts
+    // sit in the v5-specific tail.
+    let aux_b1 = i32_at(block, 28)? as usize;
+    let aux_b4 = i32_at(block, 32)? as usize;
+    let aux_b8 = i32_at(block, 36)? as usize;
+    let aux_b2 = i32_at(block, 64)? as usize;
+    let unc_buf1 = i32_at(block, 72)? as usize;
+    let main_b1 = i32_at(block, 88)? as usize;
+    let main_b2 = i32_at(block, 92)? as usize;
+    let main_b4 = i32_at(block, 96)? as usize;
+    let main_b8 = i32_at(block, 100)? as usize;
+    let main_obj = i32_at(block, 108)? as usize;
+
+    let buf1 = 120usize;
+    let buf2 = buf1 + unc_buf1;
+
+    // Aux buffer: [strings... in b1][b2][b4][b8]; string count is the first
+    // int of aux b4, and aux b4's value region begins after it.
+    let mut off = 0usize;
+    let a_b1_start = off;
+    off += aux_b1;
+    let (a_b2_start, _) = lane(&mut off, aux_b2, 2);
+    let (a_b4_start, _) = lane(&mut off, aux_b4, 4);
+    let (a_b8_start, _) = lane(&mut off, aux_b8, 8);
+    let string_count = u32::try_from(i32_at(block, buf1 + a_b4_start)?)
+        .map_err(|_| DecodeError::Kv3("negative string count"))? as usize;
+    let mut sp = buf1 + a_b1_start;
+    let mut strings = Vec::with_capacity(string_count);
+    for _ in 0..string_count {
+        strings.push(read_cstr(block, &mut sp)?);
+    }
+    let aux = [
+        Lane { base: sp, pos: 0 },
+        Lane {
+            base: buf1 + a_b2_start,
+            pos: 0,
+        },
+        Lane {
+            base: buf1 + a_b4_start + 4,
+            pos: 0,
+        },
+        Lane {
+            base: buf1 + a_b8_start,
+            pos: 0,
+        },
+    ];
+
+    // Main buffer: [object_lengths][b1][b2][b4][b8][types].
+    let mut off = 0usize;
+    let ol_start = off;
+    off += main_obj * 4;
+    let m_b1_start = off;
+    off += main_b1;
+    let (m_b2_start, _) = lane(&mut off, main_b2, 2);
+    let (m_b4_start, _) = lane(&mut off, main_b4, 4);
+    let (m_b8_start, _) = lane(&mut off, main_b8, 8);
+    let types_start = off;
+
+    let main = [
+        Lane {
+            base: buf2 + m_b1_start,
+            pos: 0,
+        },
+        Lane {
+            base: buf2 + m_b2_start,
+            pos: 0,
+        },
+        Lane {
+            base: buf2 + m_b4_start,
+            pos: 0,
+        },
+        Lane {
+            base: buf2 + m_b8_start,
+            pos: 0,
+        },
+    ];
+
+    Ok(Lanes {
+        types: Lane {
+            base: buf2 + types_start,
+            pos: 0,
+        },
+        obj_lengths: Lane {
+            base: buf2 + ol_start,
+            pos: 0,
+        },
+        main,
+        aux,
+        strings,
+    })
+}
+
 impl<'a> Walk<'a> {
     fn new(block: &'a [u8], targets: &'a [(usize, usize)]) -> Result<Self, DecodeError> {
-        // Header counts (v5). Aux counts are the "first" count block; main counts
-        // sit in the v5-specific tail. Mirrors `reader::decode`'s field offsets.
-        let aux_b1 = i32_at(block, 28)? as usize;
-        let aux_b4 = i32_at(block, 32)? as usize;
-        let aux_b8 = i32_at(block, 36)? as usize;
-        let aux_b2 = i32_at(block, 64)? as usize;
-        let unc_buf1 = i32_at(block, 72)? as usize;
-        let main_b1 = i32_at(block, 88)? as usize;
-        let main_b2 = i32_at(block, 92)? as usize;
-        let main_b4 = i32_at(block, 96)? as usize;
-        let main_b8 = i32_at(block, 100)? as usize;
-        let main_obj = i32_at(block, 108)? as usize;
-
-        let buf1 = 120usize;
-        let buf2 = buf1 + unc_buf1;
-
-        // Aux buffer: [strings... in b1][b2][b4][b8]; string count is the first
-        // int of aux b4, and aux b4's value region begins after it.
-        let mut off = 0usize;
-        let a_b1_start = off;
-        off += aux_b1;
-        let (a_b2_start, _) = lane(&mut off, aux_b2, 2);
-        let (a_b4_start, _) = lane(&mut off, aux_b4, 4);
-        let (a_b8_start, _) = lane(&mut off, aux_b8, 8);
-        let string_count = u32::try_from(i32_at(block, buf1 + a_b4_start)?)
-            .map_err(|_| DecodeError::Kv3("negative string count"))?
-            as usize;
-        let mut sp = buf1 + a_b1_start;
-        let mut strings = Vec::with_capacity(string_count);
-        for _ in 0..string_count {
-            strings.push(read_cstr(block, &mut sp)?);
-        }
-        let aux = [
-            Lane { base: sp, pos: 0 },
-            Lane {
-                base: buf1 + a_b2_start,
-                pos: 0,
-            },
-            Lane {
-                base: buf1 + a_b4_start + 4,
-                pos: 0,
-            },
-            Lane {
-                base: buf1 + a_b8_start,
-                pos: 0,
-            },
-        ];
-
-        // Main buffer: [object_lengths][b1][b2][b4][b8][types].
-        let mut off = 0usize;
-        let ol_start = off;
-        off += main_obj * 4;
-        let m_b1_start = off;
-        off += main_b1;
-        let (m_b2_start, _) = lane(&mut off, main_b2, 2);
-        let (m_b4_start, _) = lane(&mut off, main_b4, 4);
-        let (m_b8_start, _) = lane(&mut off, main_b8, 8);
-        let types_start = off;
-
-        let main = [
-            Lane {
-                base: buf2 + m_b1_start,
-                pos: 0,
-            },
-            Lane {
-                base: buf2 + m_b2_start,
-                pos: 0,
-            },
-            Lane {
-                base: buf2 + m_b4_start,
-                pos: 0,
-            },
-            Lane {
-                base: buf2 + m_b8_start,
-                pos: 0,
-            },
-        ];
-
+        let l = lanes(block)?;
         Ok(Walk {
             block,
-            types: Lane {
-                base: buf2 + types_start,
-                pos: 0,
-            },
-            obj_lengths: Lane {
-                base: buf2 + ol_start,
-                pos: 0,
-            },
-            main,
-            aux,
-            strings,
+            types: l.types,
+            obj_lengths: l.obj_lengths,
+            main: l.main,
+            aux: l.aux,
+            strings: l.strings,
             targets,
             patches: Vec::new(),
         })

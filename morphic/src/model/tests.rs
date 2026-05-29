@@ -315,6 +315,61 @@ fn neutralizing_dress_zeros_only_its_index_count() {
     );
 }
 
+/// The T1d-a scalar-set primitive locates a field by KV3 path and sets it. Setting
+/// the dress draw call's `m_nIndexCount` to 0 must produce byte-identical output to
+/// `neutralize_draw_calls` (cross-checking the path walker against the proven one),
+/// and setting it to a new value must change only that field in the decoded tree.
+#[test]
+fn set_scalars_edits_field_by_path() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    // Dress is scene object 0, draw call 2 (see find_dress_draw_call_locates_it).
+    let path = vec![
+        kv3::Seg::Key("m_sceneObjects".into()),
+        kv3::Seg::Index(0),
+        kv3::Seg::Key("m_drawCalls".into()),
+        kv3::Seg::Index(2),
+        kv3::Seg::Key("m_nIndexCount".into()),
+    ];
+
+    // Setting to 0 by path == zeroing via neutralize_draw_calls, byte for byte.
+    let via_set = kv3::set_scalars(&bytes, &[(path.clone(), 0)]).expect("set 0");
+    let via_neutralize = kv3::neutralize_draw_calls(&bytes, &[(0, 2)]).expect("neutralize");
+    assert_eq!(
+        via_set, via_neutralize,
+        "set-to-0 by path should byte-match neutralize_draw_calls"
+    );
+
+    // Setting to a new positive value changes only that field in the tree.
+    let patched = kv3::set_scalars(&bytes, &[(path, 12_345)]).expect("set value");
+    let edited = kv3::decode(&patched).expect("decode patched");
+    let mut expected = original;
+    let dress = expected
+        .get_mut("m_sceneObjects")
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(0),
+            _ => None,
+        })
+        .and_then(|so| so.get_mut("m_drawCalls"))
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(2),
+            _ => None,
+        })
+        .expect("locate dress draw call");
+    *dress.get_mut("m_nIndexCount").expect("m_nIndexCount") = Value::Int(12_345);
+    assert_eq!(edited, expected, "only the targeted m_nIndexCount changed");
+}
+
+/// A path that does not resolve to an integer scalar is rejected, not silently
+/// ignored.
+#[test]
+fn set_scalars_rejects_missing_path() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let bogus = vec![kv3::Seg::Key("m_doesNotExist".into())];
+    assert!(kv3::set_scalars(&bytes, &[(bogus, 1)]).is_err());
+}
+
 #[test]
 fn remap_table_partitions_by_mesh() {
     // Each mesh's blend-index remap slice is non-empty and maps into the model

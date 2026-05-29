@@ -298,29 +298,70 @@ Caveats / notes:
     export's gun part (`MORPHIC_EDIT_GLB`) round-trips **11750 verts / 76329 indices**
     (joints+weights+uv+normals all present): positions/normals/uv exact, joints exact,
     weights within 3/255, the full triangle list exact through the T1b index encoder.
-- **T1d - rewrite the KV3 metadata + container.** Update CTRL `embedded_meshes`
-  buffer registry (`m_nElementCount`, `m_nElementSizeInBytes`, `m_nBlockIndex`,
-  `m_inputLayoutFields` for the new layout), MDAT draw calls (new counts / start
-  index / base vertex / material), DATA LOD masks + bounds, and RERL (add the new
-  `.vmat_c` to external refs). **CRITICAL (learned in T1a): do NOT use the lossy
-  `kv3::encode` / `encode_kv3_resource` writer for model KV3 blocks - the engine
-  rejects it** (it drops value flags + auxiliary-buffer typed arrays; ERROR model).
-  Either (a) edit values *in place* on a `kv3::rewrap_uncompressed` block when the
-  edit doesn't change structure (the T1a approach, extended via the `kv3::patch`
-  walker to set fields, not just zero them), or (b) build a **faithful KV3 writer**
-  that preserves flags + typed-array node types (a real new piece of work) for
-  structural changes (adding draw calls / array elements). Then rebuild the container
-  swapping MVTX+MIDX+MDAT (and adding blocks if buffers grow) - needs a multi-block /
-  add-block generalization of `rebuild_with_block`. Package the new `.vmat_c` +
-  textures into the addon VPK alongside the model (reuse `pack`).
+- **T1d - rewrite the KV3 metadata + container.** Splice the T1c-encoded buffers
+  into a loadable model. Scoped 2026-05-28 against the code; the route changed from
+  the original "uncompressed layout + array growth" guess.
+
+  **The two hard walls (both confirmed in code):**
+  1. *KV3 array growth.* `kv3::rewrap_uncompressed` is byte-faithful (preserves the
+     value flags + node-type-25 typed arrays the engine demands) and the `kv3::patch`
+     walker tracks absolute offsets, but it only *locates/edits scalars* - there is no
+     logic to insert an array element (a new draw call / buffer-registry entry / remap
+     entry), which means splicing bytes into four typed lanes at once, fixing counts,
+     re-aligning downstream lanes, and rewriting the v5 object-length table. The lossy
+     `kv3::encode` writer stays ruled out (T1a). 
+  2. *Container can't add blocks.* `resource::rebuild_with_block` only *swaps* a block
+     (size changes fine), preserving block count/order so existing CTRL `m_nBlockIndex`
+     refs stay valid. Adding a new `MVTX`/`MIDX` block needs a generalization that
+     grows the block table **and rewrites every `m_nBlockIndex`**. And **RERL has no
+     parser/writer** (a genuinely new `.vmat_c` ref would need one).
+
+  **The wedge that sidesteps both: replace one mesh part *in place*.** Instead of
+  *adding* a separate part, **replace an existing part's geometry** (new mesh, any
+  vertex/index count). That needs only block *swaps* + in-place *scalar* edits - the
+  exact mechanism T1a proved in-game:
+  - Swap the part's `MVTX`+`MIDX` (reuse its block indices -> no table growth, no
+    `m_nBlockIndex` rewrite); reuse its material (no RERL change).
+  - Keep `m_inputLayoutFields`' *element count* unchanged by assembling the new buffer
+    at the target's exact field *set* (same semantics) but uncompressed formats
+    (T1d-b); then only each field's `m_Format`/`m_nOffset`, the stride, the buffer
+    `m_nElementCount`s, and the draw call's `m_nVertexCount`/`m_nIndexCount`/
+    `m_nStartIndex`/`m_nBaseVertex` change - all **scalars**.
+  - Conform to the target mesh's existing bone remap (invert it, T1d-c) so the remap
+    table needs no edit.
+
+  Wedge sub-steps:
+  - **T1d-a - scalar-set patch primitive: DONE.** `kv3::set_scalars(block, &[(path,
+    value)])` (in `kv3/patch.rs`): a path-tracking sibling of the neutralize walker
+    (shares the extracted `lanes()` layout) that locates integer scalars by KV3 path
+    and sets them in place on a `rewrap_uncompressed` block, erroring if a value does
+    not fit the field's existing on-disk width (no width change = no structural
+    re-encode). **Offline gate (CI green):** `model::tests::set_scalars_edits_field_by_path`
+    sets the dress `m_nIndexCount` by path and asserts the output is **byte-identical to
+    `neutralize_draw_calls`** (cross-checks the new walker against the proven one), then
+    sets a new value and confirms only that field changed; plus a missing-path reject.
+  - **T1d-b - assemble at a target field set.** Extend T1c assembly to emit a *given*
+    field set at uncompressed formats (derive TANGENT, synthesize any missing semantic)
+    so the layout's field count is preserved.
+  - **T1d-c - invert the target mesh's `skeleton::remap_table`** (local<-model) and map
+    the new mesh's model-bone `JOINTS_0` into that mesh's local `BLENDINDICES` space.
+  - **T1d-d - orchestrate + in-game gate:** swap blocks, `set_scalars` the counts /
+    formats / offsets / stride, `pack` an addon VPK. The in-game load also **answers the
+    float-`NORMAL` question** (the wedge upgrades the target's compressed normals to
+    `R32G32B32_FLOAT`).
+
+  **Deferred to "true additive" (keep the body *and* add a new garment):** the KV3
+  array-growth splice (wall 1), the container add-block + `m_nBlockIndex` rewrite
+  (wall 2), and a RERL writer for a brand-new material (reuse a hero material first).
 
 ### Reuse (already built)
 meshopt **vertex** encoder + **index** encoder (T1b); the T1c **mesh assembler**
 (`model::{read_edited_mesh, assemble_vertex_buffer, build_mesh_buffers}` ->
 `EncodedMesh`); `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
 (byte-faithful uncompressed re-emit, engine-accepted for model blocks) +
-`kv3::patch`/`neutralize_draw_calls` (in-place scalar edits with absolute-offset
-walking); the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout
+`kv3::patch`/`neutralize_draw_calls` (in-place scalar *zero* with absolute-offset
+walking) + `kv3::set_scalars` (T1d-a: in-place scalar *set* by KV3 path, width-safe);
+the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout
 parsing; `pack`. The glb edit-export (Tier 0.5) is the artist's starting point for
 the new mesh. **Note:** the `kv3::encode` v4 writer is engine-accepted for
 *soundevents* but **NOT** for *model* blocks (see T1a); use `rewrap_uncompressed` +
