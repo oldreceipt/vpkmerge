@@ -13,7 +13,9 @@ use crate::resource::Resource;
 
 use super::dxgi::DxgiFormat;
 use super::glb;
-use super::mesh::{assemble_vertex_buffer, EmbeddedMesh, VertexBuffer};
+use super::mesh::{
+    assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, EmbeddedMesh, VertexBuffer,
+};
 use super::vbib::{BufferDesc, InputLayoutField};
 
 const CTRL: [u8; 4] = *b"CTRL";
@@ -461,11 +463,32 @@ pub fn read_edited_mesh(
 }
 
 /// Assembles a [`VertexBuffer`] + triangle indices into encoded `MVTX`/`MIDX`
-/// buffers (the T1c output T1d splices into the container). The index width is
-/// chosen as 2 bytes unless an index exceeds `u16::MAX`. Errors if the indices
-/// are not a triangle list or reference a vertex past the buffer.
+/// buffers (the T1c output T1d splices into the container), at this codec's
+/// default uncompressed layout (the field set the mesh's own attributes imply).
+/// The index width is chosen as 2 bytes unless an index exceeds `u16::MAX`.
+/// Errors if the indices are not a triangle list or reference a vertex past the
+/// buffer.
 pub fn build_mesh_buffers(vb: &VertexBuffer, indices: &[u32]) -> Result<EncodedMesh, DecodeError> {
-    let asm = assemble_vertex_buffer(vb)?;
+    encode_mesh(assemble_vertex_buffer(vb)?, indices)
+}
+
+/// Like [`build_mesh_buffers`], but conforms the new buffer to an **existing
+/// target layout's field set** (T1d-b): same semantics, count, and order as
+/// `target`, re-typed to uncompressed formats. This is what replace-in-place
+/// (T1d-d) uses so the `CTRL` registry's `m_inputLayoutFields` element count is
+/// unchanged and only each field's format/offset is a scalar edit.
+pub fn build_mesh_buffers_to_layout(
+    vb: &VertexBuffer,
+    indices: &[u32],
+    target: &[InputLayoutField],
+) -> Result<EncodedMesh, DecodeError> {
+    encode_mesh(assemble_to_layout(vb, target)?, indices)
+}
+
+/// Encodes an already-assembled interleaved buffer + its triangle list into
+/// `MVTX`/`MIDX`. Shared by [`build_mesh_buffers`] (default layout) and
+/// [`build_mesh_buffers_to_layout`] (target layout).
+fn encode_mesh(asm: AssembledBuffer, indices: &[u32]) -> Result<EncodedMesh, DecodeError> {
     let mvtx = encode_vertex_buffer(asm.element_count, asm.stride, &asm.data)?;
 
     if !indices.len().is_multiple_of(3) {

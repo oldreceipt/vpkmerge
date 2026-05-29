@@ -646,6 +646,193 @@ fn remove_material_round_trips_local() {
     );
 }
 
+/// T1d-d replace-in-place, end to end on the real hornet model: re-read the gun
+/// mesh from a textured-glb export and splice it back over the gun part. This is
+/// the same-geometry case (the strongest skinning round-trip): the new buffer is
+/// localized to the gun's bone palette (T1d-c), assembled to the gun's exact field
+/// set (T1d-b), re-encoded, and the CTRL registry + MDAT draw call patched. Asserts
+/// (a) the edited `.vmdl_c` decodes, (b) the gun primitive carries the new counts,
+/// (c) the gun's position bounds are preserved, (d) skinning round-trips (the
+/// weighted influence's model bone is recovered through the forward remap), and
+/// (e) every other part (body, `ghost_glow`) is byte-identical. Gated on
+/// `MORPHIC_MODEL_VPK` + `MORPHIC_EDIT_GLB` (a `to_glb_textured` export).
+#[test]
+fn replace_gun_from_glb_round_trips_local() {
+    let (Ok(vpk_path), Ok(glb_path)) = (
+        std::env::var("MORPHIC_MODEL_VPK"),
+        std::env::var("MORPHIC_EDIT_GLB"),
+    ) else {
+        eprintln!("MORPHIC_MODEL_VPK / MORPHIC_EDIT_GLB not set; skipping replace-gun round-trip");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+    let glb = std::fs::read(&glb_path).expect("read glb");
+
+    let (vb, indices) = morphic::model::read_edited_mesh(&glb, Some("gun")).expect("read gun mesh");
+    eprintln!(
+        "new gun mesh: {} verts, {} indices (joints={}, weights={})",
+        vb.element_count,
+        indices.len(),
+        vb.joints.len(),
+        vb.weights.len()
+    );
+
+    let before = morphic::model::decode(&bytes).expect("decode original");
+    let (edited, report) =
+        morphic::model::replace_mesh_part(&bytes, "gun", &vb, &indices).expect("replace gun");
+    eprintln!(
+        "replaced gun: {} -> {} verts, {} -> {} idx, stride {}, idx width {}",
+        report.old_vertex_count,
+        report.new_vertex_count,
+        report.old_index_count,
+        report.new_index_count,
+        report.stride,
+        report.index_size
+    );
+
+    let after = morphic::model::decode(&edited).expect("decode edited model");
+
+    // (b) The gun primitive now renders the new buffer.
+    let gun_after = after
+        .meshes
+        .iter()
+        .find(|m| m.name == "gun")
+        .expect("gun part present");
+    assert_eq!(gun_after.primitives.len(), 1, "gun has one draw call");
+    assert_eq!(
+        gun_after.primitives[0].indices.len(),
+        indices.len(),
+        "gun index count"
+    );
+    assert_eq!(
+        gun_after.vertex_buffers[0].element_count, vb.element_count,
+        "gun vertex count"
+    );
+
+    // (c) The gun's geometry is preserved (same-mesh replace): bounds match closely.
+    let gun_before = before.meshes.iter().find(|m| m.name == "gun").unwrap();
+    let bb = |m: &morphic::model::MeshPart| {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for p in &m.vertex_buffers[0].positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        (lo, hi)
+    };
+    let (lo0, hi0) = bb(gun_before);
+    let (lo1, hi1) = bb(gun_after);
+    approx3(lo0, lo1, "gun bbox min");
+    approx3(hi0, hi1, "gun bbox max");
+
+    // (d) Skinning round-trips: for each vertex, the highest-weight influence's
+    // model bone (decoded through the forward remap) matches the input glb joint.
+    let ja = &gun_after.vertex_buffers[0].joints;
+    assert_eq!(ja.len(), vb.joints.len(), "joint rows");
+    let mut checked = 0usize;
+    for (after_j, (in_j, in_w)) in ja.iter().zip(vb.joints.iter().zip(&vb.weights)) {
+        // The lane the glb marked as the dominant influence.
+        let lane = (0..4).max_by(|&a, &b| in_w[a].total_cmp(&in_w[b])).unwrap();
+        if in_w[lane] > 0.0 {
+            assert_eq!(
+                after_j[lane], in_j[lane],
+                "dominant influence bone preserved through remap round-trip"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "checked some skin influences");
+
+    // (e) The surgery is local: every other part is byte-identical.
+    for (mb, ma) in before.meshes.iter().zip(&after.meshes) {
+        if mb.name == "gun" {
+            continue;
+        }
+        assert_eq!(mb.name, ma.name, "mesh order");
+        for (vbb, vba) in mb.vertex_buffers.iter().zip(&ma.vertex_buffers) {
+            assert_eq!(vbb.positions, vba.positions, "{}: positions", mb.name);
+            assert_eq!(vbb.normals, vba.normals, "{}: normals", mb.name);
+            assert_eq!(vbb.joints, vba.joints, "{}: joints", mb.name);
+        }
+        for (pb, pa) in mb.primitives.iter().zip(&ma.primitives) {
+            assert_eq!(pb.indices, pa.indices, "{}: indices", mb.name);
+        }
+    }
+    eprintln!("replace-gun round-trip OK: gun re-encoded + skinned, other parts untouched");
+}
+
+/// T1d-d's headline guarantee: a replacement part of a **different** vertex/index
+/// count loads. Builds a tiny synthetic triangle (3 verts / 3 indices) rigidly
+/// bound to model bone 0 (present in every palette as local 0), splices it over
+/// the gun (11750 v / 76329 idx), and asserts the edited model decodes with the
+/// gun now reduced to 3 verts / 3 indices, while body + `ghost_glow` are byte
+/// identical. This is the offline analog of the in-game "different count renders"
+/// gate. Gated on `MORPHIC_MODEL_VPK`.
+#[test]
+fn replace_gun_with_different_count_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping different-count replace");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+
+    // A small triangle near the model origin, rigidly skinned to model bone 0.
+    let vb = morphic::model::VertexBuffer {
+        element_count: 3,
+        positions: vec![[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        texcoords: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+        joints: vec![[0, 0, 0, 0]; 3],
+        weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        ..Default::default()
+    };
+    let indices = vec![0u32, 1, 2];
+
+    let before = morphic::model::decode(&bytes).expect("decode original");
+    let (edited, report) =
+        morphic::model::replace_mesh_part(&bytes, "gun", &vb, &indices).expect("replace");
+    assert_eq!(report.new_vertex_count, 3);
+    assert_eq!(report.new_index_count, 3);
+    assert_ne!(
+        report.old_vertex_count, report.new_vertex_count,
+        "count changed"
+    );
+
+    let after = morphic::model::decode(&edited).expect("decode edited (different count)");
+    let gun = after.meshes.iter().find(|m| m.name == "gun").expect("gun");
+    assert_eq!(
+        gun.vertex_buffers[0].element_count, 3,
+        "gun shrunk to 3 verts"
+    );
+    assert_eq!(gun.primitives[0].indices.len(), 3, "gun draws one triangle");
+
+    // Body + ghost_glow untouched.
+    for (mb, ma) in before.meshes.iter().zip(&after.meshes) {
+        if mb.name == "gun" {
+            continue;
+        }
+        for (vbb, vba) in mb.vertex_buffers.iter().zip(&ma.vertex_buffers) {
+            assert_eq!(vbb.positions, vba.positions, "{}: positions", mb.name);
+        }
+    }
+    eprintln!(
+        "different-count replace OK: gun {} -> 3 verts, other parts intact",
+        report.old_vertex_count
+    );
+}
+
 /// Total LOD0 indices belonging to draw calls whose material matches `needle`.
 fn dress_index_count(model: &morphic::model::Model, needle: &str) -> usize {
     let lc = needle.to_ascii_lowercase();

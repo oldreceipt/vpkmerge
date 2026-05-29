@@ -515,6 +515,171 @@ pub fn assemble_vertex_buffer(vb: &VertexBuffer) -> Result<AssembledBuffer, Deco
     })
 }
 
+/// Assembles a [`VertexBuffer`] into an interleaved stream that conforms to an
+/// **existing target layout's field set** (the T1d-b wedge): one output field
+/// per `target` field, in the same order, with the same semantic name + index,
+/// but re-typed to the uncompressed format this codec writes. Offsets and stride
+/// are recomputed for the new formats.
+///
+/// This is what "replace one mesh part in place" needs: keeping the target's
+/// `m_inputLayoutFields` *element count* (and order, and semantics) unchanged
+/// means T1d only has to scalar-edit each field's `m_Format`/`m_nOffset` and the
+/// stride, never grow or reorder the KV3 array (the deferred hard wall).
+///
+/// Attributes the source mesh lacks are derived or synthesized so every target
+/// field is filled:
+/// - `NORMAL` defaults to `+Z` when absent.
+/// - `TANGENT` is taken from the mesh if present, else derived perpendicular to
+///   the normal (handedness `+1`); heavy normal-mapped shading may be slightly
+///   off until a real tangent is supplied, but the frame is valid.
+/// - `TEXCOORD` with semantic index `s` uses `texcoords[s]` if present, else
+///   copies `texcoords[0]` (the "extra TEXCOORD" case), else `(0, 0)`.
+/// - `BLENDINDICES` packs `joints` (must be `<= 255`: caller localizes via the
+///   target mesh's remap, T1d-c). Absent joints default to bone 0.
+/// - `BLENDWEIGHT(S)` quantizes `weights`; absent weights with joints present
+///   default to full influence on lane 0 (rigid), else zero.
+/// - `COLOR` defaults to opaque white (a neutral vertex tint).
+///
+/// Errors on an empty buffer, a `POSITION` count mismatch, a blend index over
+/// 255, or a target semantic this codec cannot emit uncompressed.
+pub fn assemble_to_layout(
+    vb: &VertexBuffer,
+    target: &[InputLayoutField],
+) -> Result<AssembledBuffer, DecodeError> {
+    let count = vb.element_count;
+    if count == 0 {
+        return Err(DecodeError::Model("cannot assemble an empty vertex buffer"));
+    }
+    if vb.positions.len() != count {
+        return Err(DecodeError::Model(
+            "POSITION count does not match element_count",
+        ));
+    }
+    if !target.iter().any(|f| f.semantic_name == "POSITION") {
+        return Err(DecodeError::Model("target layout has no POSITION field"));
+    }
+
+    // Re-type each target field to its uncompressed format and lay it out fresh.
+    let mut fields = Vec::with_capacity(target.len());
+    let mut stride = 0usize;
+    for t in target {
+        let format = uncompressed_format_for(&t.semantic_name)?;
+        fields.push(InputLayoutField {
+            semantic_name: t.semantic_name.clone(),
+            semantic_index: t.semantic_index,
+            format,
+            offset: stride,
+        });
+        let (component_size, component_count) = format.format_info();
+        stride += component_size * component_count;
+    }
+
+    // Derive the attributes the target needs but the source mesh may lack, once.
+    let normals: Vec<[f32; 3]> = if vb.normals.len() == count {
+        vb.normals.clone()
+    } else {
+        vec![[0.0, 0.0, 1.0]; count]
+    };
+    let tangents: Vec<[f32; 4]> = if vb.tangents.len() == count {
+        vb.tangents.clone()
+    } else {
+        normals.iter().map(|&n| derive_tangent(n)).collect()
+    };
+    let has_joints = vb.joints.len() == count;
+    let has_weights = vb.weights.len() == count;
+
+    let mut data = vec![0u8; count * stride];
+    for i in 0..count {
+        let base = i * stride;
+        for f in &fields {
+            let o = base + f.offset;
+            match f.semantic_name.as_str() {
+                "POSITION" => put_f32s(&mut data, o, &vb.positions[i]),
+                "NORMAL" => put_f32s(&mut data, o, &normals[i]),
+                "TANGENT" => put_f32s(&mut data, o, &tangents[i]),
+                "TEXCOORD" => {
+                    let s = usize::try_from(f.semantic_index).unwrap_or(0);
+                    let uv = vb
+                        .texcoords
+                        .get(s)
+                        .filter(|t| t.len() == count)
+                        .or_else(|| vb.texcoords.first().filter(|t| t.len() == count))
+                        .map_or([0.0, 0.0], |t| t[i]);
+                    put_f32s(&mut data, o, &uv);
+                }
+                "BLENDINDICES" => {
+                    let js = if has_joints { vb.joints[i] } else { [0; 4] };
+                    for (k, &j) in js.iter().enumerate() {
+                        data[o + k] = u8::try_from(j).map_err(|_| {
+                            DecodeError::Model(
+                                "blend index exceeds 255 (localize JOINTS_0 to the target mesh's \
+                                 bone remap first; see skeleton::localize_joints)",
+                            )
+                        })?;
+                    }
+                }
+                "BLENDWEIGHT" | "BLENDWEIGHTS" => {
+                    let w = if has_weights {
+                        quantize_weights_u8(vb.weights[i])
+                    } else if has_joints {
+                        [255, 0, 0, 0] // rigid: full influence on the first bone
+                    } else {
+                        [0, 0, 0, 0]
+                    };
+                    data[o..o + 4].copy_from_slice(&w);
+                }
+                "COLOR" => data[o..o + 4].copy_from_slice(&[255, 255, 255, 255]),
+                other => {
+                    return Err(unsupported_target_semantic(other));
+                }
+            }
+        }
+    }
+
+    Ok(AssembledBuffer {
+        data,
+        element_count: count,
+        stride,
+        fields,
+    })
+}
+
+/// The uncompressed DXGI format this codec writes for a given target semantic.
+/// Every choice is decode-supported (`vbib`/`dxgi`) and a multiple of 4 bytes
+/// wide, so any field set yields a meshopt-legal stride.
+fn uncompressed_format_for(semantic: &str) -> Result<DxgiFormat, DecodeError> {
+    Ok(match semantic {
+        "POSITION" | "NORMAL" => DxgiFormat::R32G32B32Float,
+        "TANGENT" => DxgiFormat::R32G32B32A32Float,
+        "TEXCOORD" => DxgiFormat::R32G32Float,
+        "BLENDINDICES" => DxgiFormat::R8G8B8A8Uint,
+        "BLENDWEIGHT" | "BLENDWEIGHTS" | "COLOR" => DxgiFormat::R8G8B8A8Unorm,
+        other => return Err(unsupported_target_semantic(other)),
+    })
+}
+
+fn unsupported_target_semantic(_name: &str) -> DecodeError {
+    DecodeError::Model("target layout has a semantic this codec cannot emit uncompressed")
+}
+
+/// A unit tangent perpendicular to `n` (Gram-Schmidt against the least-aligned
+/// axis), with `+1` handedness. Used when the source mesh has no `TANGENT` but
+/// the target layout requires one.
+fn derive_tangent(n: [f32; 3]) -> [f32; 4] {
+    let r = if n[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let d = n[0] * r[0] + n[1] * r[1] + n[2] * r[2];
+    let mut t = [r[0] - n[0] * d, r[1] - n[1] * d, r[2] - n[2] * d];
+    let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    if len > 0.0 {
+        t = [t[0] / len, t[1] / len, t[2] / len];
+    }
+    [t[0], t[1], t[2], 1.0]
+}
+
 /// Appends one attribute to a layout and advances the running stride by its
 /// packed byte width.
 fn add_field(
@@ -840,6 +1005,142 @@ mod assemble_tests {
         let sum = u32::from(q[0]) + u32::from(q[1]) + u32::from(q[2]) + u32::from(q[3]);
         assert_eq!(sum, 255, "{q:?}");
         assert_eq!(quantize_weights_u8([0.0; 4]), [0, 0, 0, 0]);
+    }
+
+    fn field(name: &str, idx: i32, format: DxgiFormat, offset: usize) -> InputLayoutField {
+        InputLayoutField {
+            semantic_name: name.to_string(),
+            semantic_index: idx,
+            format,
+            offset,
+        }
+    }
+
+    /// The gun's exact layout: POSITION / TEXCOORD / NORMAL / TANGENT /
+    /// BLENDINDICES (no BLENDWEIGHT, rigid skin). The compressed-frame shader
+    /// semantic notwithstanding, the shipped formats are already uncompressed
+    /// float, so this is the field set T1d-d conforms a replacement mesh to.
+    fn gun_layout() -> Vec<InputLayoutField> {
+        vec![
+            field("POSITION", 0, DxgiFormat::R32G32B32Float, 0),
+            field("TEXCOORD", 0, DxgiFormat::R32G32Float, 12),
+            field("NORMAL", 0, DxgiFormat::R32G32B32Float, 20),
+            field("TANGENT", 0, DxgiFormat::R32G32B32A32Float, 32),
+            field("BLENDINDICES", 0, DxgiFormat::R8G8B8A8Uint, 48),
+        ]
+    }
+
+    /// The T1d-b gate: assemble a mesh (no tangent) to the gun's target field set
+    /// and round-trip it. The output keeps the target's field order/semantics, the
+    /// stride is recomputed (52), TANGENT is synthesized perpendicular to the
+    /// normal, and positions/normals/uv/joints recover through encode->decode.
+    #[test]
+    fn assemble_to_layout_conforms_to_gun_field_set() {
+        let vb = VertexBuffer {
+            element_count: 3,
+            positions: vec![[0.0, 0.0, 0.0], [1.5, -2.0, 3.25], [10.0, 20.5, -7.0]],
+            normals: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            texcoords: vec![vec![[0.0, 0.0], [0.25, 0.75], [1.0, 0.5]]],
+            joints: vec![[0, 1, 2, 3], [4, 5, 6, 7], [10, 11, 12, 13]],
+            ..VertexBuffer::default()
+        };
+
+        let asm = assemble_to_layout(&vb, &gun_layout()).expect("assemble to layout");
+        assert_eq!(asm.stride, 52, "gun stride");
+        // Same field count, order, semantics; re-typed formats; fresh offsets.
+        let names: Vec<&str> = asm
+            .fields
+            .iter()
+            .map(|f| f.semantic_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["POSITION", "TEXCOORD", "NORMAL", "TANGENT", "BLENDINDICES"]
+        );
+        assert_eq!(
+            asm.fields.iter().map(|f| f.offset).collect::<Vec<_>>(),
+            [0, 12, 20, 32, 48]
+        );
+        assert_eq!(asm.fields[3].format, DxgiFormat::R32G32B32A32Float);
+
+        let mvtx = encode_vertex_buffer(asm.element_count, asm.stride, &asm.data).expect("encode");
+        let desc = BufferDesc {
+            block_index: 0,
+            element_count: asm.element_count,
+            element_size: asm.stride,
+            meshopt: true,
+            zstd: false,
+            fields: asm.fields.clone(),
+        };
+        let on_disk = desc.decode(&mvtx, true).expect("decode");
+        let identity: Vec<usize> = (0..256).collect();
+        let out = deinterleave(&on_disk, Some(&identity)).expect("deinterleave");
+
+        assert_eq!(out.positions, vb.positions, "positions");
+        assert_eq!(out.normals, vb.normals, "normals");
+        assert_eq!(out.texcoords[0], vb.texcoords[0], "uv");
+        assert_eq!(out.joints, vb.joints, "joints");
+
+        // Derived tangent: unit length, perpendicular to its normal, handedness +1.
+        assert_eq!(out.tangents.len(), 3);
+        for (t, n) in out.tangents.iter().zip(&vb.normals) {
+            let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-5, "unit tangent: {t:?}");
+            let dot = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
+            assert!(dot.abs() < 1e-5, "tangent perpendicular to normal: {dot}");
+            assert!((t[3] - 1.0).abs() < 1e-6, "handedness +1: {}", t[3]);
+        }
+    }
+
+    /// A target that wants BLENDWEIGHT + COLOR the source lacks: weights default to
+    /// rigid (full influence on lane 0), color to opaque white.
+    #[test]
+    fn assemble_to_layout_synthesizes_rigid_weight_and_white_color() {
+        let vb = VertexBuffer {
+            element_count: 1,
+            positions: vec![[0.0; 3]],
+            joints: vec![[7, 0, 0, 0]],
+            ..VertexBuffer::default()
+        };
+        let target = vec![
+            field("POSITION", 0, DxgiFormat::R32G32B32Float, 0),
+            field("COLOR", 0, DxgiFormat::R8G8B8A8Unorm, 12),
+            field("BLENDINDICES", 0, DxgiFormat::R8G8B8A8Uint, 16),
+            field("BLENDWEIGHT", 0, DxgiFormat::R8G8B8A8Unorm, 20),
+        ];
+        let asm = assemble_to_layout(&vb, &target).expect("assemble");
+        assert_eq!(asm.stride, 24);
+
+        // No meshopt round-trip needed; read the raw interleaved bytes directly.
+        let on_disk = OnDiskBuffer {
+            data: asm.data.clone(),
+            element_count: 1,
+            element_size: asm.stride,
+            fields: asm.fields.clone(),
+        };
+        let color = on_disk.vector4(&asm.fields[1]).expect("color");
+        assert_eq!(color[0], [1.0, 1.0, 1.0, 1.0], "white");
+        let weights = on_disk.blend_weights(&asm.fields[3]).expect("weights");
+        assert_eq!(
+            &weights[0..4],
+            &[1.0, 0.0, 0.0, 0.0],
+            "rigid weight on lane 0"
+        );
+    }
+
+    /// A target semantic this codec cannot emit uncompressed is rejected loudly.
+    #[test]
+    fn assemble_to_layout_rejects_unknown_semantic() {
+        let vb = VertexBuffer {
+            element_count: 1,
+            positions: vec![[0.0; 3]],
+            ..VertexBuffer::default()
+        };
+        let target = vec![
+            field("POSITION", 0, DxgiFormat::R32G32B32Float, 0),
+            field("WEIRDSEMANTIC", 0, DxgiFormat::R32G32B32Float, 12),
+        ];
+        assert!(assemble_to_layout(&vb, &target).is_err());
     }
 
     /// A buffer with only positions (no normals/uv/skinning) assembles to a

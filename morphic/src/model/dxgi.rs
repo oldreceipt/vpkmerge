@@ -50,6 +50,13 @@ impl DxgiFormat {
         })
     }
 
+    /// The raw DXGI numeric id (the inverse of [`DxgiFormat::from_u32`]), for
+    /// writing a layout field's `m_Format` back into the `CTRL` buffer registry.
+    #[must_use]
+    pub fn id(self) -> u32 {
+        self as u32
+    }
+
     /// `(component byte size, component count)`, mirroring `VBIB.GetFormatInfo`.
     /// The product is the attribute's packed byte width inside the vertex.
     pub fn format_info(self) -> (usize, usize) {

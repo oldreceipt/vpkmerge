@@ -370,6 +370,108 @@ fn set_scalars_rejects_missing_path() {
     assert!(kv3::set_scalars(&bytes, &[(bogus, 1)]).is_err());
 }
 
+/// T1d-d's CTRL edits, proven on the committed `CTRL` block (which `set_scalars`
+/// has not been exercised on before, only `MDAT`): set the gun's vertex/index element
+/// counts and a layout field's format+offset by path, and confirm exactly those
+/// scalars change in the decoded tree, everything else byte-faithful. This is the
+/// buffer-registry half of replace-in-place, without needing the full pak.
+#[test]
+fn set_scalars_edits_ctrl_buffer_registry() {
+    let bytes = std::fs::read(fixtures().join("hornet_ctrl.kv3bin")).expect("read ctrl fixture");
+    let original = kv3::decode(&bytes).expect("decode ctrl");
+
+    // The gun is embedded_meshes[1] with one vertex buffer and one index buffer.
+    let vb = |k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_vertexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+    let ib = |k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_indexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+    let field = |i: usize, k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_vertexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key("m_inputLayoutFields".into()),
+            kv3::Seg::Index(i),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+
+    let edits = vec![
+        (vb("m_nElementCount"), 9999),
+        (vb("m_nElementSizeInBytes"), 60),
+        (ib("m_nElementCount"), 8888),
+        // field 0 (POSITION) m_Format is a small INT32_AS_BYTE; field 1 (TEXCOORD)
+        // m_nOffset is 12. Both are byte-stored scalars, so settable. (POSITION's
+        // own m_nOffset is the tagless 0 constant and is deliberately not touched.)
+        (field(0, "m_Format"), 2),
+        (field(1, "m_nOffset"), 16),
+    ];
+    let patched = kv3::set_scalars(&bytes, &edits).expect("set ctrl scalars");
+    let edited = kv3::decode(&patched).expect("decode patched ctrl");
+
+    // The gun's buffers reflect the edits (read variant-agnostically: CTRL counts
+    // may decode as UInt where MDAT counts decode as Int).
+    let gun = &edited
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap()[1];
+    let v0 = &gun
+        .get("m_vertexBuffers")
+        .and_then(Value::as_array)
+        .unwrap()[0];
+    let i0 = &gun.get("m_indexBuffers").and_then(Value::as_array).unwrap()[0];
+    let fields = v0
+        .get("m_inputLayoutFields")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert_eq!(
+        v0.get("m_nElementCount").and_then(Value::as_int),
+        Some(9999)
+    );
+    assert_eq!(
+        v0.get("m_nElementSizeInBytes").and_then(Value::as_int),
+        Some(60)
+    );
+    assert_eq!(
+        i0.get("m_nElementCount").and_then(Value::as_int),
+        Some(8888)
+    );
+    assert_eq!(fields[0].get("m_Format").and_then(Value::as_int), Some(2));
+    assert_eq!(fields[1].get("m_nOffset").and_then(Value::as_int), Some(16));
+
+    // POSITION's offset (the untouched tagless 0) is intact, and every mesh other
+    // than the gun is byte-faithful through the rewrap.
+    assert_eq!(fields[0].get("m_nOffset").and_then(Value::as_int), Some(0));
+    let orig_meshes = original
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap();
+    let new_meshes = edited
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap();
+    for (i, (o, n)) in orig_meshes.iter().zip(new_meshes).enumerate() {
+        if i != 1 {
+            assert_eq!(o, n, "mesh {i} (not the gun) is unchanged");
+        }
+    }
+}
+
 #[test]
 fn remap_table_partitions_by_mesh() {
     // Each mesh's blend-index remap slice is non-empty and maps into the model

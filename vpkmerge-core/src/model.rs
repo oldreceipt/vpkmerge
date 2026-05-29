@@ -6,7 +6,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use morphic::model::{BlockSummary, DrawCallInfo, ModelInfo, RemovedDrawCall, VertexTarget};
+pub use morphic::model::{
+    BlockSummary, DrawCallInfo, ModelInfo, RemovedDrawCall, ReplacedMeshPart, VertexTarget,
+};
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
 /// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
@@ -499,6 +501,56 @@ pub fn remove_model_material(
         entry: entry.to_string(),
         vpk_entry,
         removed,
+    })
+}
+
+/// What a [`replace_model_part`] run swapped and where it was packed.
+#[derive(Debug, Clone)]
+pub struct PartReplacementReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    pub replaced: ReplacedMeshPart,
+}
+
+/// Replaces an existing mesh part's geometry (Tier 1d): reads a new mesh from a
+/// `.glb` (one primitive; `glb_mesh` picks it out of a multi-mesh export) and
+/// splices it over the model's `mesh_name` part in place, then packs the edited
+/// `.vmdl_c` into a standalone addon VPK at `vpk_entry` (default `entry`, so it
+/// overrides the base pak).
+///
+/// The new mesh may have any vertex/index count; it must be skinned against the
+/// model skeleton (glTF joint indices == model bone indices) and bound to bones the
+/// target part already uses (its bone palette is reused, not grown). The target
+/// part must have exactly one vertex buffer, one index buffer, and one draw call
+/// (e.g. the gun); errors loudly otherwise. See `docs/handoff-model-edit.md` (T1d).
+#[allow(clippy::too_many_arguments)] // VPK in, mesh selectors, addon VPK out
+pub fn replace_model_part(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    mesh_name: &str,
+    glb_bytes: &[u8],
+    glb_mesh: Option<&str>,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<PartReplacementReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let (vb, indices) = morphic::model::read_edited_mesh(glb_bytes, glb_mesh)
+        .with_context(|| "reading the replacement mesh from the glb".to_string())?;
+    let (edited, replaced) = morphic::model::replace_mesh_part(&bytes, mesh_name, &vb, &indices)
+        .with_context(|| format!("replacing mesh part {mesh_name:?} in {entry}"))?;
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(PartReplacementReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        replaced,
     })
 }
 

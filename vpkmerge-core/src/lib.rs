@@ -20,9 +20,10 @@ pub mod portrait;
 pub use model::{
     apply_model_edit_glb, edit_model_geometry, export_hero_model, export_model,
     export_model_buffer_glb, inspect_models, model_draw_call_targets, model_vertex_targets,
-    reencode_model_mdat, remove_model_material, AnimOptions, DrawCallInfo, GeometryEdit,
-    GeometryEditReport, MaterialRemovalReport, ModelEntry, ModelInfo, PoseSelection,
-    RemovedDrawCall, VertexTarget, DEFAULT_POSE_CLIPS,
+    reencode_model_mdat, remove_model_material, replace_model_part, AnimOptions, DrawCallInfo,
+    GeometryEdit, GeometryEditReport, MaterialRemovalReport, ModelEntry, ModelInfo,
+    PartReplacementReport, PoseSelection, RemovedDrawCall, ReplacedMeshPart, VertexTarget,
+    DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 

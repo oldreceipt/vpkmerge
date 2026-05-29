@@ -340,15 +340,71 @@ Caveats / notes:
     sets the dress `m_nIndexCount` by path and asserts the output is **byte-identical to
     `neutralize_draw_calls`** (cross-checks the new walker against the proven one), then
     sets a new value and confirms only that field changed; plus a missing-path reject.
-  - **T1d-b - assemble at a target field set.** Extend T1c assembly to emit a *given*
-    field set at uncompressed formats (derive TANGENT, synthesize any missing semantic)
-    so the layout's field count is preserved.
-  - **T1d-c - invert the target mesh's `skeleton::remap_table`** (local<-model) and map
-    the new mesh's model-bone `JOINTS_0` into that mesh's local `BLENDINDICES` space.
-  - **T1d-d - orchestrate + in-game gate:** swap blocks, `set_scalars` the counts /
-    formats / offsets / stride, `pack` an addon VPK. The in-game load also **answers the
-    float-`NORMAL` question** (the wedge upgrades the target's compressed normals to
-    `R32G32B32_FLOAT`).
+  - **T1d-b - assemble at a target field set: DONE.** `mesh::assemble_to_layout(vb,
+    target_fields)` emits one output field per target field, same order + semantics +
+    count, re-typed to the uncompressed format this codec writes (POSITION/NORMAL
+    `R32G32B32_FLOAT`, TANGENT `R32G32B32A32_FLOAT`, TEXCOORD `R32G32_FLOAT`,
+    BLENDINDICES `R8G8B8A8_UINT`, BLENDWEIGHT/COLOR `R8G8B8A8_UNORM`), with offsets +
+    stride recomputed. Derives a perpendicular TANGENT from the normal when absent,
+    copies TEXCOORD0 for an extra TEXCOORD, defaults COLOR white and a missing
+    BLENDWEIGHT to rigid (full lane 0). Every format is a multiple of 4 bytes, so any
+    field set is meshopt-legal. `edit::build_mesh_buffers_to_layout` wraps it +
+    encoders. **Offline gate (CI green):** `mesh::assemble_tests::*` (gun field-set
+    round-trip through encode->decode->deinterleave; rigid-weight + white-color
+    synthesis; unknown-semantic reject).
+  - **T1d-c - invert the target mesh's remap: DONE.** `skeleton::invert_remap`
+    (local->model into model->local, lowest-local-wins on a palette duplicate) +
+    `skeleton::localize_joints(joints, weights, remap)` map a new mesh's model-space
+    `JOINTS_0` into the target mesh's local `BLENDINDICES` palette. A significant
+    (weighted, or lane 0 if rigid) influence on a bone outside the palette is a hard
+    error; a zero-weight lane maps to local 0. **Confirmed necessary:** the gun's real
+    remap is `[0,1,4,5,7,31,...]` (not identity), so T1c's identity shortcut would
+    mis-skin. **Offline gate (CI green):** `skeleton::remap_tests::*`.
+  - **T1d-d - orchestrate: DONE (offline + gated-real-data; in-game PENDING).**
+    `topology::replace_mesh_part(vmdl, mesh_name, &VertexBuffer, &indices)`: localize
+    joints (T1d-c) -> assemble to the target field set + encode (T1d-b) -> locate the
+    part's single draw call -> `set_scalars` the CTRL buffer registry (element counts,
+    stride, per-field format/offset, index width) and the MDAT draw call (vertex/index
+    counts, start 0, base 0) -> swap MVTX+MIDX -> splice via `rebuild_with_block`. Core
+    `vpkmerge_core::replace_model_part`; CLI `vpkmerge model edit --replace-part <MESH>
+    --from-glb <FILE> [--glb-mesh NAME] --encode-vpk OUT`.
+    - **Two findings that shaped it:**
+      1. *CTRL is KV3 v5* (so `set_scalars` works on it), confirmed against the
+         committed `hornet_ctrl.kv3bin`.
+      2. *A KV3 `0`/`1` is a TAGLESS constant* (`INT64_ZERO`/`INT64_ONE`, node types
+         15/16) with **no byte to overwrite** - e.g. the first layout field's
+         `m_nOffset` (always 0), `m_nStartIndex`, `m_nBaseVertex`. So the orchestrator
+         **only emits a scalar edit when the value actually changes**; a no-op 0->0 set
+         is skipped (it would otherwise fail to resolve). CTRL/MDAT are re-emitted only
+         when they changed (an unchanged-count replace touches only MVTX/MIDX).
+    - **The float-`NORMAL` question is effectively pre-answered:** the gun (and every
+      hornet mesh) *already ships* with `R32G32B32_FLOAT` NORMAL + `R32G32B32A32_FLOAT`
+      TANGENT (the `CompressedTangentFrame` shader-semantic name notwithstanding), and
+      Tier 0 confirmed the gun renders in-game. So the wedge does **not** upgrade
+      compressed normals for hornet; it keeps the float formats the engine already
+      accepts. (A target that genuinely shipped packed `R32_UINT` normals would still
+      be upgraded to float by `assemble_to_layout`; that specific case stays unproven
+      in-engine until such a target is tried.)
+    - **Wedge contract:** the target part must have exactly one vertex buffer, one
+      index buffer, and one draw call (the gun fits; the body's LOD-split 2-buffer
+      shape does not). The new mesh must be skinned to bones the target part already
+      uses (its palette is reused, not grown). Replacing a rigid target (gun, no
+      BLENDWEIGHT field) drops multi-bone weights to rigid lane-0 binding.
+    - **Offline gate (CI green):** `model::tests::set_scalars_edits_ctrl_buffer_registry`
+      (CTRL buffer-registry edits by path, byte-faithful elsewhere).
+    - **Gated real-data (PASSED, local pak + glb):**
+      `tests/model_local.rs::replace_gun_from_glb_round_trips_local` (re-read the gun
+      from a textured-glb export, splice it back; counts + bounds preserved, the
+      dominant skin influence round-trips through the forward remap, body + ghost_glow
+      byte-identical) and `replace_gun_with_different_count_local` (replace the gun with
+      a 3-vertex triangle; the edited model decodes with the gun reduced to 3 v / 3 idx,
+      other parts intact - the offline analog of the in-game different-count gate).
+    - **In-game gate (PENDING):** load a `--replace-part` addon in Deadlock and confirm
+      the replaced part renders. Smoke-tested: `vpkmerge model edit --replace-part gun
+      --from-glb <gun.glb> --glb-mesh gun --encode-vpk OUT` packs an addon VPK that
+      re-reads with all 7 draw calls intact. For a *visible* different-count test,
+      decimate/reshape the gun in Blender first (changing its vertex/index count) and
+      pass that glb.
 
   **Deferred to "true additive" (keep the body *and* add a new garment):** the KV3
   array-growth splice (wall 1), the container add-block + `m_nBlockIndex` rewrite
@@ -357,15 +413,20 @@ Caveats / notes:
 ### Reuse (already built)
 meshopt **vertex** encoder + **index** encoder (T1b); the T1c **mesh assembler**
 (`model::{read_edited_mesh, assemble_vertex_buffer, build_mesh_buffers}` ->
-`EncodedMesh`); `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
-(byte-faithful uncompressed re-emit, engine-accepted for model blocks) +
-`kv3::patch`/`neutralize_draw_calls` (in-place scalar *zero* with absolute-offset
-walking) + `kv3::set_scalars` (T1d-a: in-place scalar *set* by KV3 path, width-safe);
-the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout
-parsing; `pack`. The glb edit-export (Tier 0.5) is the artist's starting point for
-the new mesh. **Note:** the `kv3::encode` v4 writer is engine-accepted for
-*soundevents* but **NOT** for *model* blocks (see T1a); use `rewrap_uncompressed` +
-in-place patch for models.
+`EncodedMesh`); the T1d-b **target-layout assembler** (`model::assemble_to_layout`
++ `build_mesh_buffers_to_layout`); the T1d-c **remap inverter**
+(`model::{invert_remap, localize_joints}`); the T1d-d **wedge**
+(`model::replace_mesh_part` -> core `replace_model_part` -> CLI `--replace-part`);
+`resource::rebuild_with_block`; `kv3::rewrap_uncompressed` (byte-faithful uncompressed
+re-emit, engine-accepted for model blocks) + `kv3::patch`/`neutralize_draw_calls`
+(in-place scalar *zero* with absolute-offset walking) + `kv3::set_scalars` (T1d-a:
+in-place scalar *set* by KV3 path, width-safe); the `gltf` reader
+(positions/normals/uv/joints/weights); `vbib` layout parsing; `pack`. The glb
+edit-export (Tier 0.5) is the artist's starting point for the new mesh. **Note:** the
+`kv3::encode` v4 writer is engine-accepted for *soundevents* but **NOT** for *model*
+blocks (see T1a); use `rewrap_uncompressed` + in-place patch for models. **Note 2:**
+`set_scalars` cannot edit a tagless KV3 `0`/`1` constant (no byte to write); emit an
+edit only when the value changes (see T1d-d).
 
 ### Scope notes
 - "Replace one mesh part wholesale" (new dress buffer of any vertex count + its

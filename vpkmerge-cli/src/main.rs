@@ -130,9 +130,9 @@ enum ModelAction {
 
     /// Edit a model and pack the result into an addon VPK. Reshape existing
     /// geometry (vertex displacement via `--scale`/`--translate` or a Blender
-    /// `--from-glb`), or remove a part by material (`--remove-material`). Both are
-    /// topology-light: displacement moves vertices, removal drops a draw call;
-    /// neither adds new geometry.
+    /// `--from-glb`), remove a part by material (`--remove-material`), or replace a
+    /// part's geometry wholesale with a new mesh of any vertex/index count
+    /// (`--replace-part <MESH> --from-glb <FILE>`, Tier 1d).
     Edit(ModelEditArgs),
 }
 
@@ -258,6 +258,22 @@ struct ModelEditArgs {
     /// and pack an addon VPK (needs `--encode-vpk`). Topology must be preserved.
     #[arg(long = "from-glb", value_name = "FILE", conflicts_with_all = ["export_glb", "list"])]
     from_glb: Option<PathBuf>,
+
+    /// Replace the named mesh part's geometry with a new mesh from `--from-glb`
+    /// (Tier 1d), then pack an addon VPK (needs `--encode-vpk`). The new mesh may
+    /// have any vertex/index count but must be skinned to bones the target part
+    /// already uses; the part must be single-buffer/single-drawcall (e.g. `gun`).
+    #[arg(
+        long = "replace-part",
+        value_name = "MESH",
+        conflicts_with_all = ["export_glb", "list", "list_drawcalls", "remove_material", "reencode_mdat"]
+    )]
+    replace_part: Option<String>,
+
+    /// Disambiguates which primitive `--from-glb` provides when replacing a part
+    /// from a multi-mesh `.glb` (defaults to the only primitive).
+    #[arg(long = "glb-mesh", value_name = "NAME")]
+    glb_mesh: Option<String>,
 
     /// Uniform scale about each edited part's centroid (1.0 = unchanged).
     #[arg(long, default_value_t = 1.0, value_name = "S")]
@@ -458,24 +474,7 @@ fn run_model_export(e: &ModelExportArgs) -> Result<()> {
 fn run_model_edit(e: ModelEditArgs) -> Result<()> {
     // --list: enumerate vertex buffers and exit.
     if e.list {
-        let targets = model_vertex_targets(&e.vpk, &e.entry, e.base.as_deref())
-            .with_context(|| format!("listing targets for {}", e.entry))?;
-        println!("{}: {} vertex buffer(s)", e.entry, targets.len());
-        for t in &targets {
-            println!(
-                "  {:<16} block {:<3} {:>7} verts  stride {:<3} {}",
-                t.mesh_name,
-                t.block_index,
-                t.vertex_count,
-                t.stride,
-                if t.editable {
-                    "editable"
-                } else {
-                    "not editable"
-                },
-            );
-        }
-        return Ok(());
+        return run_model_list_targets(&e);
     }
 
     // --list-drawcalls: enumerate renderable draw calls and exit.
@@ -500,6 +499,11 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
             .with_context(|| format!("exporting buffer {block} of {}", e.entry))?;
         println!("wrote {} (block {block} of {})", out_glb.display(), e.entry);
         return Ok(());
+    }
+
+    // --replace-part: splice a new mesh (from --from-glb) over a part and pack.
+    if let Some(mesh_name) = &e.replace_part {
+        return run_model_replace_part(&e, mesh_name);
     }
 
     // --from-glb: apply a Blender-reshaped glb back and pack an addon VPK.
@@ -574,6 +578,29 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
     Ok(())
 }
 
+/// `model edit --list`: print the model's vertex buffers (mesh part, block index,
+/// vertex count, stride, editability) so a user can pick a `--block`/`--part`.
+fn run_model_list_targets(e: &ModelEditArgs) -> Result<()> {
+    let targets = model_vertex_targets(&e.vpk, &e.entry, e.base.as_deref())
+        .with_context(|| format!("listing targets for {}", e.entry))?;
+    println!("{}: {} vertex buffer(s)", e.entry, targets.len());
+    for t in &targets {
+        println!(
+            "  {:<16} block {:<3} {:>7} verts  stride {:<3} {}",
+            t.mesh_name,
+            t.block_index,
+            t.vertex_count,
+            t.stride,
+            if t.editable {
+                "editable"
+            } else {
+                "not editable"
+            },
+        );
+    }
+    Ok(())
+}
+
 /// `model edit --list-drawcalls`: print the renderable draw calls (mesh part,
 /// material, vertex/index counts) so a user can find a `--remove-material` target.
 fn run_model_list_drawcalls(e: &ModelEditArgs) -> Result<()> {
@@ -621,6 +648,52 @@ fn run_model_remove_material(e: &ModelEditArgs) -> Result<()> {
         out.display(),
         report.vpk_entry,
         report.removed.len(),
+    );
+    Ok(())
+}
+
+/// `model edit --replace-part`: splice a new mesh (from `--from-glb`) over the
+/// named part and pack the edited model into the `--encode-vpk` addon VPK.
+fn run_model_replace_part(e: &ModelEditArgs, mesh_name: &str) -> Result<()> {
+    let in_glb = e
+        .from_glb
+        .as_ref()
+        .context("model edit --replace-part: provide --from-glb <FILE.glb> with the new mesh")?;
+    let out = e.encode_vpk.as_ref().context(
+        "model edit --replace-part: provide --encode-vpk <OUT_dir.vpk> for the edited model",
+    )?;
+    let glb_bytes =
+        std::fs::read(in_glb).with_context(|| format!("reading {}", in_glb.display()))?;
+
+    let report = vpkmerge_core::replace_model_part(
+        &e.vpk,
+        &e.entry,
+        e.base.as_deref(),
+        mesh_name,
+        &glb_bytes,
+        e.glb_mesh.as_deref(),
+        out,
+        e.vpk_entry.as_deref(),
+    )
+    .with_context(|| format!("replacing part {mesh_name:?} in {}", e.entry))?;
+
+    let r = &report.replaced;
+    eprintln!(
+        "replaced part {:?} ({}): {} -> {} verts, {} -> {} idx (stride {}, idx width {})",
+        r.mesh_name,
+        r.material,
+        r.old_vertex_count,
+        r.new_vertex_count,
+        r.old_index_count,
+        r.new_index_count,
+        r.stride,
+        r.index_size,
+    );
+    println!(
+        "wrote {}: 1 entry ({}) with part {:?} replaced",
+        out.display(),
+        report.vpk_entry,
+        r.mesh_name,
     );
     Ok(())
 }
