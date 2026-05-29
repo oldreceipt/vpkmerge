@@ -231,6 +231,41 @@ impl OnDiskBuffer {
         Ok(out)
     }
 
+    /// Overwrites the `POSITION` attribute in-place with `new_positions`, leaving
+    /// every other interleaved attribute (normal, uv, blend indices/weights)
+    /// byte-for-byte untouched. The basis of a vertex-displacement edit: reshape
+    /// existing geometry without changing topology, then re-encode the buffer.
+    ///
+    /// Errors if the buffer has no `R32G32B32_FLOAT` `POSITION`, or if
+    /// `new_positions.len()` differs from the vertex count (count changes are a
+    /// topology edit, out of scope for displacement).
+    pub fn write_positions(&mut self, new_positions: &[[f32; 3]]) -> Result<(), DecodeError> {
+        let attr = self
+            .field(|f| f.semantic_name == "POSITION")
+            .ok_or(DecodeError::Model("vertex buffer has no POSITION"))?;
+        if attr.format != DxgiFormat::R32G32B32Float {
+            return Err(DecodeError::Model("unexpected POSITION format"));
+        }
+        if new_positions.len() != self.element_count {
+            return Err(DecodeError::Model(
+                "position count does not match vertex count (topology change not supported)",
+            ));
+        }
+        let offset = attr.offset;
+        let stride = self.element_size;
+        for (i, p) in new_positions.iter().enumerate() {
+            let o = i * stride + offset;
+            for (c, &v) in p.iter().enumerate() {
+                let bytes = v.to_le_bytes();
+                self.data
+                    .get_mut(o + c * 4..o + c * 4 + 4)
+                    .ok_or(DecodeError::Model("position write past buffer"))?
+                    .copy_from_slice(&bytes);
+            }
+        }
+        Ok(())
+    }
+
     /// Generic 2-component attribute (UVs), with the half/unorm/snorm variants.
     pub fn vector2(&self, attr: &InputLayoutField) -> Result<Vec<[f32; 2]>, DecodeError> {
         let mut out = Vec::with_capacity(self.element_count);
@@ -545,4 +580,72 @@ fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `write_positions` overwrites only the POSITION lane: the new positions
+    /// read back, and every other byte of the stride is preserved.
+    #[test]
+    fn write_positions_touches_only_the_position_lane() {
+        // 2 vertices, stride 20: POSITION (3 f32) at offset 4, with 4 marker
+        // bytes before and 4 after to prove the rest of the stride is untouched.
+        let stride = 20usize;
+        let count = 2usize;
+        let mut data = vec![0u8; count * stride];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_add(1); // distinct, non-zero filler
+        }
+        let mut buf = OnDiskBuffer {
+            data: data.clone(),
+            element_count: count,
+            element_size: stride,
+            fields: vec![InputLayoutField {
+                semantic_name: "POSITION".to_string(),
+                semantic_index: 0,
+                format: DxgiFormat::R32G32B32Float,
+                offset: 4,
+            }],
+        };
+
+        let new = [[1.5f32, -2.0, 3.25], [10.0, 20.0, 30.0]];
+        buf.write_positions(&new).expect("write positions");
+
+        // Positions read back exactly.
+        assert_eq!(buf.positions().expect("positions"), new);
+
+        // Bytes outside the POSITION lane (offsets 0..4 and 16..20 of each
+        // vertex) are unchanged from the original filler.
+        for v in 0..count {
+            let base = v * stride;
+            assert_eq!(
+                &buf.data[base..base + 4],
+                &data[base..base + 4],
+                "pre-bytes"
+            );
+            assert_eq!(
+                &buf.data[base + 16..base + 20],
+                &data[base + 16..base + 20],
+                "post-bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn write_positions_rejects_count_mismatch() {
+        let mut buf = OnDiskBuffer {
+            data: vec![0u8; 12],
+            element_count: 1,
+            element_size: 12,
+            fields: vec![InputLayoutField {
+                semantic_name: "POSITION".to_string(),
+                semantic_index: 0,
+                format: DxgiFormat::R32G32B32Float,
+                offset: 0,
+            }],
+        };
+        assert!(buf.write_positions(&[[0.0; 3], [0.0; 3]]).is_err());
+    }
 }

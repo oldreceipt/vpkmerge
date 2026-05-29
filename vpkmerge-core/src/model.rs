@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use morphic::model::{BlockSummary, ModelInfo};
+pub use morphic::model::{BlockSummary, ModelInfo, VertexTarget};
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
 /// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
@@ -200,6 +200,164 @@ fn discover_hero_entry(vpks: &[valve_pak::VPK], codename: &str) -> Option<String
         }
     }
     None
+}
+
+/// A geometric transform applied to a model's editable vertex buffers (Tier-0
+/// displacement: reshape existing geometry, topology unchanged). Scale is uniform
+/// about each buffer's centroid; translation is applied after, in model space.
+#[derive(Debug, Clone)]
+pub struct GeometryEdit {
+    /// Edit only the mesh part with this exact name (e.g. `body`, `gun`); `None`
+    /// edits every displacement-editable buffer in the model.
+    pub part: Option<String>,
+    /// Uniform scale about each buffer's centroid. `1.0` leaves size unchanged.
+    pub scale: f32,
+    /// Translation in model space, applied after scaling.
+    pub translate: [f32; 3],
+}
+
+impl Default for GeometryEdit {
+    fn default() -> Self {
+        Self {
+            part: None,
+            scale: 1.0,
+            translate: [0.0; 3],
+        }
+    }
+}
+
+/// What an [`edit_model_geometry`] run touched.
+#[derive(Debug, Clone)]
+pub struct GeometryEditReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    /// Names of the mesh parts whose geometry was moved.
+    pub edited_parts: Vec<String>,
+    pub edited_buffers: usize,
+    pub edited_vertices: usize,
+}
+
+/// Lists the vertex buffers in a model entry (which mesh parts can be edited, and
+/// the block index / vertex count of each). The CLI uses this for `--list` and to
+/// resolve a `--part` name to a block index.
+pub fn model_vertex_targets(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+) -> Result<Vec<VertexTarget>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    morphic::model::vertex_targets(&bytes).with_context(|| format!("reading targets for {entry}"))
+}
+
+/// Applies a geometric transform to a model's editable vertex buffers and packs
+/// the edited `.vmdl_c` into a standalone addon VPK at `vpk_entry` (defaulting to
+/// `entry`, so it overrides the base pak). The geometry analog of
+/// `soundevents --encode-vpk`: read from a VPK, edit, re-encode, pack.
+///
+/// Note: the model's stored bounds (`MDAT` per-mesh AABB) are not recomputed, so
+/// large transforms can drift culling bounds; small reshapes are unaffected.
+pub fn edit_model_geometry(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    edit: &GeometryEdit,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<GeometryEditReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let mut bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let targets = morphic::model::vertex_targets(&bytes)
+        .with_context(|| format!("reading vertex targets for {entry}"))?;
+
+    // Select the buffers to edit: editable, and matching --part if given.
+    let selected: Vec<&VertexTarget> = targets
+        .iter()
+        .filter(|t| t.editable)
+        .filter(|t| edit.part.as_deref().is_none_or(|p| t.mesh_name == p))
+        .collect();
+
+    if let Some(part) = &edit.part {
+        if !targets.iter().any(|t| &t.mesh_name == part) {
+            anyhow::bail!(
+                "no mesh part named {part:?} in {entry} (parts: {})",
+                part_list(&targets)
+            );
+        }
+    }
+    if selected.is_empty() {
+        anyhow::bail!(
+            "no displacement-editable vertex buffer to edit in {entry} \
+             (need meshopt-compressed geometry with a float POSITION)"
+        );
+    }
+
+    let mut edited_parts = Vec::new();
+    let mut edited_vertices = 0usize;
+    let edited_buffers = selected.len();
+    for t in &selected {
+        let positions = morphic::model::read_vertex_positions(&bytes, t.block_index)
+            .with_context(|| format!("reading positions for {} buffer", t.mesh_name))?;
+        let moved = apply_transform(&positions, edit);
+        bytes = morphic::model::replace_vertex_positions(&bytes, t.block_index, &moved)
+            .with_context(|| format!("splicing {} buffer", t.mesh_name))?;
+        edited_vertices += positions.len();
+        if !edited_parts.contains(&t.mesh_name) {
+            edited_parts.push(t.mesh_name.clone());
+        }
+    }
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), bytes.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(GeometryEditReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        edited_parts,
+        edited_buffers,
+        edited_vertices,
+    })
+}
+
+/// Scale about the centroid, then translate.
+// The vertex count -> f32 cast is for an averaging divisor; precision loss at
+// realistic mesh sizes does not meaningfully move the centroid.
+#[allow(clippy::cast_precision_loss)]
+fn apply_transform(positions: &[[f32; 3]], edit: &GeometryEdit) -> Vec<[f32; 3]> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let n = positions.len() as f32;
+    let mut centroid = [0.0f32; 3];
+    for p in positions {
+        for k in 0..3 {
+            centroid[k] += p[k];
+        }
+    }
+    for c in &mut centroid {
+        *c /= n;
+    }
+    positions
+        .iter()
+        .map(|p| {
+            [
+                (p[0] - centroid[0]) * edit.scale + centroid[0] + edit.translate[0],
+                (p[1] - centroid[1]) * edit.scale + centroid[1] + edit.translate[1],
+                (p[2] - centroid[2]) * edit.scale + centroid[2] + edit.translate[2],
+            ]
+        })
+        .collect()
+}
+
+fn part_list(targets: &[VertexTarget]) -> String {
+    let mut names: Vec<&str> = targets.iter().map(|t| t.mesh_name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(", ")
 }
 
 /// Reads a VPK entry from the first of `vpks` that contains it.

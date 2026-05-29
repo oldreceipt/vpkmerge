@@ -91,30 +91,56 @@ New work, smallest first:
      the oracle SHA-256. Plus `zigzag8_inverts_unzigzag8` (exhaustive 0..=255).
    - Note: no index encoder yet (`encode_index_buffer`); displacement keeps indices,
      so it is not needed until Tier 1.
-2. **Vertex-stream write path** in `vbib`/`mesh`: given edited positions
-   (`Vec<[f32;3]>`, *same count and order*), write them into the interleaved buffer
-   at the POSITION attribute's offset/format, leaving every other attribute
-   (NORMAL, TANGENT, TEXCOORD, BLENDINDICES, BLENDWEIGHT) byte-identical. Mirror the
-   existing read accessors.
-3. **`morphic::resource::rebuild_with_block(index, new_bytes)`** - generalize
-   `rebuild_with_data`. ~90% there already.
-4. **`morphic::replace_vertex_positions(vmdl_bytes, mesh_part, &positions) -> Vec<u8>`**
-   - the public splice, the geometry analog of `replace_mip_chain`: decode MVTX,
-   overwrite POSITION, meshopt-encode, `rebuild_with_block`.
-5. **CLI/core glue:** a `vpkmerge model edit` subcommand modeled on
-   `soundevents --encode-vpk` (load from VPK, edit, re-encode, `pack` an addon VPK),
-   or fold into the texture-edit subcommand's shape.
+2. **Vertex-stream write path - DONE.** `OnDiskBuffer::write_positions` (in `vbib`)
+   overwrites the POSITION lane in place, leaving every other attribute byte-identical,
+   and rejects a count change (topology guard). Unit-tested
+   (`write_positions_touches_only_the_position_lane`).
+3. **`morphic::resource::rebuild_with_block(index, new_bytes)` - DONE.** Generalized
+   from `rebuild_with_data` (which now delegates to it); swaps a block positionally,
+   preserving block order/count so `CTRL` references stay valid. Unit-tested with a
+   synthetic container (`rebuild_with_block_swaps_one_and_preserves_others`).
+4. **`morphic::model::replace_vertex_positions(vmdl_bytes, block_index, &positions)`
+   - DONE** (in `model/edit.rs`), plus `vertex_targets` (enumerate editable buffers)
+   and `read_vertex_positions` (read current). The public splice: parse CTRL, find
+   the buffer's `BufferDesc` by block index, decode MVTX, `write_positions`,
+   `encode_vertex_buffer`, `rebuild_with_block`. **End-to-end gate PASSED** on the real
+   hornet model (`model_local::displacement_edit_round_trips_local`, gated on
+   `MORPHIC_MODEL_VPK`): translates one 56,899-vertex buffer, re-decodes, and asserts
+   exactly that buffer's positions shifted by the delta with all normals/uv/joints/
+   weights/indices byte-identical.
+5. **CLI/core glue - DONE.** `vpkmerge model edit --vpk <vpk> --entry <path> [--base]
+   [--list] [--part <name>] [--scale S] [--translate x,y,z] --encode-vpk OUT [--vpk-entry]`,
+   modeled on `soundevents --encode-vpk`. Core: `vpkmerge_core::edit_model_geometry`
+   (+ `model_vertex_targets`, `GeometryEdit`/`GeometryEditReport`) reads the model from
+   a VPK, applies a centroid-scale + translate transform to the selected editable
+   buffers, splices via morphic, and `pack`s a standalone addon VPK. `--list`
+   enumerates buffers (mesh part / block / vertex count / editability).
+   Verified producing a loadable addon VPK from the local pak (gun-scale and
+   full-body-translate edits both re-decode as valid models).
+
+**Remaining for Tier 0: in-game confirmation only** (the offline path is complete).
+Drop the addon VPK in `citadel/addons/` and verify the reshape renders. The one open
+risk below (arbitrary Blender reshape vs. the built-in transform) is what stands
+between this and editing geometry freely; the transform path needs no Blender and is
+ready to test in-game now.
 
 ## Tier 0's real correctness risk: vertex-order mapping
 
 The splice requires the edited positions to come back in **the same vertex order
-and count** as the original MVTX. morphic controls the glTF vertex order (we write
-the `.glb`), so a *displacement-only* Blender edit (move verts, no add/remove/weld,
-no re-import that reorders) maps back identity. This is the constraint to document
-and enforce: Tier 0 is **position displacement with topology preserved**. Anything
-that changes vertex count or order is Tier 1. A guard: assert the edited
-position count equals `element_count` and reject otherwise (the dimension-mismatch
-analog of the texture path).
+and count** as the original MVTX.
+
+The **built-in transform path (what shipped) is immune**: it reads positions,
+transforms them, and writes them back in native order without ever leaving Rust,
+so order and count are trivially preserved. The `write_positions` count guard
+rejects any mismatch (the dimension-mismatch analog of the texture path).
+
+The risk bites only the **future arbitrary-reshape path** (import an edited mesh
+from Blender): morphic controls the glTF vertex order (we write the `.glb`), so a
+*displacement-only* Blender edit (move verts, no add/remove/weld, no re-import that
+reorders) maps back identity, but a weld/reorder would break it. That path needs a
+stable vertex-id channel to remap on the way back. Tier 0 stays **position
+displacement with topology preserved**; anything that changes vertex count or order
+is Tier 1.
 
 Open sub-questions to settle during the spike:
 - Does Blender's glTF import/export preserve vertex order on a position-only edit,
