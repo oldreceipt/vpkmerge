@@ -155,9 +155,12 @@ fn export_resolved(
         // base game). When this model carries none of the candidate clips, source
         // them from the same entry in the base pak (vpks after the first) and map
         // by bone name. Same hero, same rig, so no cross-hero retargeting.
-        let has_own_clip = candidates
-            .iter()
-            .any(|c| model.animations.iter().any(|a| a.name.eq_ignore_ascii_case(c)));
+        let has_own_clip = candidates.iter().any(|c| {
+            model
+                .animations
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case(c))
+        });
         model = if has_own_clip {
             morphic::model::bake_pose(&model, &candidates, pose.frame)
         } else if let Some(donor_bytes) = read_entry(&vpks[1..], entry) {

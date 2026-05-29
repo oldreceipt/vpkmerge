@@ -560,7 +560,10 @@ mod pose_bake {
         assert!(baked.skeleton.bones.is_empty(), "skeleton stripped");
         assert!(baked.animations.is_empty(), "animations stripped");
         let vb = &baked.meshes[0].vertex_buffers[0];
-        assert!(vb.joints.is_empty() && vb.weights.is_empty(), "skin stripped");
+        assert!(
+            vb.joints.is_empty() && vb.weights.is_empty(),
+            "skin stripped"
+        );
         approx(vb.positions[0], [1.0, 2.0, 3.0]);
     }
 

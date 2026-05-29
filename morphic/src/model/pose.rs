@@ -50,8 +50,8 @@ pub fn bake_pose_from(model: &Model, donor: &Model, clips: &[&str], frame: usize
     if model.skeleton.bones.is_empty() {
         return bake_with(model, None);
     }
-    let palette = donor_palette(model, donor, clips, frame)
-        .or_else(|| self_palette(model, clips, frame));
+    let palette =
+        donor_palette(model, donor, clips, frame).or_else(|| self_palette(model, clips, frame));
     bake_with(model, palette.as_deref())
 }
 
@@ -114,9 +114,11 @@ fn donor_palette(model: &Model, donor: &Model, clips: &[&str], frame: usize) -> 
 
 /// First clip whose name matches a candidate (case-insensitive, in priority order).
 fn pick_clip<'a>(animations: &'a [Clip], clips: &[&str]) -> Option<&'a Clip> {
-    clips
-        .iter()
-        .find_map(|want| animations.iter().find(|c| c.name.eq_ignore_ascii_case(want)))
+    clips.iter().find_map(|want| {
+        animations
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(want))
+    })
 }
 
 /// The bone's posed local transform: its sampled channels (bind value where a
@@ -178,7 +180,11 @@ fn bake_part(part: &MeshPart, palette: Option<&[Mat4]>) -> MeshPart {
     }
 }
 
-fn bake_buffer(vb: &VertexBuffer, bone_weight_count: usize, palette: Option<&[Mat4]>) -> VertexBuffer {
+fn bake_buffer(
+    vb: &VertexBuffer,
+    bone_weight_count: usize,
+    palette: Option<&[Mat4]>,
+) -> VertexBuffer {
     // No palette, or a buffer with no joints: copy verbatim minus joint/weight
     // data so it renders as plain static geometry.
     let Some(palette) = palette.filter(|_| !vb.joints.is_empty()) else {
@@ -203,18 +209,30 @@ fn bake_buffer(vb: &VertexBuffer, bone_weight_count: usize, palette: Option<&[Ma
     for (i, (&joint, &weight)) in vb.joints.iter().zip(weights.iter()).enumerate() {
         let m = blended(palette, joint, weight);
         let p = vb.positions[i];
-        let pp = m.transform_point(Vec3 { x: p[0], y: p[1], z: p[2] });
+        let pp = m.transform_point(Vec3 {
+            x: p[0],
+            y: p[1],
+            z: p[2],
+        });
         positions.push([pp.x, pp.y, pp.z]);
 
         if let Some(n) = vb.normals.get(i) {
             let nn = m
-                .transform_vector(Vec3 { x: n[0], y: n[1], z: n[2] })
+                .transform_vector(Vec3 {
+                    x: n[0],
+                    y: n[1],
+                    z: n[2],
+                })
                 .normalized();
             normals.push([nn.x, nn.y, nn.z]);
         }
         if let Some(t) = vb.tangents.get(i) {
             let tt = m
-                .transform_vector(Vec3 { x: t[0], y: t[1], z: t[2] })
+                .transform_vector(Vec3 {
+                    x: t[0],
+                    y: t[1],
+                    z: t[2],
+                })
                 .normalized();
             tangents.push([tt.x, tt.y, tt.z, t[3]]);
         }

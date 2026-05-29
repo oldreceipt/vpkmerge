@@ -185,7 +185,11 @@ fn list_heroes() {
         .file_paths()
         .filter(|p| p.ends_with(".vmdl_c") && p.contains("/heroes"))
         .filter(|p| {
-            let stem = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".vmdl_c");
+            let stem = p
+                .rsplit('/')
+                .next()
+                .unwrap_or(p)
+                .trim_end_matches(".vmdl_c");
             let parent = p.rsplit('/').nth(1).unwrap_or("");
             stem == parent
         })
@@ -209,10 +213,22 @@ fn list_hero_vmdl_all() {
         eprintln!("MORPHIC_DIAG_VPK not set; skipping");
         return;
     };
-    let needle = std::env::var("MORPHIC_DIAG_GREP").unwrap_or_default().to_lowercase();
+    let needle = std::env::var("MORPHIC_DIAG_GREP")
+        .unwrap_or_default()
+        .to_lowercase();
     let skip = [
-        "_lod", "lod0", "lod1", "lod2", "lod3", "backup", "/clips/", "abilities", "particle",
-        "/materials/", "_dbg", "destruction",
+        "_lod",
+        "lod0",
+        "lod1",
+        "lod2",
+        "lod3",
+        "backup",
+        "/clips/",
+        "abilities",
+        "particle",
+        "/materials/",
+        "_dbg",
+        "destruction",
     ];
     let vpk = valve_pak::open(&vpk_path).expect("open vpk");
     let mut hits: Vec<String> = vpk

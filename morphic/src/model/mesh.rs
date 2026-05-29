@@ -401,7 +401,10 @@ type SkinAttrs = (Vec<[u16; 4]>, Vec<[f32; 4]>);
 /// or carries weights; weights only when the mesh is actually skinned (remap
 /// present).
 fn decode_skinning(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<SkinAttrs, DecodeError> {
-    let idx_field = buf.fields.iter().find(|f| f.semantic_name == "BLENDINDICES");
+    let idx_field = buf
+        .fields
+        .iter()
+        .find(|f| f.semantic_name == "BLENDINDICES");
     let wt_field = buf
         .fields
         .iter()
@@ -421,7 +424,12 @@ fn decode_skinning(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<SkinAt
         let joints = (0..buf.element_count)
             .map(|i| {
                 let b = i * lanes;
-                [joints_flat[b], joints_flat[b + 1], joints_flat[b + 2], joints_flat[b + 3]]
+                [
+                    joints_flat[b],
+                    joints_flat[b + 1],
+                    joints_flat[b + 2],
+                    joints_flat[b + 3],
+                ]
             })
             .collect();
         return Ok((joints, Vec::new()));
