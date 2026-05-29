@@ -165,12 +165,82 @@ attributes unchanged, green under `cargo test --workspace` with
 `clippy --all-targets -D warnings` + `fmt --check` clean. In-game gate (met):
 a `hornet` gun-scale addon rendered correctly in Deadlock.
 
-## Out of scope (Tier 1, note for later)
+## Tier 0.5 - Blender reshape round-trip: DONE (branch `feat/model-blender-reshape`)
 
-- Adding/removing geometry, new garment meshes, accessories: needs a full S2
-  container writer (all blocks re-emitted with consistent metadata) or the official
-  ModelDoc + resourcecompiler toolchain (Windows/Proton). Decide custom-encoder vs
-  official-tools only after Tier 0, informed by how the engine validates re-encoded
-  blocks and by the user's Windows availability.
-- Index-buffer editing (`encode_index_buffer`): not needed for displacement; part
-  of Tier 1.
+Arbitrary in-Blender reshape of existing geometry (not just math transforms),
+topology preserved. Shipped as `vpkmerge model edit --export-glb` / `--from-glb`
+/ `--block`, built on `morphic::model::{export_buffer_for_edit, apply_edited_glb}`
++ `glb::to_edit_glb` (a `_ORIGID` per-vertex carrier). Validated end to end on the
+real hornet gun via Blender MCP: export -> import (carrier kept as POINT FLOAT
+`_ORIGID`) -> non-uniform 2.5x stretch -> export (Blender split 11750->16088 verts)
+-> `apply_edited_glb` regrouped split copies by id back to 11750, spliced, and the
+gun's long axis measured **68.38 -> 170.94 = 2.50x** in the re-encoded model, other
+axes 1.00x. CI gates green; gated identity round-trip green. **In-game visual
+confirm of the gun stretch (addon `pak82`) was still pending at handoff.** Commit
+`04b2d06`; not yet pushed/PR'd.
+
+Tier 0.5 limits (still topology-preserving): keeps original normals/tangents (heavy
+reshapes get stale shading until a normal *encoder* lands); per single buffer;
+`apply_edited_glb` rejects added/removed vertices by design.
+
+## Tier 1 - add / remove geometry (new clothes): HANDOFF
+
+Goal: remove a garment and/or add a new one. This is topology change (vertex/index
+counts, draw calls, materials, skin weights all differ), so the `_ORIGID`
+displacement path does NOT apply. Recommended approach: a **pure-Rust
+glTF->`.vmdl_c` writer**, built smallest-first. (Alternative: official
+ModelDoc/resourcecompiler, but that is Windows-only in the Deadlock install and not
+automatable.)
+
+### The riskiest unknown, and how to retire it first
+Tier 0/0.5 only ever re-encoded the **MVTX** block; we have **never had the engine
+load a re-encoded model KV3 block** (MDAT/DATA/CTRL). KV3 v4-uncompressed is engine
+-accepted for *soundevents* (spike Phase 4), but NOT yet confirmed for *model*
+blocks. So:
+
+- **T1a - REMOVE a draw call (cheapest, validates the KV3 risk).** Decode MDAT
+  (`m_sceneObjects[].m_drawCalls`), drop the draw call whose `m_material` is the
+  target garment, re-encode MDAT with `morphic::encode_kv3_resource` (v4
+  uncompressed), splice with `resource::rebuild_with_block`, pack. No new encoders
+  needed - reuses the KV3 writer + block rebuild we already have. If this loads
+  in-game (the garment disappears), the model-KV3 rewrite path is proven and
+  everything below is unblocked. **Do this first.**
+
+### Then build, in order (T1b -> T1d)
+- **T1b - meshopt index encoder.** `meshopt::encode_index_buffer` (inverse of the
+  existing `decode_index_buffer`; codec v1). Gate: `decode(encode(x)) == x` on the
+  committed `*_i*.meshopt` fixtures, mirroring the vertex-encoder test.
+- **T1c - new vertex buffer assembly + skin-weight encode.** Read the new mesh from
+  an edited glb (the `gltf` reader gives positions, normals, uv, and
+  `read_joints`/`read_weights`). Build a fresh interleaved vertex stream at a chosen
+  layout - simplest: POSITION `R32G32B32_FLOAT`, NORMAL `R32G32B32_FLOAT`
+  (uncompressed; confirm the engine accepts float normals - VRF reads them, so
+  likely yes, else add a packed-normal encoder), TEXCOORD `R32G32_FLOAT`,
+  BLENDINDICES `R8G8B8A8_UINT`, BLENDWEIGHT `R8G8B8A8_UNORM`. Map glb JOINTS_0
+  (skin-joint = model-bone order) back through the mesh **bone remap table**
+  (`skeleton::remap_table`, inverted) to mesh-local indices. meshopt-encode the new
+  MVTX + MIDX.
+- **T1d - rewrite the KV3 metadata + container.** Update CTRL `embedded_meshes`
+  buffer registry (`m_nElementCount`, `m_nElementSizeInBytes`, `m_nBlockIndex`,
+  `m_inputLayoutFields` for the new layout), MDAT draw calls (new counts / start
+  index / base vertex / material), DATA LOD masks + bounds, and RERL (add the new
+  `.vmat_c` to external refs). Re-encode each KV3 (v4), then rebuild the container
+  swapping MVTX+MIDX+MDAT (and adding blocks if vertex/index buffers grow) - this
+  needs a **multi-block / add-block** generalization of `rebuild_with_block` (it
+  currently swaps one same-or-different-size block in place). Package the new
+  `.vmat_c` + textures into the addon VPK alongside the model (reuse `pack`).
+
+### Reuse (already built)
+meshopt **vertex** encoder; KV3 v4 writer (`encode_kv3_resource`, engine-accepted
+for soundevents); `resource::rebuild_with_block`; the `gltf` reader (positions/
+normals/uv/joints/weights); `vbib` layout parsing; `pack`. The glb edit-export
+(Tier 0.5) is the artist's starting point for the new mesh.
+
+### Scope notes
+- "Replace one mesh part wholesale" (new dress buffer of any vertex count + its
+  draw calls + material) is the cleanest first *add*, after T1a proves remove.
+- New geometry must be **weight-painted to the skeleton in Blender** or it won't
+  move with the hero - that is artist work plus T1c's weight encode.
+- New clothes need LOD0 only; drop/duplicate other LODs for the swapped part.
+- A genuinely new material (T1d RERL + texture packaging) can be deferred by reusing
+  an existing hero material for the new mesh at first.
