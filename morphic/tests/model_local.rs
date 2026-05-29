@@ -533,6 +533,131 @@ fn edit_glb_identity_round_trips_local() {
     eprintln!("edit-glb identity round-trip OK: {compared} vertices stable");
 }
 
+/// Tier-1a draw-call removal, end to end on the real hornet model: neutralize the
+/// `vindicta_dress` material's draw call(s) by zeroing their `m_nIndexCount` in a
+/// byte-faithful (uncompressed, structure-preserving) `MDAT` re-wrap, splice, and
+/// confirm (a) the edited `.vmdl_c` still decodes, (b) every dress draw call now
+/// renders zero indices, (c) every other primitive's indices are unchanged and the
+/// total drops by exactly the dress's index count, and (d) no vertex buffer was
+/// touched. The draw call is neutralized in place, not deleted, because the engine
+/// rejects a lossy KV3 re-encode (confirmed in-game; see `docs/handoff-model-edit.md`).
+/// Gated on `MORPHIC_MODEL_VPK`.
+#[test]
+fn remove_material_round_trips_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping local material removal");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+
+    let needle =
+        std::env::var("MORPHIC_REMOVE_MATERIAL").unwrap_or_else(|_| "vindicta_dress".to_string());
+
+    let before = morphic::model::decode(&bytes).expect("decode original");
+    let dress_prims_before = before
+        .meshes
+        .iter()
+        .flat_map(|m| &m.primitives)
+        .filter(|p| {
+            p.material
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase())
+        })
+        .count();
+    assert!(
+        dress_prims_before > 0,
+        "model has no {needle:?} draw call to remove (materials: {:?})",
+        before.materials()
+    );
+
+    let (edited, removed) =
+        morphic::model::remove_draw_calls_by_material(&bytes, &needle).expect("remove");
+    assert!(!removed.is_empty(), "removal reported nothing");
+    assert!(
+        removed.iter().all(|r| r
+            .material
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase())),
+        "removed a non-matching material: {removed:?}"
+    );
+    eprintln!("removed {} draw call(s) for {needle:?}", removed.len());
+
+    let after = morphic::model::decode(&edited).expect("decode edited");
+    let needle_lc = needle.to_ascii_lowercase();
+
+    // (b) The dress draw call(s) are still present (neutralized, not deleted) but
+    // now render zero indices.
+    let dress_prims_after: Vec<&morphic::model::Primitive> = after
+        .meshes
+        .iter()
+        .flat_map(|m| &m.primitives)
+        .filter(|p| p.material.to_ascii_lowercase().contains(&needle_lc))
+        .collect();
+    assert_eq!(
+        dress_prims_after.len(),
+        dress_prims_before,
+        "dress draw calls remain in place (neutralized, not deleted)"
+    );
+    assert!(
+        dress_prims_after.iter().all(|p| p.indices.is_empty()),
+        "every dress draw call now renders zero indices"
+    );
+
+    // (c) The full material set is unchanged (the dress is still referenced), and
+    // exactly the dress's indices left the rendered total.
+    let mut before_mats = before.materials();
+    before_mats.sort();
+    let mut after_mats = after.materials();
+    after_mats.sort();
+    assert_eq!(after_mats, before_mats, "material set unchanged");
+    assert_eq!(
+        after.total_indices() + dress_index_count(&before, &needle),
+        before.total_indices(),
+        "only the dress's indices left the rendered set"
+    );
+
+    // (d) Mesh/vertex-buffer geometry is byte-identical: the edit touches MDAT only.
+    assert_eq!(before.meshes.len(), after.meshes.len(), "mesh count");
+    for (mb, ma) in before.meshes.iter().zip(&after.meshes) {
+        assert_eq!(mb.name, ma.name, "mesh name");
+        assert_eq!(
+            mb.vertex_buffers.len(),
+            ma.vertex_buffers.len(),
+            "{}: buffer count",
+            mb.name
+        );
+        for (vb, va) in mb.vertex_buffers.iter().zip(&ma.vertex_buffers) {
+            assert_eq!(vb.positions, va.positions, "{}: positions", mb.name);
+            assert_eq!(vb.normals, va.normals, "{}: normals", mb.name);
+            assert_eq!(vb.joints, va.joints, "{}: joints", mb.name);
+            assert_eq!(vb.weights, va.weights, "{}: weights", mb.name);
+        }
+    }
+    eprintln!(
+        "material removal OK: {} draw call(s) gone, {} -> {} indices, geometry untouched",
+        removed.len(),
+        before.total_indices(),
+        after.total_indices()
+    );
+}
+
+/// Total LOD0 indices belonging to draw calls whose material matches `needle`.
+fn dress_index_count(model: &morphic::model::Model, needle: &str) -> usize {
+    let lc = needle.to_ascii_lowercase();
+    model
+        .meshes
+        .iter()
+        .flat_map(|m| &m.primitives)
+        .filter(|p| p.material.to_ascii_lowercase().contains(&lc))
+        .map(|p| p.indices.len())
+        .sum()
+}
+
 /// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
 /// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
 fn is_shell(s: &str) -> bool {

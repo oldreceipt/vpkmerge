@@ -3,9 +3,9 @@ use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
     edit_model_geometry, export_hero_model, export_model, extract_portraits, inspect_models, merge,
-    model_vertex_targets, split, AnimOptions, CollisionPolicy, GeometryEdit, MergeOptions,
-    OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection, SoundEvents, SplitOptions,
-    SplitOutput,
+    model_draw_call_targets, model_vertex_targets, split, AnimOptions, CollisionPolicy,
+    GeometryEdit, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection,
+    SoundEvents, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -128,9 +128,11 @@ enum ModelAction {
     /// Export a model entry to a textured binary glTF (`.glb`).
     Export(ModelExportArgs),
 
-    /// Reshape a model's existing geometry (vertex displacement) and pack the
-    /// edited `.vmdl_c` into an addon VPK. Topology is preserved; this moves
-    /// vertices, it does not add or remove them.
+    /// Edit a model and pack the result into an addon VPK. Reshape existing
+    /// geometry (vertex displacement via `--scale`/`--translate` or a Blender
+    /// `--from-glb`), or remove a part by material (`--remove-material`). Both are
+    /// topology-light: displacement moves vertices, removal drops a draw call;
+    /// neither adds new geometry.
     Edit(ModelEditArgs),
 }
 
@@ -216,6 +218,24 @@ struct ModelEditArgs {
     /// count) and exit without editing.
     #[arg(long)]
     list: bool,
+
+    /// List the model's renderable draw calls (mesh part, material, vertex/index
+    /// count) and exit. Use it to find the material for `--remove-material`.
+    #[arg(long = "list-drawcalls")]
+    list_drawcalls: bool,
+
+    /// Remove every draw call whose material contains this string
+    /// (case-insensitive), so that part stops rendering, then pack an addon VPK
+    /// (needs `--encode-vpk`). E.g. `--remove-material vindicta_dress`. This is a
+    /// draw-call-only edit: no vertices change.
+    #[arg(long = "remove-material", value_name = "MATERIAL")]
+    remove_material: Option<String>,
+
+    /// Diagnostic: re-encode every MDAT block unchanged and pack an addon VPK
+    /// (needs `--encode-vpk`). Probes whether the engine accepts our re-encoded
+    /// model KV3 blocks at all, independent of any edit.
+    #[arg(long = "reencode-mdat")]
+    reencode_mdat: bool,
 
     /// Edit only the mesh part with this name (see `--list`). For the transform
     /// edit, omit to edit every editable part. For `--export-glb` / `--from-glb`
@@ -458,6 +478,21 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
         return Ok(());
     }
 
+    // --list-drawcalls: enumerate renderable draw calls and exit.
+    if e.list_drawcalls {
+        return run_model_list_drawcalls(&e);
+    }
+
+    // --remove-material: drop matching draw calls and pack an addon VPK.
+    if e.remove_material.is_some() {
+        return run_model_remove_material(&e);
+    }
+
+    // --reencode-mdat: diagnostic identity re-encode of every MDAT block.
+    if e.reencode_mdat {
+        return run_model_reencode_mdat(&e);
+    }
+
     // --export-glb: write the chosen buffer to a glb for Blender editing.
     if let Some(out_glb) = &e.export_glb {
         let block = resolve_edit_block(&e)?;
@@ -535,6 +570,78 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
         "wrote {}: 1 entry ({}) edited model",
         out.display(),
         report.vpk_entry,
+    );
+    Ok(())
+}
+
+/// `model edit --list-drawcalls`: print the renderable draw calls (mesh part,
+/// material, vertex/index counts) so a user can find a `--remove-material` target.
+fn run_model_list_drawcalls(e: &ModelEditArgs) -> Result<()> {
+    let calls = model_draw_call_targets(&e.vpk, &e.entry, e.base.as_deref())
+        .with_context(|| format!("listing draw calls for {}", e.entry))?;
+    println!("{}: {} renderable draw call(s)", e.entry, calls.len());
+    for c in &calls {
+        println!(
+            "  {:<16} {:>7} verts {:>8} idx  {}",
+            c.mesh_name, c.vertex_count, c.index_count, c.material
+        );
+    }
+    Ok(())
+}
+
+/// `model edit --remove-material`: drop every draw call whose material matches,
+/// then pack the edited model into the `--encode-vpk` addon VPK.
+fn run_model_remove_material(e: &ModelEditArgs) -> Result<()> {
+    let material = e
+        .remove_material
+        .as_deref()
+        .expect("caller checks remove_material is set");
+    let out = e.encode_vpk.as_ref().context(
+        "model edit --remove-material: provide --encode-vpk <OUT_dir.vpk> for the edited model",
+    )?;
+    let report = vpkmerge_core::remove_model_material(
+        &e.vpk,
+        &e.entry,
+        e.base.as_deref(),
+        material,
+        out,
+        e.vpk_entry.as_deref(),
+    )
+    .with_context(|| format!("removing {material:?} from {}", e.entry))?;
+
+    eprintln!("removed {} draw call(s):", report.removed.len());
+    for r in &report.removed {
+        eprintln!(
+            "  {:<16} {:>8} idx  {}",
+            r.mesh_name, r.index_count, r.material
+        );
+    }
+    println!(
+        "wrote {}: 1 entry ({}) with {} draw call(s) removed",
+        out.display(),
+        report.vpk_entry,
+        report.removed.len(),
+    );
+    Ok(())
+}
+
+/// `model edit --reencode-mdat`: diagnostic identity re-encode of every MDAT block
+/// (re-emit uncompressed, byte-faithful, no edit), packed to `--encode-vpk`.
+fn run_model_reencode_mdat(e: &ModelEditArgs) -> Result<()> {
+    let out = e.encode_vpk.as_ref().context(
+        "model edit --reencode-mdat: provide --encode-vpk <OUT_dir.vpk> for the re-encoded model",
+    )?;
+    let count = vpkmerge_core::reencode_model_mdat(
+        &e.vpk,
+        &e.entry,
+        e.base.as_deref(),
+        out,
+        e.vpk_entry.as_deref(),
+    )
+    .with_context(|| format!("re-encoding MDAT of {}", e.entry))?;
+    println!(
+        "wrote {}: {count} MDAT block(s) re-encoded unchanged (identity diagnostic)",
+        out.display()
     );
     Ok(())
 }

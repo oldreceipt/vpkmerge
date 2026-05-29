@@ -35,7 +35,9 @@ pub struct VertexTarget {
     pub editable: bool,
 }
 
-fn parse_embedded(bytes: &[u8]) -> Result<(Resource<'_>, Vec<EmbeddedMesh>), DecodeError> {
+pub(super) fn parse_embedded(
+    bytes: &[u8],
+) -> Result<(Resource<'_>, Vec<EmbeddedMesh>), DecodeError> {
     let resource = Resource::parse(bytes)?;
     let ctrl_bytes = resource
         .find_block(CTRL)

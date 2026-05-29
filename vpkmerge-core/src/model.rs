@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use morphic::model::{BlockSummary, ModelInfo, VertexTarget};
+pub use morphic::model::{BlockSummary, DrawCallInfo, ModelInfo, RemovedDrawCall, VertexTarget};
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
 /// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
@@ -437,6 +437,96 @@ pub fn apply_model_edit_glb(
     crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
         .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
     Ok(vpk_entry)
+}
+
+/// What a [`remove_model_material`] run dropped and where it was packed.
+#[derive(Debug, Clone)]
+pub struct MaterialRemovalReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    /// Each draw call removed (its mesh, material, and vertex/index counts).
+    pub removed: Vec<RemovedDrawCall>,
+}
+
+/// Lists a model's renderable (LOD0) draw calls: the mesh part, the material each
+/// renders, and the vertex/index counts. The CLI uses this for `--list-drawcalls`
+/// so a user can find the exact material string to pass to
+/// [`remove_model_material`].
+pub fn model_draw_call_targets(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+) -> Result<Vec<DrawCallInfo>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    morphic::model::draw_call_targets(&bytes)
+        .with_context(|| format!("reading draw calls for {entry}"))
+}
+
+/// Removes every draw call whose material contains `material` (case-insensitive
+/// substring) from the model, across all LODs, and packs the edited `.vmdl_c`
+/// into a standalone addon VPK at `vpk_entry` (defaulting to `entry`, so it
+/// overrides the base pak). This is a draw-call-only edit (Tier 1a): the shared
+/// vertex/index buffers are untouched, so the targeted part simply stops
+/// rendering.
+///
+/// Errors if `material` matches no draw call (so a typo fails loudly rather than
+/// repacking the model unchanged); use [`model_draw_call_targets`] to discover
+/// the exact names.
+pub fn remove_model_material(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    material: &str,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<MaterialRemovalReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let (edited, removed) = morphic::model::remove_draw_calls_by_material(&bytes, material)
+        .with_context(|| {
+            format!("removing draw calls matching {material:?} from {entry} (try --list-drawcalls)")
+        })?;
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(MaterialRemovalReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        removed,
+    })
+}
+
+/// Diagnostic: re-encodes every `MDAT` block of the model unchanged and packs the
+/// result into a standalone addon VPK. Used to probe whether the engine accepts our
+/// re-encoded model KV3 blocks at all, independent of any edit (see
+/// [`morphic::model::reencode_all_mdat_identity`]). Returns the number of blocks
+/// re-encoded.
+pub fn reencode_model_mdat(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<usize> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let (reencoded, count) = morphic::model::reencode_all_mdat_identity(&bytes)
+        .with_context(|| format!("re-encoding MDAT blocks of {entry}"))?;
+    let vpk_entry = vpk_entry.unwrap_or(entry);
+    crate::pack(&[(vpk_entry, reencoded.as_slice())], out_vpk.as_ref()).with_context(|| {
+        format!(
+            "packing re-encoded model into {}",
+            out_vpk.as_ref().display()
+        )
+    })?;
+    Ok(count)
 }
 
 /// Mean position over all the given buffers (the shared scale pivot).

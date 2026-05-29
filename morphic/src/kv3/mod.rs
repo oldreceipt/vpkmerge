@@ -12,10 +12,14 @@
 //! Layout and algorithms are ported from `ValveResourceFormat` (MIT); see the
 //! `reader` and `writer` submodules.
 
+mod patch;
 mod reader;
+mod rewrap;
 mod types;
 mod writer;
 
+pub use patch::neutralize_draw_calls;
+pub use rewrap::rewrap_uncompressed;
 pub use types::Value;
 
 use crate::error::DecodeError;

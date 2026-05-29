@@ -192,19 +192,61 @@ glTF->`.vmdl_c` writer**, built smallest-first. (Alternative: official
 ModelDoc/resourcecompiler, but that is Windows-only in the Deadlock install and not
 automatable.)
 
-### The riskiest unknown, and how to retire it first
-Tier 0/0.5 only ever re-encoded the **MVTX** block; we have **never had the engine
-load a re-encoded model KV3 block** (MDAT/DATA/CTRL). KV3 v4-uncompressed is engine
--accepted for *soundevents* (spike Phase 4), but NOT yet confirmed for *model*
-blocks. So:
+### The riskiest unknown - RETIRED in-game (2026-05-28)
+Tier 0/0.5 only ever re-encoded the **MVTX** block; we had **never had the engine
+load a re-encoded model KV3 block** (MDAT/DATA/CTRL). **T1a retired this:** the
+engine loads an edited model `MDAT` block and renders the result, with no ERROR.
+Two hard-won facts shaped the working implementation:
 
-- **T1a - REMOVE a draw call (cheapest, validates the KV3 risk).** Decode MDAT
-  (`m_sceneObjects[].m_drawCalls`), drop the draw call whose `m_material` is the
-  target garment, re-encode MDAT with `morphic::encode_kv3_resource` (v4
-  uncompressed), splice with `resource::rebuild_with_block`, pack. No new encoders
-  needed - reuses the KV3 writer + block rebuild we already have. If this loads
-  in-game (the garment disappears), the model-KV3 rewrite path is proven and
-  everything below is unblocked. **Do this first.**
+1. **The lossy `Value`-tree KV3 re-encode does NOT work for model blocks.** Our
+   `kv3::encode` (v4 uncompressed) faithfully round-trips at the `Value` level and
+   VRF reads its output, but the *engine* substitutes the ERROR placeholder model.
+   Cause: the writer drops KV3 **value flags** (model `MDAT` carries the `resource`
+   flag on `m_material`, 6 of them) and flattens **auxiliary-buffer typed arrays**
+   (`MDAT` has ~499; node type 25) to generic arrays. soundevents had neither, which
+   is why the same writer was fine there (spike Phase 4) but not here. Confirmed
+   in-game: an *identity* re-encode (no edit) via the lossy writer also ERROR'd.
+2. **A byte-faithful re-wrap loads.** Decompressing the original block's buffers and
+   re-emitting them verbatim, only **uncompressed** (`compressionMethod = 0`, same
+   v5 layout), preserves every flag/typed-array byte. The engine loads + renders
+   that (confirmed: identity re-wrap of all 10 MDAT blocks loaded normally in-game).
+
+So removal does **not** re-encode from the tree. The shipped path:
+- `kv3::rewrap_uncompressed` - decompress + re-emit the block uncompressed, byte-faithful.
+- `kv3::neutralize_draw_calls` - on the re-wrapped (uncompressed) block, walk the KV3
+  tree tracking absolute byte offsets and **zero the target draw calls'
+  `m_nIndexCount` in place** (a 0-index draw submits no primitives). Only those few
+  ints change; flags/typed-arrays/structure are untouched.
+- `model::remove_draw_calls_by_material` - find matching draw calls per `MDAT`
+  (all LODs), neutralize, splice with `resource::rebuild_with_block`, return a report.
+- core `remove_model_material` / `model_draw_call_targets`; CLI `vpkmerge model edit
+  --list-drawcalls` and `--remove-material <NEEDLE> --encode-vpk OUT`. (Diagnostic
+  `--reencode-mdat` does the identity re-wrap, used to split the failure above.)
+
+Gates:
+- **Offline (CI): PASSED.** `mdat_rewrap_uncompressed_is_value_faithful` (re-wrap ==
+  same tree, uncompressed), `neutralizing_dress_zeros_only_its_index_count` (only the
+  dress `m_nIndexCount` -> 0, every other byte identical), `find_dress_draw_call_locates_it`.
+- **Gated full-model: PASSED.** `tests/model_local.rs::remove_material_round_trips_local`
+  neutralizes all 4 dress draw calls (body LOD0-3), total indices 426927 -> 331290,
+  every other primitive's indices and all vertex buffers byte-identical.
+- **In-game: PASSED (addon `pak92`).** Vindicta loads and renders, dress gone, no
+  ERROR. So the engine (a) accepts our byte-faithful model-KV3 edit and (b) tolerates
+  a 0-index draw call. The model-KV3 rewrite path is proven; T1b->T1d unblocked.
+
+Caveats / notes:
+- VRF's *glTF exporter* throws on a 0-index draw call (glTF forbids zero-length
+  accessors); that is an export-format rule, not a load rule - VRF's loader and the
+  game both accept it. So the addon can't be re-exported to glb, only loaded.
+- Neutralize leaves the draw call in place (count 0) and its now-unreferenced geometry
+  in the buffers (dead bytes, not drawn). A *true* structural delete (shrinking the
+  `m_drawCalls` array) would need a faithful KV3 structural editor (recompute lane
+  counts/sizes); not built - unnecessary for hiding a part.
+- **Content fact:** `vindicta_dress.vmat`'s draw call is the dress fabric **and** the
+  body/torso skin fused as one draw call (45029 verts / 95637 idx). Draw-call removal
+  is all-or-nothing per material, so removing it drops the torso too. Removing *only*
+  the fabric while keeping the body is not possible via draw-call removal (the game's
+  model does not separate them); it needs mesh surgery or the texture route.
 
 ### Then build, in order (T1b -> T1d)
 - **T1b - meshopt index encoder.** `meshopt::encode_index_buffer` (inverse of the
@@ -224,17 +266,27 @@ blocks. So:
   buffer registry (`m_nElementCount`, `m_nElementSizeInBytes`, `m_nBlockIndex`,
   `m_inputLayoutFields` for the new layout), MDAT draw calls (new counts / start
   index / base vertex / material), DATA LOD masks + bounds, and RERL (add the new
-  `.vmat_c` to external refs). Re-encode each KV3 (v4), then rebuild the container
-  swapping MVTX+MIDX+MDAT (and adding blocks if vertex/index buffers grow) - this
-  needs a **multi-block / add-block** generalization of `rebuild_with_block` (it
-  currently swaps one same-or-different-size block in place). Package the new
-  `.vmat_c` + textures into the addon VPK alongside the model (reuse `pack`).
+  `.vmat_c` to external refs). **CRITICAL (learned in T1a): do NOT use the lossy
+  `kv3::encode` / `encode_kv3_resource` writer for model KV3 blocks - the engine
+  rejects it** (it drops value flags + auxiliary-buffer typed arrays; ERROR model).
+  Either (a) edit values *in place* on a `kv3::rewrap_uncompressed` block when the
+  edit doesn't change structure (the T1a approach, extended via the `kv3::patch`
+  walker to set fields, not just zero them), or (b) build a **faithful KV3 writer**
+  that preserves flags + typed-array node types (a real new piece of work) for
+  structural changes (adding draw calls / array elements). Then rebuild the container
+  swapping MVTX+MIDX+MDAT (and adding blocks if buffers grow) - needs a multi-block /
+  add-block generalization of `rebuild_with_block`. Package the new `.vmat_c` +
+  textures into the addon VPK alongside the model (reuse `pack`).
 
 ### Reuse (already built)
-meshopt **vertex** encoder; KV3 v4 writer (`encode_kv3_resource`, engine-accepted
-for soundevents); `resource::rebuild_with_block`; the `gltf` reader (positions/
-normals/uv/joints/weights); `vbib` layout parsing; `pack`. The glb edit-export
-(Tier 0.5) is the artist's starting point for the new mesh.
+meshopt **vertex** encoder; `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
+(byte-faithful uncompressed re-emit, engine-accepted for model blocks) +
+`kv3::patch`/`neutralize_draw_calls` (in-place scalar edits with absolute-offset
+walking); the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout
+parsing; `pack`. The glb edit-export (Tier 0.5) is the artist's starting point for
+the new mesh. **Note:** the `kv3::encode` v4 writer is engine-accepted for
+*soundevents* but **NOT** for *model* blocks (see T1a); use `rewrap_uncompressed` +
+in-place patch for models.
 
 ### Scope notes
 - "Replace one mesh part wholesale" (new dress buffer of any vertex count + its

@@ -20,6 +20,7 @@ mod math;
 mod mesh;
 mod pose;
 mod skeleton;
+mod topology;
 mod vbib;
 
 #[cfg(test)]
@@ -35,6 +36,10 @@ pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};
 pub use pose::{bake_pose, bake_pose_from};
 pub use skeleton::{Bone, Skeleton};
+pub use topology::{
+    draw_call_targets, reencode_all_mdat_identity, remove_draw_calls_by_material, DrawCallInfo,
+    RemovedDrawCall,
+};
 
 use crate::error::DecodeError;
 use crate::resource::Resource;

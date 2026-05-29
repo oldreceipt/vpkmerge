@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::{mesh, skeleton};
+use super::{mesh, skeleton, topology};
 use crate::kv3::{self, Value};
 
 #[derive(Deserialize)]
@@ -208,6 +208,111 @@ fn body_draw_calls_match_golden() {
 
     approx3(smin, body.scene_min, "body scene min");
     approx3(smax, body.scene_max, "body scene max");
+}
+
+/// Re-encoding the body `MDAT` as uncompressed KV3 v4 and decoding it again must
+/// reproduce the exact same tree. This is the offline crux for Tier 1a: it proves
+/// the KV3 writer faithfully round-trips a *model* metadata block (not just the
+/// soundevents `tests/kv3.rs` already covers), which is what lets a re-encoded
+/// `MDAT` splice back in. Source 2 reads the uncompressed buffer; the in-game
+/// confirm (a removed draw call) is tracked in `docs/handoff-model-edit.md`.
+#[test]
+fn mdat_reencodes_round_trip() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let format = kv3::Format::from_payload(&bytes).expect("read kv3 format guid");
+    let tree = kv3::decode(&bytes).expect("decode mdat");
+
+    let reencoded = kv3::encode(&tree, &format);
+    let back = kv3::decode(&reencoded).expect("decode re-encoded mdat");
+
+    assert_eq!(tree, back, "MDAT tree changed across encode/decode");
+}
+
+/// The faithful uncompressed re-wrap decodes to the exact same tree as the
+/// original compressed block, and is genuinely uncompressed (larger, compression
+/// method 0). Unlike the lossy `kv3::encode` round-trip, this preserves the
+/// original type stream verbatim (value flags + typed-array tags), which the
+/// engine's model loader needs (see `docs/handoff-model-edit.md` T1a).
+#[test]
+fn mdat_rewrap_uncompressed_is_value_faithful() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    let rewrapped = kv3::rewrap_uncompressed(&bytes).expect("rewrap");
+    assert!(
+        rewrapped.len() > bytes.len(),
+        "uncompressed re-wrap should be larger than the LZ4 original"
+    );
+    // compressionMethod field (offset 20) must be 0.
+    assert_eq!(
+        u32::from_le_bytes([rewrapped[20], rewrapped[21], rewrapped[22], rewrapped[23]]),
+        0,
+        "re-wrap must be uncompressed"
+    );
+
+    let back = kv3::decode(&rewrapped).expect("decode re-wrapped");
+    assert_eq!(original, back, "re-wrap changed the decoded tree");
+}
+
+/// `find_matching_draw_calls` locates the dress draw call in the body `MDAT` at
+/// its `(scene_object, draw_call)` indices without mutating anything.
+#[test]
+fn find_dress_draw_call_locates_it() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let tree = kv3::decode(&bytes).expect("decode mdat");
+
+    let matches = |m: &str| m.to_ascii_lowercase().contains("vindicta_dress");
+    let found = topology::find_matching_draw_calls(&tree, &matches);
+
+    assert_eq!(found.len(), 1, "exactly one dress draw call");
+    assert_eq!(
+        (found[0].scene_object, found[0].draw_call),
+        (0, 2),
+        "dress is scene object 0, draw call 2"
+    );
+    assert!(found[0].material.contains("vindicta_dress"));
+    assert!(found[0].index_count > 0, "dress carries indices");
+}
+
+/// Neutralizing the dress draw call zeros exactly its `m_nIndexCount` and leaves
+/// every other byte of the block's decoded tree identical. This is the in-place,
+/// byte-faithful edit (no lossy re-encode) that the engine's model loader accepts:
+/// the draw call survives but submits zero primitives, so the dress stops drawing.
+#[test]
+fn neutralizing_dress_zeros_only_its_index_count() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    // Dress is scene object 0, draw call 2 (see find_dress_draw_call_locates_it).
+    let patched = kv3::neutralize_draw_calls(&bytes, &[(0, 2)]).expect("neutralize");
+    let edited = kv3::decode(&patched).expect("decode patched");
+
+    // Expected tree: the original with scene object 0 / draw call 2's
+    // m_nIndexCount set to 0, and nothing else changed.
+    let mut expected = original.clone();
+    let dress = expected
+        .get_mut("m_sceneObjects")
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(0),
+            _ => None,
+        })
+        .and_then(|so| so.get_mut("m_drawCalls"))
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(2),
+            _ => None,
+        })
+        .expect("locate dress draw call");
+    let idx = dress.get_mut("m_nIndexCount").expect("m_nIndexCount field");
+    assert!(
+        matches!(idx, Value::Int(n) if *n > 0),
+        "dress index count should start positive, got {idx:?}"
+    );
+    *idx = Value::Int(0);
+
+    assert_eq!(
+        edited, expected,
+        "only the dress m_nIndexCount changed to 0"
+    );
 }
 
 #[test]
