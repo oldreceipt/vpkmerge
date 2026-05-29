@@ -19,6 +19,7 @@ pub mod model;
 pub mod portrait;
 pub use model::{
     export_hero_model, export_model, inspect_models, AnimOptions, ModelEntry, ModelInfo,
+    PoseSelection, DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 

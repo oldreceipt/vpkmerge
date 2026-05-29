@@ -368,18 +368,14 @@ fn deinterleave(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<VertexBuf
             }
             "TANGENT" => standalone_tangent = Some(buf.vector4(f)?),
             "TEXCOORD" => out.texcoords.push(buf.vector2(f)?),
-            "BLENDINDICES"
-                if remap.is_some()
-                    || buf.fields.iter().any(|x| x.semantic_name == "BLENDWEIGHT") =>
-            {
-                out.joints = pack4(&buf.blend_indices(f, remap)?);
-            }
-            "BLENDWEIGHT" | "BLENDWEIGHTS" if remap.is_some() => {
-                out.weights = buf.blend_weights(f)?;
-            }
+            // BLENDINDICES + BLENDWEIGHT are reconciled together after the loop.
             _ => {}
         }
     }
+
+    let (joints, weights) = decode_skinning(buf, remap)?;
+    out.joints = joints;
+    out.weights = weights;
 
     // A separately-stored tangent only applies when the normal did not already
     // carry one (uncompressed-normal meshes), matching VRF accessor precedence.
@@ -392,12 +388,103 @@ fn deinterleave(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<VertexBuf
     Ok(out)
 }
 
-/// Repacks a flat 4-per-vertex joint stream into `[u16; 4]` rows. Eight-bone
-/// formats are out of scope for v1 (no Deadlock hero uses them).
-fn pack4(flat: &[u16]) -> Vec<[u16; 4]> {
-    flat.chunks_exact(4)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect()
+/// Per-vertex skin influences reduced to glTF's 4-bone shape: joints paired
+/// with their matching weights, one row per vertex.
+type SkinAttrs = (Vec<[u16; 4]>, Vec<[f32; 4]>);
+
+/// Decodes `BLENDINDICES` + `BLENDWEIGHT` into 4-influence-per-vertex joints and
+/// weights. Source 2 hero meshes may carry up to 8 influences (an 8-wide
+/// `BLENDINDICES` paired with an `R16G16B16A16_UNORM` weight stream of 8 `u8`s);
+/// the glTF pipeline downstream is fixed at 4, so a vertex with more than 4
+/// influences keeps its 4 highest-weight bones and renormalizes. Gating mirrors
+/// the previous accessor handling: joints are emitted when the mesh is remapped
+/// or carries weights; weights only when the mesh is actually skinned (remap
+/// present).
+fn decode_skinning(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<SkinAttrs, DecodeError> {
+    let idx_field = buf
+        .fields
+        .iter()
+        .find(|f| f.semantic_name == "BLENDINDICES");
+    let wt_field = buf
+        .fields
+        .iter()
+        .find(|f| f.semantic_name == "BLENDWEIGHT" || f.semantic_name == "BLENDWEIGHTS");
+
+    let want_joints = remap.is_some() || wt_field.is_some();
+    let (Some(idx_field), true) = (idx_field, want_joints && buf.element_count > 0) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+
+    let joints_flat = buf.blend_indices(idx_field, remap)?;
+    let lanes = joints_flat.len() / buf.element_count;
+
+    // Weights only when the mesh is actually skinned.
+    let Some(wt_field) = wt_field.filter(|_| remap.is_some()) else {
+        // Joints without weights: keep the first 4 influences in lane order.
+        let joints = (0..buf.element_count)
+            .map(|i| {
+                let b = i * lanes;
+                [
+                    joints_flat[b],
+                    joints_flat[b + 1],
+                    joints_flat[b + 2],
+                    joints_flat[b + 3],
+                ]
+            })
+            .collect();
+        return Ok((joints, Vec::new()));
+    };
+
+    let weights_flat = buf.blend_weights(wt_field)?;
+    if weights_flat.len() / buf.element_count != lanes {
+        return Err(DecodeError::Model("BLENDINDICES/BLENDWEIGHT lane mismatch"));
+    }
+
+    let mut joints = Vec::with_capacity(buf.element_count);
+    let mut weights = Vec::with_capacity(buf.element_count);
+    for i in 0..buf.element_count {
+        let base = i * lanes;
+        let js = &joints_flat[base..base + lanes];
+        let ws = &weights_flat[base..base + lanes];
+        if lanes <= 4 {
+            // 4-influence fast path: preserve lane order and the on-disk weights
+            // verbatim (no reorder, no renormalize) so existing meshes stay
+            // bit-identical.
+            joints.push([js[0], js[1], js[2], js[3]]);
+            weights.push([ws[0], ws[1], ws[2], ws[3]]);
+        } else {
+            let (j, w) = top4(js, ws);
+            joints.push(j);
+            weights.push(w);
+        }
+    }
+    Ok((joints, weights))
+}
+
+/// Picks the 4 highest-weight influences of a >4-wide vertex and renormalizes
+/// them to sum 1. The sort is stable, so equal weights keep their lane order.
+fn top4(joints: &[u16], weights: &[f32]) -> ([u16; 4], [f32; 4]) {
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|&a, &b| {
+        weights[b]
+            .partial_cmp(&weights[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut j = [0u16; 4];
+    let mut w = [0f32; 4];
+    let mut sum = 0.0f32;
+    for (slot, &lane) in order.iter().take(4).enumerate() {
+        j[slot] = joints[lane];
+        w[slot] = weights[lane];
+        sum += weights[lane];
+    }
+    if sum > 0.0 {
+        for x in &mut w {
+            *x /= sum;
+        }
+    }
+    (j, w)
 }
 
 fn int_field(o: &Value, key: &str) -> Result<usize, DecodeError> {
@@ -418,4 +505,74 @@ fn read_vec3(v: Option<&Value>) -> Option<[f32; 3]> {
         a[1].as_f64()? as f32,
         a[2].as_f64()? as f32,
     ])
+}
+
+#[cfg(test)]
+mod skinning_tests {
+    use super::super::dxgi::DxgiFormat;
+    use super::*;
+
+    fn field(name: &str, format: DxgiFormat, offset: usize) -> InputLayoutField {
+        InputLayoutField {
+            semantic_name: name.to_string(),
+            semantic_index: 0,
+            format,
+            offset,
+        }
+    }
+
+    /// An 8-influence vertex (Dynamo/Apollo shape) is reduced to its 4
+    /// highest-weight bones, in descending order, renormalized to sum 1.
+    #[test]
+    fn eight_influence_keeps_top_four_and_renormalizes() {
+        let mut data = vec![0u8; 16];
+        data[0..8].copy_from_slice(&[10, 11, 12, 13, 14, 15, 16, 17]); // BLENDINDICES (8x u8)
+        data[8..16].copy_from_slice(&[100, 60, 40, 30, 20, 5, 0, 0]); // BLENDWEIGHT (8x u8, sum 255)
+        let buf = OnDiskBuffer {
+            data,
+            element_count: 1,
+            element_size: 16,
+            fields: vec![
+                field("BLENDINDICES", DxgiFormat::R16G16B16A16Uint, 0),
+                field("BLENDWEIGHT", DxgiFormat::R16G16B16A16Unorm, 8),
+            ],
+        };
+        let remap: Vec<usize> = (0..32).collect();
+        let (joints, weights) = decode_skinning(&buf, Some(&remap)).unwrap();
+
+        assert_eq!(joints, vec![[10, 11, 12, 13]]);
+        let w = weights[0];
+        let total: f32 = w.iter().sum();
+        assert!((total - 1.0).abs() < 1e-6, "renormalized to 1: {w:?}");
+        let expect = [100.0 / 230.0, 60.0 / 230.0, 40.0 / 230.0, 30.0 / 230.0];
+        for (a, b) in w.iter().zip(expect) {
+            assert!((a - b).abs() < 1e-6, "{w:?} vs {expect:?}");
+        }
+    }
+
+    /// A 4-influence vertex passes through untouched: lane order preserved and
+    /// the on-disk weights kept verbatim (no reorder, no renormalize).
+    #[test]
+    fn four_influence_passes_through_unchanged() {
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&[5, 6, 7, 8]); // BLENDINDICES R8G8B8A8_UINT
+        data[4..8].copy_from_slice(&[128, 64, 63, 0]); // BLENDWEIGHT R8G8B8A8_UNORM (sum 255)
+        let buf = OnDiskBuffer {
+            data,
+            element_count: 1,
+            element_size: 8,
+            fields: vec![
+                field("BLENDINDICES", DxgiFormat::R8G8B8A8Uint, 0),
+                field("BLENDWEIGHT", DxgiFormat::R8G8B8A8Unorm, 4),
+            ],
+        };
+        let remap: Vec<usize> = (0..16).collect();
+        let (joints, weights) = decode_skinning(&buf, Some(&remap)).unwrap();
+
+        assert_eq!(joints, vec![[5, 6, 7, 8]]);
+        let expect = [128.0 / 255.0, 64.0 / 255.0, 63.0 / 255.0, 0.0];
+        for (a, b) in weights[0].iter().zip(expect) {
+            assert!((a - b).abs() < 1e-6, "{:?} vs {expect:?}", weights[0]);
+        }
+    }
 }

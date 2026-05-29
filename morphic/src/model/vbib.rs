@@ -247,6 +247,9 @@ impl OnDiskBuffer {
                     f32::from(self.i16_at(o)?) / 32767.0,
                     f32::from(self.i16_at(o + 2)?) / 32767.0,
                 ],
+                // A 1-component texcoord (the V channel is implicit); read the
+                // single float and zero-fill, matching VRF's component-count read.
+                DxgiFormat::R32Float => [self.f32_at(o)?, 0.0],
                 _ => return Err(DecodeError::Model("unexpected vec2 format")),
             };
             out.push(v);
@@ -379,31 +382,34 @@ impl OnDiskBuffer {
         Ok(out)
     }
 
-    /// `BLENDWEIGHT(S)`, four weights per vertex. Mirrors
-    /// `VBIB.GetBlendWeightsArray` for the 4-bone formats.
-    pub fn blend_weights(&self, attr: &InputLayoutField) -> Result<Vec<[f32; 4]>, DecodeError> {
-        let mut out = Vec::with_capacity(self.element_count);
+    /// `BLENDWEIGHT(S)`, flat weights at the format's native influence width (4
+    /// or 8 per vertex). Mirrors `VBIB.GetBlendWeightsArray`. The 8-influence
+    /// stream is an `R16G16B16A16_UNORM`-tagged block of 8 `u8`s, paired with the
+    /// matching 8-wide `R16G16B16A16_UINT` / `R32G32B32A32_SINT` indices that
+    /// `blend_indices` already reads. Width is recoverable as `len / count`.
+    pub fn blend_weights(&self, attr: &InputLayoutField) -> Result<Vec<f32>, DecodeError> {
+        let mut out = Vec::with_capacity(self.element_count * 4);
         for i in 0..self.element_count {
             let o = i * self.element_size + attr.offset;
-            let w = match attr.format {
-                DxgiFormat::R8G8B8A8Unorm => [
-                    f32::from(self.u8_at(o)?) / 255.0,
-                    f32::from(self.u8_at(o + 1)?) / 255.0,
-                    f32::from(self.u8_at(o + 2)?) / 255.0,
-                    f32::from(self.u8_at(o + 3)?) / 255.0,
-                ],
+            match attr.format {
+                DxgiFormat::R8G8B8A8Unorm => {
+                    for k in 0..4 {
+                        out.push(f32::from(self.u8_at(o + k)?) / 255.0);
+                    }
+                }
                 DxgiFormat::R16G16Unorm => {
-                    let packed = u32::from_le_bytes(read_n::<4>(&self.data, o)?);
-                    [
-                        f32::from((packed & 0xFFFF) as u16) / 65535.0,
-                        f32::from((packed >> 16) as u16) / 65535.0,
-                        0.0,
-                        0.0,
-                    ]
+                    out.push(f32::from(self.u16_at(o)?) / 65535.0);
+                    out.push(f32::from(self.u16_at(o + 2)?) / 65535.0);
+                    out.push(0.0);
+                    out.push(0.0);
+                }
+                DxgiFormat::R16G16B16A16Unorm => {
+                    for k in 0..8 {
+                        out.push(f32::from(self.u8_at(o + k)?) / 255.0);
+                    }
                 }
                 _ => return Err(DecodeError::Model("unexpected BLENDWEIGHT format")),
-            };
-            out.push(w);
+            }
         }
         Ok(out)
     }

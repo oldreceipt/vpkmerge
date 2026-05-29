@@ -17,6 +17,7 @@ mod dxgi;
 mod glb;
 mod math;
 mod mesh;
+mod pose;
 mod skeleton;
 mod vbib;
 
@@ -27,6 +28,7 @@ pub use animation::{BoneTrack, Clip};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{MeshPart, Primitive, VertexBuffer};
+pub use pose::{bake_pose, bake_pose_from};
 pub use skeleton::{Bone, Skeleton};
 
 use crate::error::DecodeError;

@@ -24,6 +24,24 @@ impl std::ops::Add for Vec3 {
     }
 }
 
+impl Vec3 {
+    /// Unit-length version, or the input unchanged when it is (near) zero length.
+    /// Used to renormalize skinned normals/tangents after a pose bake.
+    #[must_use]
+    pub fn normalized(self) -> Vec3 {
+        let len = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        if len > 1e-8 {
+            Vec3 {
+                x: self.x / len,
+                y: self.y / len,
+                z: self.z / len,
+            }
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Quat {
     pub x: f32,
@@ -132,6 +150,51 @@ impl Mat4 {
                     + a[row * 4 + 2] * b[8 + col]
                     + a[row * 4 + 3] * b[12 + col];
             }
+        }
+        Mat4 { m: out }
+    }
+
+    /// Transforms a point: `v' = v * self` with an implied `w = 1`, so the
+    /// translation in row 3 applies. Row-vector convention, matching [`Mat4::mul`].
+    #[must_use]
+    pub fn transform_point(&self, v: Vec3) -> Vec3 {
+        let m = &self.m;
+        Vec3 {
+            x: v.x * m[0] + v.y * m[4] + v.z * m[8] + m[12],
+            y: v.x * m[1] + v.y * m[5] + v.z * m[9] + m[13],
+            z: v.x * m[2] + v.y * m[6] + v.z * m[10] + m[14],
+        }
+    }
+
+    /// Transforms a direction: like [`Mat4::transform_point`] but with `w = 0`,
+    /// so the translation row is ignored (for normals/tangents).
+    #[must_use]
+    pub fn transform_vector(&self, v: Vec3) -> Vec3 {
+        let m = &self.m;
+        Vec3 {
+            x: v.x * m[0] + v.y * m[4] + v.z * m[8],
+            y: v.x * m[1] + v.y * m[5] + v.z * m[9],
+            z: v.x * m[2] + v.y * m[6] + v.z * m[10],
+        }
+    }
+
+    /// Every element scaled by `s`. Used to weight a joint matrix before summing
+    /// it into a linear-blend-skinning accumulator.
+    #[must_use]
+    pub fn scaled(&self, s: f32) -> Mat4 {
+        let mut out = self.m;
+        for v in &mut out {
+            *v *= s;
+        }
+        Mat4 { m: out }
+    }
+
+    /// Element-wise sum, the accumulate step of linear-blend skinning.
+    #[must_use]
+    pub fn add(&self, b: &Mat4) -> Mat4 {
+        let mut out = self.m;
+        for (o, x) in out.iter_mut().zip(b.m.iter()) {
+            *o += *x;
         }
         Mat4 { m: out }
     }

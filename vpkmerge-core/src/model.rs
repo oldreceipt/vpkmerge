@@ -8,6 +8,21 @@ use std::path::Path;
 
 pub use morphic::model::{BlockSummary, ModelInfo};
 
+/// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
+/// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
+/// Abrams/McGinnis/Haze use `hero_pose` / `hero_roster_pose` / `hero_roster_ready`),
+/// so try the curated roster poses first, then fall back to progressively more
+/// generic idles, so any hero bakes a sensible still.
+pub const DEFAULT_POSE_CLIPS: [&str; 7] = [
+    "ui_hero_pose",
+    "hero_pose",
+    "hero_roster_pose",
+    "hero_roster_ready",
+    "ui_hero_select",
+    "idle_loadout",
+    "primary_stand_idle",
+];
+
 /// Animation-clip selection for model export. By default every clip the model
 /// carries is exported; these narrow that.
 #[derive(Debug, Clone, Default)]
@@ -17,6 +32,20 @@ pub struct AnimOptions {
     /// When non-empty, keep only clips whose name appears here. Ignored if
     /// [`AnimOptions::no_anim`] is set (no-anim wins).
     pub clips: Vec<String>,
+    /// Bake a single frame into the mesh as static geometry. When set it wins
+    /// over [`AnimOptions::no_anim`] and [`AnimOptions::clips`]: the output is a
+    /// plain posed mesh with no skeleton, skin, or clips.
+    pub pose: Option<PoseSelection>,
+}
+
+/// A single-frame pose to bake into the mesh (see [`morphic::model::bake_pose`]).
+#[derive(Debug, Clone, Default)]
+pub struct PoseSelection {
+    /// Candidate clip names in priority order; the first the model carries wins.
+    /// Empty means use [`DEFAULT_POSE_CLIPS`].
+    pub clips: Vec<String>,
+    /// Frame index to sample (clamped to the clip's range).
+    pub frame: usize,
 }
 
 impl AnimOptions {
@@ -115,7 +144,35 @@ fn export_resolved(
     let bytes =
         read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
     let mut model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
-    anim.apply(&mut model.animations);
+
+    if let Some(pose) = &anim.pose {
+        let candidates: Vec<&str> = if pose.clips.is_empty() {
+            DEFAULT_POSE_CLIPS.to_vec()
+        } else {
+            pose.clips.iter().map(String::as_str).collect()
+        };
+        // Skin mods ship the mesh + rig but no animation clips (those live in the
+        // base game). When this model carries none of the candidate clips, source
+        // them from the same entry in the base pak (vpks after the first) and map
+        // by bone name. Same hero, same rig, so no cross-hero retargeting.
+        let has_own_clip = candidates.iter().any(|c| {
+            model
+                .animations
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case(c))
+        });
+        model = if has_own_clip {
+            morphic::model::bake_pose(&model, &candidates, pose.frame)
+        } else if let Some(donor_bytes) = read_entry(&vpks[1..], entry) {
+            let donor = morphic::model::decode(&donor_bytes)
+                .with_context(|| format!("decoding base clips for {entry}"))?;
+            morphic::model::bake_pose_from(&model, &donor, &candidates, pose.frame)
+        } else {
+            morphic::model::bake_pose(&model, &candidates, pose.frame)
+        };
+    } else {
+        anim.apply(&mut model.animations);
+    }
 
     let resolver = VpkResolver { vpks };
     let glb = morphic::model::to_glb_textured(&model, &resolver)

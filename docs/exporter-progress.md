@@ -11,6 +11,37 @@ authority is `vmdl-glb-exporter-handoff.md` (+ `vmdl-glb-exporter.md`); this fil
 tracks what is built, what was learned, and how to continue. You do NOT touch
 the Grimoire/Electron side.
 
+## Post-M7 additions (v0.6.0)
+
+- **Static posed export (`--pose`).** `morphic::model::bake_pose(model, clips, frame)`
+  folds one animation frame into the vertices by linear-blend skinning, returning
+  a static `Model` (empty skeleton, no JOINTS/WEIGHTS, no clips) so the GLB writer
+  emits a plain mesh. It samples the first matching clip from a priority list
+  (default `ui_hero_pose` -> `ui_hero_select` -> `idle_loadout` ->
+  `primary_stand_idle`), runs FK on each hero's own skeleton, and uses
+  `skin[b] = inverse_bind[b] * posed_global[b]` (so a bind-pose frame bakes to the
+  identity, leaving vertices untouched: the unit-test invariant). Buffers with no
+  joints pass through, so a bone-rigged held prop (the gun, weighted to
+  `weapon_bone`) follows the pose while loose decor stays put. CLI:
+  `model export --pose [CLIP[@FRAME]]`, exclusive with `--clip` / `--no-anim`.
+  This is for a lightweight still preview (a hero card) instead of shipping the
+  multi-megabyte animated rig; no cross-hero retargeting because each hero is
+  posed with its own clip on its own skeleton.
+- **Skin mods carry no clips.** A skin VPK ships the mesh + rig + textures but
+  not the animation clips (those live in the base game `.vmdl_c`), so `--pose` on
+  a skin alone falls back to the bind pose. `bake_pose_from(model, donor, ...)`
+  pulls the clip from the base entry (read from `--base`) and maps it onto the
+  skin skeleton **by bone name**; vpkmerge-core does this automatically when the
+  skin lacks the requested clip. Same hero = same rig, so it is not the cross-hero
+  retarget hazard. Verified: the Wraith and a Vindicta skin pose from base
+  `ui_hero_pose`; Vampire Bat (`vampirebat`) has no clips even in base, so it
+  stays bind.
+- **Glow-effect shells dropped.** Extends the `*_outline` drop (below) to
+  Deadlock's additive glow shells (mesh part `ghost_glow`, `*_glow` materials),
+  which collapse to an opaque "white halo" as plain glTF geometry. `is_shell`
+  covers both; `*_noglow` (a normal material with glow off, e.g.
+  `astro_barrelv2_noglow`) is explicitly kept.
+
 ## Working cadence (user's choice)
 
 Checkpoint per milestone: implement, get green against the VRF oracle, commit,

@@ -3,8 +3,8 @@ use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
     export_hero_model, export_model, extract_portraits, inspect_models, merge, split, AnimOptions,
-    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, SoundEvents,
-    SplitOptions, SplitOutput,
+    CollisionPolicy, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection,
+    SoundEvents, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -165,6 +165,19 @@ struct ModelExportArgs {
     #[arg(long, value_name = "NAME")]
     clip: Vec<String>,
 
+    /// Bake a single frame into the mesh as a static posed `.glb` (no skeleton,
+    /// skin, or clips). Optional value `CLIP[@FRAME]`: omit the clip to try the
+    /// default menu/idle poses, append `@N` to pick a frame (default 0). E.g.
+    /// `--pose`, `--pose ui_hero_pose`, `--pose idle_loadout@5`.
+    #[arg(
+        long,
+        value_name = "CLIP[@FRAME]",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["no_anim", "clip"]
+    )]
+    pose: Option<String>,
+
     /// Output `.glb` path.
     #[arg(long, value_name = "FILE")]
     out: PathBuf,
@@ -255,11 +268,32 @@ fn main() -> Result<()> {
     }
 }
 
+/// Parses a `--pose` value `CLIP[@FRAME]` into a [`PoseSelection`]. An empty clip
+/// part means "use the default candidate poses"; the frame defaults to 0.
+fn parse_pose(spec: &str) -> Result<PoseSelection> {
+    let (clip, frame) = match spec.split_once('@') {
+        Some((c, f)) => (
+            c,
+            f.parse::<usize>()
+                .with_context(|| format!("--pose frame `{f}` is not a non-negative integer"))?,
+        ),
+        None => (spec, 0),
+    };
+    let clips = if clip.is_empty() {
+        Vec::new()
+    } else {
+        vec![clip.to_string()]
+    };
+    Ok(PoseSelection { clips, frame })
+}
+
 fn run_model(args: ModelCmd) -> Result<()> {
     if let Some(ModelAction::Export(e)) = args.action {
+        let pose = e.pose.as_deref().map(parse_pose).transpose()?;
         let anim = AnimOptions {
             no_anim: e.no_anim,
             clips: e.clip.clone(),
+            pose,
         };
         match (&e.entry, &e.hero) {
             (Some(entry), _) => export_model(&e.vpk, entry, e.base.as_deref(), &anim, &e.out)

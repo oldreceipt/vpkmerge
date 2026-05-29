@@ -171,6 +171,104 @@ fn export_glb_from_env() {
     );
 }
 
+/// Lists hero body-model entries in a VPK: `<dir>/<name>/<name>.vmdl_c` under a
+/// `models/heroes*` path (the body model convention, skipping LODs/backups/props).
+/// Set `MORPHIC_DIAG_VPK`; skipped otherwise. Cheap (path listing only, no decode).
+#[test]
+fn list_heroes() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut hits: Vec<String> = vpk
+        .file_paths()
+        .filter(|p| p.ends_with(".vmdl_c") && p.contains("/heroes"))
+        .filter(|p| {
+            let stem = p
+                .rsplit('/')
+                .next()
+                .unwrap_or(p)
+                .trim_end_matches(".vmdl_c");
+            let parent = p.rsplit('/').nth(1).unwrap_or("");
+            stem == parent
+        })
+        .cloned()
+        .collect();
+    hits.sort();
+    hits.dedup();
+    for h in &hits {
+        eprintln!("HERO {h}");
+    }
+    eprintln!("HEROCOUNT {}", hits.len());
+}
+
+/// Lists EVERY `.vmdl_c` under `/heroes` (minus obvious non-body parts), for
+/// finding a hero's real/current body model (which may be in a `_vN` dir, e.g.
+/// `hornet_v3/hornet.vmdl_c`). Set `MORPHIC_DIAG_VPK`; optional `MORPHIC_DIAG_GREP`
+/// filters by substring. Cheap (path listing only).
+#[test]
+fn list_hero_vmdl_all() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let needle = std::env::var("MORPHIC_DIAG_GREP")
+        .unwrap_or_default()
+        .to_lowercase();
+    let skip = [
+        "_lod",
+        "lod0",
+        "lod1",
+        "lod2",
+        "lod3",
+        "backup",
+        "/clips/",
+        "abilities",
+        "particle",
+        "/materials/",
+        "_dbg",
+        "destruction",
+    ];
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut hits: Vec<String> = vpk
+        .file_paths()
+        .filter(|p| p.ends_with(".vmdl_c") && p.contains("/heroes"))
+        .filter(|p| {
+            let lc = p.to_lowercase();
+            !skip.iter().any(|s| lc.contains(s)) && (needle.is_empty() || lc.contains(&needle))
+        })
+        .cloned()
+        .collect();
+    hits.sort();
+    hits.dedup();
+    for h in &hits {
+        eprintln!("VMDL {h}");
+    }
+    eprintln!("VMDLCOUNT {}", hits.len());
+}
+
+/// Lists the animation clips a model carries. Set `MORPHIC_DIAG_VPK`
+/// (+ optional `MORPHIC_DIAG_ENTRY`); skipped otherwise. Diagnostic for picking a
+/// `--pose` clip.
+#[test]
+fn list_clips() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_DIAG_VPK") else {
+        eprintln!("MORPHIC_DIAG_VPK not set; skipping");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_DIAG_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("entry");
+    let bytes = vf.read_all().expect("read");
+    let model = morphic::model::decode(&bytes).expect("decode");
+    eprintln!("CLIPS {} ({} total):", entry, model.animations.len());
+    for c in &model.animations {
+        eprintln!("  {} ({} frames)", c.name, c.frame_count);
+    }
+}
+
 #[test]
 fn decode_hornet_local() {
     let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
@@ -277,6 +375,13 @@ fn decode_hornet_local() {
     assert_glb_roundtrip(&model);
 }
 
+/// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
+/// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
+fn is_shell(s: &str) -> bool {
+    let lc = s.to_ascii_lowercase();
+    lc.contains("outline") || (lc.contains("glow") && !lc.contains("noglow"))
+}
+
 /// M5a: write the `.glb`, re-read it with the `gltf` crate (which validates the
 /// container + accessors), and confirm the structure survived. The file is left
 /// at `MORPHIC_GLB_OUT` (default /tmp/hornet.glb) for a maintainer to open in a
@@ -291,8 +396,23 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
     assert!(gltf.blob.is_some(), "glb carries its binary blob");
     let doc = &gltf.document;
 
-    let gltf_meshes = doc.meshes().count();
-    assert_eq!(gltf_meshes, model.meshes.len(), "glb mesh count");
+    // The GLB writer drops parts that are entirely non-renderable NPR shells
+    // (inverted-hull `*_outline` and additive `*_glow`), so the glTF carries the
+    // model's renderable parts, not every part. Mirror that rule and check the
+    // surviving meshes are exactly those parts (by name).
+    let mut expected_meshes: Vec<&str> = model
+        .meshes
+        .iter()
+        .filter(|p| !is_shell(&p.name) && p.primitives.iter().any(|pr| !is_shell(&pr.material)))
+        .map(|p| p.name.as_str())
+        .collect();
+    expected_meshes.sort_unstable();
+    let mut glb_mesh_names: Vec<&str> = doc.meshes().filter_map(|m| m.name()).collect();
+    glb_mesh_names.sort_unstable();
+    assert_eq!(
+        glb_mesh_names, expected_meshes,
+        "glb keeps exactly the renderable (non-shell) parts"
+    );
 
     let skin = doc.skins().next().expect("glb has a skin");
     assert_eq!(
@@ -329,6 +449,10 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
             );
         }
     }
-    assert_eq!(prim_total, 7, "hornet LOD0 primitive count");
-    eprintln!("glb re-read OK: {gltf_meshes} meshes, {prim_total} primitives, valid skin");
+    // body (5) + gun (1); the `ghost_glow` shell part (1 prim) is dropped.
+    assert_eq!(prim_total, 6, "hornet LOD0 primitive count");
+    eprintln!(
+        "glb re-read OK: {} meshes, {prim_total} primitives, valid skin",
+        glb_mesh_names.len()
+    );
 }

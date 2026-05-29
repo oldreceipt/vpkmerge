@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0
+
+Adds a static *posed* model export for still previews (a hero card), and stops Deadlock's non-renderable effect shells from leaking into the GLB. `vpkmerge model export --pose` bakes a single animation frame into the mesh and drops the skeleton, skin, and clips, producing a plain posed mesh the size of a static prop. Built for Grimoire's Locker hero previews, where a lightweight still beats shipping a multi-megabyte animated rig.
+
+### CLI (`vpkmerge` 0.6)
+
+- New `--pose [CLIP[@FRAME]]` flag on `model export`. Bakes one frame into the vertices and writes a static `.glb` with no skeleton, skin, or animation. Omit the value to try the default menu/roster poses (`ui_hero_pose`, `hero_pose`, `hero_roster_pose`, `hero_roster_ready`, `ui_hero_select`) then generic idles (`idle_loadout`, `primary_stand_idle`) in order, since menu-pose naming differs across heroes; pass a clip name and optional `@frame` to choose explicitly. Mutually exclusive with `--clip` / `--no-anim`.
+
+### Library (`vpkmerge-core` 0.7)
+
+- `AnimOptions` gains an optional `pose: Option<PoseSelection>`; when set, the export bakes a single posed frame and emits a static mesh, overriding clip / no-anim selection. `PoseSelection { clips, frame }` and `DEFAULT_POSE_CLIPS` are exported; an empty clip list uses the defaults.
+- **Skin mods are posed from the base game's clips.** Skin VPKs ship the mesh + rig but no animation clips, so when the exported model carries none of the requested clips, the same entry is read from the base pak (`--base`) and its clip is mapped onto the skin by bone name (`morphic::model::bake_pose_from`). Same hero, same rig, so no cross-hero retargeting. A hero with no clips anywhere (e.g. an unfinished model) falls back to the bind pose.
+
+### morphic (0.3)
+
+- New `bake_pose(model, clips, frame)`: folds one animation frame into the mesh by linear-blend skinning (each hero's own clip on its own skeleton, so no retargeting), returning a static `Model` with no skeleton, skin weights, or clips. Vertex buffers with no joints pass through unchanged, so a prop posed by its own bone (a held weapon) follows the pose while truly static decor stays put.
+- New `bake_pose_from(model, donor, clips, frame)`: bakes `model`'s mesh using a donor model's clips, mapped onto `model`'s skeleton by bone name. For posing a clipless skin with its base-game hero's clip.
+- The GLB writer now drops Deadlock's additive glow-effect shells (mesh part `ghost_glow`, `*_glow` materials) alongside the existing inverted-hull `*_outline` shells. As plain glTF geometry both collapse to an opaque "white halo" over the model; their in-game NPR shaders are a renderer-side concern. `*_noglow` materials are kept.
+- The vertex decoder now handles 8-influence skinning, unblocking the current Dynamo and Apollo (`fencer`) body models, which previously failed with `unexpected BLENDWEIGHT format`. Their meshes pack up to 8 bones per vertex (an 8-wide `BLENDINDICES` paired with an `R16G16B16A16_UNORM` weight stream of 8 `u8`s). Since the glTF pipeline is fixed at 4 influences, a vertex carrying more keeps its 4 highest-weight bones with the weights renormalized to sum 1; 4-influence meshes are unchanged.
+- Texcoord decode now accepts the 1-component `R32_FLOAT` format (V zero-filled), which unblocks the `prof_dynamo` staging model that paired it with the 8-influence skinning above.
+
 ## v0.5.0
 
 Adds a Source 2 model exporter. `vpkmerge model export` turns a Deadlock hero `.vmdl_c` (from the base pak or a skin VPK) into a textured, skinned, animated `.glb`, decoded entirely in pure Rust (a faithful port of ValveResourceFormat, no .NET or C runtime). The exported model carries the hero's own animation clips on its own skeleton, so a viewer can play its idle without any cross-hero retargeting. Built for Grimoire's hero/skin preview.
