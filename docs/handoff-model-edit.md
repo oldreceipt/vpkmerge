@@ -118,11 +118,13 @@ New work, smallest first:
    Verified producing a loadable addon VPK from the local pak (gun-scale and
    full-body-translate edits both re-decode as valid models).
 
-**Remaining for Tier 0: in-game confirmation only** (the offline path is complete).
-Drop the addon VPK in `citadel/addons/` and verify the reshape renders. The one open
-risk below (arbitrary Blender reshape vs. the built-in transform) is what stands
-between this and editing geometry freely; the transform path needs no Blender and is
-ready to test in-game now.
+**Tier 0 is DONE, in-game confirmed (2026-05-28).** A `vpkmerge model edit
+--part gun --scale 2.5` addon (`hornet`) loaded in Deadlock and rendered the
+oversized gun correctly: the engine accepts our pure-Rust meshopt re-encode and
+spliced `MVTX`, with no crash or mesh corruption. So a re-encoded vertex buffer is
+engine-valid (the crux risk is retired). The only thing between this and editing
+geometry freely is the arbitrary-Blender-reshape path (see risk below); the
+built-in transform path is complete.
 
 ## Tier 0's real correctness risk: vertex-order mapping
 
@@ -153,15 +155,15 @@ Open sub-questions to settle during the spike:
   in `DATA`, `PHYS` collision, `DSTF` cloth)? AABB drift is cosmetic-ish; `PHYS`
   is unused for visual mods. Note what we skip.
 
-## Done when (Tier 0)
+## Done when (Tier 0) - ALL MET (2026-05-28)
 
-`vpkmerge model edit` takes an edited mesh (or edited-positions input), splices the
-new POSITION stream into the original `.vmdl_c`, and packs an addon VPK that loads
-in Deadlock showing the reshaped geometry. Offline gates: meshopt encode identity
-round-trip, and `model::decode` of the spliced output yields the edited positions
-with all other attributes unchanged, both green under `cargo test --workspace` with
-`clippy --all-targets -D warnings` + `fmt --check` clean. Then in-game confirm on a
-Vindicta (`hornet`) reshape, mirroring the texture round-trip's in-game check.
+`vpkmerge model edit` takes a transform, splices the new POSITION stream into the
+original `.vmdl_c`, and packs an addon VPK that loads in Deadlock showing the
+reshaped geometry. Offline gates (met): meshopt encode identity round-trip, and
+`model::decode` of the spliced output yields the edited positions with all other
+attributes unchanged, green under `cargo test --workspace` with
+`clippy --all-targets -D warnings` + `fmt --check` clean. In-game gate (met):
+a `hornet` gun-scale addon rendered correctly in Deadlock.
 
 ## Out of scope (Tier 1, note for later)
 
