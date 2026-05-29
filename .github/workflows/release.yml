@@ -91,12 +91,20 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}${{ matrix.ext }}" \
              "dist/${{ matrix.asset }}${{ matrix.ext }}"
 
+      # Upload via the gh CLI (preinstalled on every runner) rather than
+      # softprops/action-gh-release. That action re-runs its create-or-find
+      # release logic on every matrix leg, so concurrent jobs spawn duplicate
+      # drafts for the same tag and race to dedupe each other; the Windows CLI
+      # leg lost that race and died. `gh release upload` only uploads to the
+      # draft the `draft` job already created, never creating a release itself.
       - name: upload
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          draft: true
-          files: dist/${{ matrix.asset }}${{ matrix.ext }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "dist/${{ matrix.asset }}${{ matrix.ext }}" \
+            --clobber --repo "${{ github.repository }}"
 
   gui:
     name: GUI (${{ matrix.target }})
