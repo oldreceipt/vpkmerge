@@ -263,16 +263,41 @@ Caveats / notes:
   `index_encode_round_trips_u32` covers the 32-bit lane (the committed fixtures are all
   u16) with a synthetic list including a backwards jump. CI green (fmt/clippy/test).
   In-game proof of an index re-encode is deferred to the T1c/T1d add-geometry round-trip.
-- **T1c - new vertex buffer assembly + skin-weight encode.** Read the new mesh from
-  an edited glb (the `gltf` reader gives positions, normals, uv, and
-  `read_joints`/`read_weights`). Build a fresh interleaved vertex stream at a chosen
-  layout - simplest: POSITION `R32G32B32_FLOAT`, NORMAL `R32G32B32_FLOAT`
-  (uncompressed; confirm the engine accepts float normals - VRF reads them, so
-  likely yes, else add a packed-normal encoder), TEXCOORD `R32G32_FLOAT`,
-  BLENDINDICES `R8G8B8A8_UINT`, BLENDWEIGHT `R8G8B8A8_UNORM`. Map glb JOINTS_0
-  (skin-joint = model-bone order) back through the mesh **bone remap table**
-  (`skeleton::remap_table`, inverted) to mesh-local indices. meshopt-encode the new
-  MVTX + MIDX.
+- **T1c - new vertex buffer assembly + skin-weight encode: DONE.** Reads a new mesh
+  part from an edited glb and encodes it to `MVTX` + `MIDX`, ready for T1d to splice.
+  Shipped pieces:
+  - `model::read_edited_mesh(glb, mesh_name)` (in `edit.rs`) - extends the glb reader
+    beyond positions to normals, UV0, `JOINTS_0`, `WEIGHTS_0`, and the index list, via
+    the `gltf` reader. Takes one primitive (the add-one-part contract; `mesh_name`
+    picks it out of a multi-mesh glb). Positions in accessor space (T1d reconciles any
+    axis flip).
+  - `model::assemble_vertex_buffer(&VertexBuffer)` (in `mesh.rs`, the inverse of
+    `deinterleave`) -> interleaved stream at a fixed uncompressed layout: POSITION
+    `R32G32B32_FLOAT`, NORMAL `R32G32B32_FLOAT`, TEXCOORD `R32G32_FLOAT`, BLENDINDICES
+    `R8G8B8A8_UINT`, BLENDWEIGHT `R8G8B8A8_UNORM` (40-byte skinned stride; optional
+    attrs omitted if absent). Every format is already decode-supported, so the output
+    reads straight back through the model path. Weights quantized to `u8`-unorm summing
+    to 255 (`quantize_weights_u8`).
+  - `model::build_mesh_buffers` / `build_mesh_buffers_from_glb` -> `EncodedMesh`
+    (`mvtx`, `midx`, vertex/index counts, stride, index width, layout `fields`) - the
+    bundle T1d registers in the container.
+  - **Identity-remap first cut:** `BLENDINDICES` are written as the glb `JOINTS_0`
+    values verbatim (model bone indices, must be `<= 255`; the 62-bone hornet fits).
+    Inverting `skeleton::remap_table` to compact mesh-local indices is **deferred to
+    T1d** (which writes the new mesh's `m_remappingTable`); an identity remap there
+    means BLENDINDICES = model bone index directly.
+  - **Open question for T1d/in-game:** does the engine accept uncompressed float
+    `NORMAL` (`R32G32B32_FLOAT`)? VRF reads it, so likely yes; if not, add a
+    packed-normal (`R32_UINT` v2) encoder. Untested until a real add loads in-game.
+  - **Gates (offline, CI green):** `mesh::assemble_tests::assemble_round_trips_through_encode_and_deinterleave`
+    (synthetic: assemble -> meshopt-encode -> decode -> deinterleave recovers
+    positions/normals/uv/joints exactly, weights within 1/255), plus the quantizer +
+    over-255 + positions-only cases; `edit::tests::build_mesh_buffers_round_trips_quad`
+    (both encoders). **Gated real-data (PASSED):**
+    `build_mesh_buffers_round_trips_real_glb_local` on the hornet `to_glb_textured`
+    export's gun part (`MORPHIC_EDIT_GLB`) round-trips **11750 verts / 76329 indices**
+    (joints+weights+uv+normals all present): positions/normals/uv exact, joints exact,
+    weights within 3/255, the full triangle list exact through the T1b index encoder.
 - **T1d - rewrite the KV3 metadata + container.** Update CTRL `embedded_meshes`
   buffer registry (`m_nElementCount`, `m_nElementSizeInBytes`, `m_nBlockIndex`,
   `m_inputLayoutFields` for the new layout), MDAT draw calls (new counts / start
@@ -290,7 +315,9 @@ Caveats / notes:
   textures into the addon VPK alongside the model (reuse `pack`).
 
 ### Reuse (already built)
-meshopt **vertex** encoder + **index** encoder (T1b); `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
+meshopt **vertex** encoder + **index** encoder (T1b); the T1c **mesh assembler**
+(`model::{read_edited_mesh, assemble_vertex_buffer, build_mesh_buffers}` ->
+`EncodedMesh`); `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
 (byte-faithful uncompressed re-emit, engine-accepted for model blocks) +
 `kv3::patch`/`neutralize_draw_calls` (in-place scalar edits with absolute-offset
 walking); the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout

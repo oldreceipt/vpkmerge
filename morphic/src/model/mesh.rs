@@ -14,6 +14,7 @@
 use crate::error::DecodeError;
 use crate::kv3::Value;
 
+use super::dxgi::DxgiFormat;
 use super::vbib::{BufferDesc, InputLayoutField, OnDiskBuffer};
 
 /// One embedded mesh from `CTRL` `embedded_meshes` (the modern `MVTX`/`MIDX`
@@ -388,6 +389,184 @@ fn deinterleave(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<VertexBuf
     Ok(out)
 }
 
+/// A freshly assembled, still-interleaved vertex buffer ready to meshopt-encode
+/// into an `MVTX` block. The inverse of [`deinterleave`] for the T1c add-geometry
+/// path: takes per-semantic attribute arrays and packs them into one stride.
+#[derive(Debug, Clone)]
+pub struct AssembledBuffer {
+    /// Interleaved `element_count * stride` bytes.
+    pub data: Vec<u8>,
+    pub element_count: usize,
+    pub stride: usize,
+    /// The layout, for the `CTRL` registry's `m_inputLayoutFields` (T1d).
+    pub fields: Vec<InputLayoutField>,
+}
+
+/// Assembles a [`VertexBuffer`]'s per-semantic attribute arrays into one
+/// interleaved stream at a fixed, fully-uncompressed layout (the inverse of
+/// [`deinterleave`]). Every format here is already understood by the decoder
+/// (`vbib`/`dxgi`), so a buffer built this way reads back through the normal
+/// model path without any new decode support:
+///
+/// | semantic | format | bytes | present when |
+/// |---|---|---|---|
+/// | POSITION | `R32G32B32_FLOAT` | 12 | always (required) |
+/// | NORMAL | `R32G32B32_FLOAT` | 12 | `normals` present |
+/// | TEXCOORD | `R32G32_FLOAT` | 8 | `texcoords[0]` present |
+/// | BLENDINDICES | `R8G8B8A8_UINT` | 4 | `joints` present |
+/// | BLENDWEIGHT | `R8G8B8A8_UNORM` | 4 | `weights` present |
+///
+/// A fully-skinned vertex is 40 bytes. `BLENDINDICES` are written as the
+/// `joints` values verbatim (the identity-remap first cut: each must be a model
+/// bone index `<= 255`; a larger skeleton needs a real per-mesh remap table,
+/// which T1d writes). `BLENDWEIGHT` is quantized to `u8`-unorm summing to 255.
+///
+/// Errors on an empty buffer, a `POSITION` count mismatch, or a blend index over
+/// 255.
+pub fn assemble_vertex_buffer(vb: &VertexBuffer) -> Result<AssembledBuffer, DecodeError> {
+    let count = vb.element_count;
+    if count == 0 {
+        return Err(DecodeError::Model("cannot assemble an empty vertex buffer"));
+    }
+    if vb.positions.len() != count {
+        return Err(DecodeError::Model(
+            "POSITION count does not match element_count",
+        ));
+    }
+
+    let has_normal = vb.normals.len() == count;
+    let has_uv = vb.texcoords.first().is_some_and(|t| t.len() == count);
+    let has_joints = vb.joints.len() == count;
+    let has_weights = vb.weights.len() == count;
+
+    let mut fields = Vec::new();
+    let mut stride = 0usize;
+    add_field(
+        &mut fields,
+        &mut stride,
+        "POSITION",
+        DxgiFormat::R32G32B32Float,
+    );
+    if has_normal {
+        add_field(
+            &mut fields,
+            &mut stride,
+            "NORMAL",
+            DxgiFormat::R32G32B32Float,
+        );
+    }
+    if has_uv {
+        add_field(
+            &mut fields,
+            &mut stride,
+            "TEXCOORD",
+            DxgiFormat::R32G32Float,
+        );
+    }
+    if has_joints {
+        add_field(
+            &mut fields,
+            &mut stride,
+            "BLENDINDICES",
+            DxgiFormat::R8G8B8A8Uint,
+        );
+    }
+    if has_weights {
+        add_field(
+            &mut fields,
+            &mut stride,
+            "BLENDWEIGHT",
+            DxgiFormat::R8G8B8A8Unorm,
+        );
+    }
+
+    let mut data = vec![0u8; count * stride];
+    for i in 0..count {
+        let base = i * stride;
+        for f in &fields {
+            let o = base + f.offset;
+            match f.semantic_name.as_str() {
+                "POSITION" => put_f32s(&mut data, o, &vb.positions[i]),
+                "NORMAL" => put_f32s(&mut data, o, &vb.normals[i]),
+                "TEXCOORD" => put_f32s(&mut data, o, &vb.texcoords[0][i]),
+                "BLENDINDICES" => {
+                    for (k, &j) in vb.joints[i].iter().enumerate() {
+                        data[o + k] = u8::try_from(j).map_err(|_| {
+                            DecodeError::Model(
+                                "blend index exceeds 255 (the identity-remap first cut supports \
+                                 a <=255-bone skeleton; a larger one needs a per-mesh remap table)",
+                            )
+                        })?;
+                    }
+                }
+                "BLENDWEIGHT" => {
+                    data[o..o + 4].copy_from_slice(&quantize_weights_u8(vb.weights[i]));
+                }
+                _ => unreachable!("only the fixed T1c semantics are added above"),
+            }
+        }
+    }
+
+    Ok(AssembledBuffer {
+        data,
+        element_count: count,
+        stride,
+        fields,
+    })
+}
+
+/// Appends one attribute to a layout and advances the running stride by its
+/// packed byte width.
+fn add_field(
+    fields: &mut Vec<InputLayoutField>,
+    stride: &mut usize,
+    name: &str,
+    format: DxgiFormat,
+) {
+    let (component_size, component_count) = format.format_info();
+    fields.push(InputLayoutField {
+        semantic_name: name.to_string(),
+        semantic_index: 0,
+        format,
+        offset: *stride,
+    });
+    *stride += component_size * component_count;
+}
+
+/// Writes little-endian `f32`s contiguously at byte offset `o`.
+fn put_f32s(data: &mut [u8], o: usize, vals: &[f32]) {
+    for (k, &v) in vals.iter().enumerate() {
+        data[o + k * 4..o + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Quantizes four float weights to `R8G8B8A8_UNORM` bytes summing to 255, the
+/// inverse of `blend_weights`' `u8 / 255.0` read. Rounding drift is pushed onto
+/// the largest-weight lane so the four bytes sum to exactly 255 (Source 2
+/// expects normalized weights). An all-zero input stays all-zero (unweighted).
+#[allow(clippy::cast_sign_loss)]
+fn quantize_weights_u8(w: [f32; 4]) -> [u8; 4] {
+    let mut q = [0i32; 4];
+    let mut sum = 0i32;
+    for k in 0..4 {
+        // clamp to [0,1] then *255 lands in [0,255]; the round() cast is exact.
+        let v = (w[k].clamp(0.0, 1.0) * 255.0).round() as i32;
+        q[k] = v;
+        sum += v;
+    }
+    if sum == 0 {
+        return [0; 4];
+    }
+    let mut largest = 0usize;
+    for k in 1..4 {
+        if w[k] > w[largest] {
+            largest = k;
+        }
+    }
+    q[largest] = (q[largest] + (255 - sum)).clamp(0, 255);
+    [q[0] as u8, q[1] as u8, q[2] as u8, q[3] as u8]
+}
+
 /// Per-vertex skin influences reduced to glTF's 4-bone shape: joints paired
 /// with their matching weights, one row per vertex.
 type SkinAttrs = (Vec<[u16; 4]>, Vec<[f32; 4]>);
@@ -574,5 +753,107 @@ mod skinning_tests {
         for (a, b) in weights[0].iter().zip(expect) {
             assert!((a - b).abs() < 1e-6, "{:?} vs {expect:?}", weights[0]);
         }
+    }
+}
+
+#[cfg(test)]
+mod assemble_tests {
+    // The chosen layout is fully uncompressed, so positions/normals/uv round-trip
+    // exactly; only the u8-unorm weights are lossy (asserted within one quantum).
+    #![allow(clippy::float_cmp)]
+
+    use super::*;
+    use crate::meshopt::encode_vertex_buffer;
+
+    /// The T1c offline gate: assemble -> meshopt-encode -> decode -> deinterleave
+    /// recovers every attribute. Positions/normals/uv exactly (uncompressed float
+    /// lanes), joints exactly (identity remap), weights within one 1/255 quantum.
+    #[test]
+    fn assemble_round_trips_through_encode_and_deinterleave() {
+        let vb = VertexBuffer {
+            element_count: 3,
+            positions: vec![[0.0, 0.0, 0.0], [1.5, -2.0, 3.25], [10.0, 20.5, -7.0]],
+            normals: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            texcoords: vec![vec![[0.0, 0.0], [0.25, 0.75], [1.0, 0.5]]],
+            joints: vec![[0, 1, 2, 3], [4, 5, 6, 7], [10, 11, 12, 13]],
+            // Exact multiples of 1/255 summing to 255, so quantization is lossless.
+            weights: vec![
+                [128.0 / 255.0, 64.0 / 255.0, 63.0 / 255.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [100.0 / 255.0, 80.0 / 255.0, 50.0 / 255.0, 25.0 / 255.0],
+            ],
+            ..VertexBuffer::default()
+        };
+
+        let asm = assemble_vertex_buffer(&vb).expect("assemble");
+        assert_eq!(asm.stride, 40, "fully-skinned stride");
+        assert_eq!(asm.data.len(), 3 * 40);
+
+        let mvtx = encode_vertex_buffer(asm.element_count, asm.stride, &asm.data).expect("encode");
+        assert_eq!(mvtx[0], 0xa1, "vertex codec v1 header");
+
+        let desc = BufferDesc {
+            block_index: 0,
+            element_count: asm.element_count,
+            element_size: asm.stride,
+            meshopt: true,
+            zstd: false,
+            fields: asm.fields.clone(),
+        };
+        let on_disk = desc.decode(&mvtx, true).expect("decode");
+        let identity: Vec<usize> = (0..256).collect();
+        let out = deinterleave(&on_disk, Some(&identity)).expect("deinterleave");
+
+        assert_eq!(out.positions, vb.positions, "positions");
+        assert_eq!(out.normals, vb.normals, "normals");
+        assert_eq!(out.texcoords[0], vb.texcoords[0], "uv");
+        assert_eq!(out.joints, vb.joints, "joints (identity remap)");
+        for (got, want) in out.weights.iter().zip(&vb.weights) {
+            for k in 0..4 {
+                assert!(
+                    (got[k] - want[k]).abs() <= 1.0 / 255.0 + 1e-6,
+                    "weight lane {k}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
+
+    /// A blend index above 255 is rejected (the identity-remap limit), not
+    /// silently truncated to a u8.
+    #[test]
+    fn assemble_rejects_blend_index_over_255() {
+        let vb = VertexBuffer {
+            element_count: 1,
+            positions: vec![[0.0; 3]],
+            joints: vec![[300, 0, 0, 0]],
+            weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            ..VertexBuffer::default()
+        };
+        assert!(assemble_vertex_buffer(&vb).is_err());
+    }
+
+    /// Weight quantization always sums to 255 (normalized) even when the input
+    /// weights need rounding correction; an all-zero input stays unweighted.
+    #[test]
+    fn weight_quantization_sums_to_255() {
+        let q = quantize_weights_u8([0.1, 0.2, 0.3, 0.4]);
+        let sum = u32::from(q[0]) + u32::from(q[1]) + u32::from(q[2]) + u32::from(q[3]);
+        assert_eq!(sum, 255, "{q:?}");
+        assert_eq!(quantize_weights_u8([0.0; 4]), [0, 0, 0, 0]);
+    }
+
+    /// A buffer with only positions (no normals/uv/skinning) assembles to a
+    /// 12-byte stride carrying just POSITION.
+    #[test]
+    fn assemble_positions_only() {
+        let vb = VertexBuffer {
+            element_count: 2,
+            positions: vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            ..VertexBuffer::default()
+        };
+        let asm = assemble_vertex_buffer(&vb).expect("assemble");
+        assert_eq!(asm.stride, 12);
+        assert_eq!(asm.fields.len(), 1);
+        assert_eq!(asm.fields[0].semantic_name, "POSITION");
     }
 }

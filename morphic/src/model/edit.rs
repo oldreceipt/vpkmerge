@@ -8,13 +8,13 @@
 //! the `CTRL` buffer registry stores), enumerated by [`vertex_targets`].
 
 use crate::error::DecodeError;
-use crate::meshopt::encode_vertex_buffer;
+use crate::meshopt::{encode_index_buffer, encode_vertex_buffer};
 use crate::resource::Resource;
 
 use super::dxgi::DxgiFormat;
 use super::glb;
-use super::mesh::EmbeddedMesh;
-use super::vbib::BufferDesc;
+use super::mesh::{assemble_vertex_buffer, EmbeddedMesh, VertexBuffer};
+use super::vbib::{BufferDesc, InputLayoutField};
 
 const CTRL: [u8; 4] = *b"CTRL";
 
@@ -362,6 +362,161 @@ pub fn replace_vertex_positions(
     resource.rebuild_with_block(block_index, &new_mvtx)
 }
 
+// --- T1c: assemble a brand-new mesh from an edited glb (add-geometry path) ---
+
+/// The encoded `MVTX` + `MIDX` for a newly-assembled mesh part, plus the
+/// metadata T1d needs to register it in the resource container (the `CTRL`
+/// buffer registry's element counts / stride / `m_inputLayoutFields`, and the
+/// `MDAT` draw-call index count / width).
+#[derive(Debug, Clone)]
+pub struct EncodedMesh {
+    /// meshopt-encoded vertex buffer (codec v1, header `0xa1`).
+    pub mvtx: Vec<u8>,
+    /// meshopt-encoded index buffer (codec v1, header `0xe1`).
+    pub midx: Vec<u8>,
+    pub vertex_count: usize,
+    /// Interleaved vertex stride in bytes.
+    pub stride: usize,
+    pub index_count: usize,
+    /// Index width in bytes (2 or 4).
+    pub index_size: usize,
+    /// Vertex layout, for the `CTRL` registry's `m_inputLayoutFields`.
+    pub fields: Vec<InputLayoutField>,
+}
+
+/// Reads one new mesh part from an edited `.glb`: its positions, normals, UV0,
+/// joints, weights, and triangle indices. Takes a single primitive (the
+/// add-one-mesh-part contract); pass `mesh_name` to pick it out of a multi-mesh
+/// glb, else the only primitive is used.
+///
+/// Positions are taken in the glb's accessor space (no world transform: the
+/// caller / T1d reconciles any baked axis flip when splicing). `JOINTS_0` are
+/// glTF skin-joint indices, which equal model skeleton bone indices for a mesh
+/// skinned against an exported hero skeleton.
+pub fn read_edited_mesh(
+    glb_bytes: &[u8],
+    mesh_name: Option<&str>,
+) -> Result<(VertexBuffer, Vec<u32>), DecodeError> {
+    let (doc, buffers, _images) = gltf::import_slice(glb_bytes)
+        .map_err(|_| DecodeError::Model("failed to parse edited glb"))?;
+
+    let mut chosen = None;
+    for node in doc.nodes() {
+        let Some(mesh) = node.mesh() else { continue };
+        if let Some(want) = mesh_name {
+            if mesh.name() != Some(want) {
+                continue;
+            }
+        }
+        for prim in mesh.primitives() {
+            if chosen.is_some() {
+                return Err(DecodeError::Model(
+                    "edited glb has more than one primitive; T1c assembles one mesh part at a \
+                     time (pass a mesh name, or split the export)",
+                ));
+            }
+            chosen = Some(prim);
+        }
+    }
+    let prim = chosen.ok_or(DecodeError::Model("edited glb has no mesh primitive"))?;
+    let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
+
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .ok_or(DecodeError::Model("edited glb primitive has no POSITION"))?
+        .collect();
+    let normals: Vec<[f32; 3]> = reader
+        .read_normals()
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    let uv: Vec<[f32; 2]> = reader
+        .read_tex_coords(0)
+        .map(|t| t.into_f32().collect())
+        .unwrap_or_default();
+    let joints: Vec<[u16; 4]> = reader
+        .read_joints(0)
+        .map(|j| j.into_u16().collect())
+        .unwrap_or_default();
+    let weights: Vec<[f32; 4]> = reader
+        .read_weights(0)
+        .map(|w| w.into_f32().collect())
+        .unwrap_or_default();
+    let indices: Vec<u32> = reader
+        .read_indices()
+        .ok_or(DecodeError::Model("edited glb primitive has no indices"))?
+        .into_u32()
+        .collect();
+
+    let texcoords = if uv.is_empty() { Vec::new() } else { vec![uv] };
+    let vb = VertexBuffer {
+        element_count: positions.len(),
+        positions,
+        normals,
+        texcoords,
+        joints,
+        weights,
+        ..VertexBuffer::default()
+    };
+    Ok((vb, indices))
+}
+
+/// Assembles a [`VertexBuffer`] + triangle indices into encoded `MVTX`/`MIDX`
+/// buffers (the T1c output T1d splices into the container). The index width is
+/// chosen as 2 bytes unless an index exceeds `u16::MAX`. Errors if the indices
+/// are not a triangle list or reference a vertex past the buffer.
+pub fn build_mesh_buffers(vb: &VertexBuffer, indices: &[u32]) -> Result<EncodedMesh, DecodeError> {
+    let asm = assemble_vertex_buffer(vb)?;
+    let mvtx = encode_vertex_buffer(asm.element_count, asm.stride, &asm.data)?;
+
+    if !indices.len().is_multiple_of(3) {
+        return Err(DecodeError::Model(
+            "index count is not a multiple of 3 (expected a triangle list)",
+        ));
+    }
+    let vertex_count = asm.element_count as u64;
+    if indices.iter().any(|&i| u64::from(i) >= vertex_count) {
+        return Err(DecodeError::Model(
+            "index references a vertex past the assembled buffer",
+        ));
+    }
+
+    let index_size = if indices.iter().any(|&i| i > u32::from(u16::MAX)) {
+        4
+    } else {
+        2
+    };
+    let mut index_bytes = Vec::with_capacity(indices.len() * index_size);
+    for &i in indices {
+        if index_size == 2 {
+            // Bounded above by u16::MAX in this branch, so the narrow is lossless.
+            index_bytes.extend_from_slice(&u16::try_from(i).unwrap_or(0).to_le_bytes());
+        } else {
+            index_bytes.extend_from_slice(&i.to_le_bytes());
+        }
+    }
+    let midx = encode_index_buffer(indices.len(), index_size, &index_bytes)?;
+
+    Ok(EncodedMesh {
+        mvtx,
+        midx,
+        vertex_count: asm.element_count,
+        stride: asm.stride,
+        index_count: indices.len(),
+        index_size,
+        fields: asm.fields,
+    })
+}
+
+/// Reads a new mesh part from an edited `.glb` and encodes it to `MVTX`/`MIDX`
+/// in one step. Convenience over [`read_edited_mesh`] + [`build_mesh_buffers`].
+pub fn build_mesh_buffers_from_glb(
+    glb_bytes: &[u8],
+    mesh_name: Option<&str>,
+) -> Result<EncodedMesh, DecodeError> {
+    let (vb, indices) = read_edited_mesh(glb_bytes, mesh_name)?;
+    build_mesh_buffers(&vb, &indices)
+}
+
 #[cfg(test)]
 mod tests {
     // Positions round-trip through our own glTF writer/reader exactly, so the
@@ -407,5 +562,157 @@ mod tests {
         let glb = glb::to_edit_glb(&vb, &indices).expect("write edit glb");
         // Ask for 5 originals when the glb only carries ids 0..=3.
         assert!(read_edited_positions(&glb, 5).is_err());
+    }
+
+    /// `build_mesh_buffers` encodes both buffers and they decode back: the quad's
+    /// positions/normals survive the MVTX round-trip and its triangle list
+    /// survives the MIDX round-trip (the T1c offline gate over both encoders).
+    #[test]
+    fn build_mesh_buffers_round_trips_quad() {
+        let (vb, indices) = quad();
+        let enc = build_mesh_buffers(&vb, &indices).expect("build buffers");
+        assert_eq!(enc.mvtx[0], 0xa1, "vertex codec header");
+        assert_eq!(enc.midx[0], 0xe1, "index codec header");
+        assert_eq!(enc.stride, 24, "POSITION + NORMAL, no skinning");
+        assert_eq!(enc.index_size, 2, "small mesh uses 16-bit indices");
+
+        let vdesc = BufferDesc {
+            block_index: 0,
+            element_count: enc.vertex_count,
+            element_size: enc.stride,
+            meshopt: true,
+            zstd: false,
+            fields: enc.fields.clone(),
+        };
+        let on_disk = vdesc.decode(&enc.mvtx, true).expect("decode mvtx");
+        assert_eq!(on_disk.positions().expect("positions"), vb.positions);
+
+        let idesc = BufferDesc {
+            block_index: 0,
+            element_count: enc.index_count,
+            element_size: enc.index_size,
+            meshopt: true,
+            zstd: false,
+            fields: Vec::new(),
+        };
+        let idx = idesc.decode(&enc.midx, false).expect("decode midx");
+        assert_eq!(
+            idx.read_indices(0, enc.index_count, 0).expect("indices"),
+            indices
+        );
+    }
+
+    /// A non-triangle-list index count is rejected.
+    #[test]
+    fn build_mesh_buffers_rejects_non_triangle_indices() {
+        let (vb, _) = quad();
+        assert!(build_mesh_buffers(&vb, &[0, 1, 2, 3]).is_err());
+    }
+
+    /// End-to-end on a real edited glb (gated on `MORPHIC_EDIT_GLB`, e.g. a
+    /// `to_glb_textured` export of the hornet model; `MORPHIC_EDIT_MESH` picks
+    /// the single-primitive part, default `gun`): read the mesh, assemble +
+    /// encode both buffers, decode them back, and assert every attribute and the
+    /// triangle list round-trip (positions/normals/uv exact, joints exact,
+    /// weights within the u8-unorm quantum).
+    #[test]
+    fn build_mesh_buffers_round_trips_real_glb_local() {
+        let Ok(path) = std::env::var("MORPHIC_EDIT_GLB") else {
+            eprintln!("MORPHIC_EDIT_GLB not set; skipping real glb mesh round-trip");
+            return;
+        };
+        let mesh = std::env::var("MORPHIC_EDIT_MESH").unwrap_or_else(|_| "gun".to_string());
+        let glb = std::fs::read(&path).expect("read glb");
+
+        let (vb, indices) = read_edited_mesh(&glb, Some(&mesh)).expect("read edited mesh");
+        eprintln!(
+            "read {mesh}: {} verts, {} indices (joints={}, weights={}, uv={}, normals={})",
+            vb.element_count,
+            indices.len(),
+            vb.joints.len(),
+            vb.weights.len(),
+            vb.texcoords.first().map_or(0, Vec::len),
+            vb.normals.len(),
+        );
+
+        let enc = build_mesh_buffers(&vb, &indices).expect("build buffers");
+        assert_eq!(enc.mvtx[0], 0xa1);
+        assert_eq!(enc.midx[0], 0xe1);
+
+        let vdesc = BufferDesc {
+            block_index: 0,
+            element_count: enc.vertex_count,
+            element_size: enc.stride,
+            meshopt: true,
+            zstd: false,
+            fields: enc.fields.clone(),
+        };
+        let on_disk = vdesc.decode(&enc.mvtx, true).expect("decode mvtx");
+
+        // Uncompressed float lanes round-trip exactly.
+        assert_eq!(on_disk.positions().expect("positions"), vb.positions);
+        if !vb.normals.is_empty() {
+            let f = on_disk
+                .fields
+                .iter()
+                .find(|f| f.semantic_name == "NORMAL")
+                .unwrap();
+            let (normals, _) = on_disk.normal_tangent(f).expect("normals");
+            assert_eq!(normals, vb.normals, "normals");
+        }
+        if let Some(uv) = vb.texcoords.first() {
+            let f = on_disk
+                .fields
+                .iter()
+                .find(|f| f.semantic_name == "TEXCOORD")
+                .unwrap();
+            assert_eq!(&on_disk.vector2(f).expect("uv"), uv, "uv");
+        }
+        if !vb.joints.is_empty() {
+            let f = on_disk
+                .fields
+                .iter()
+                .find(|f| f.semantic_name == "BLENDINDICES")
+                .unwrap();
+            let flat = on_disk.blend_indices(f, None).expect("joints");
+            let got: Vec<[u16; 4]> = flat
+                .chunks_exact(4)
+                .map(|c| [c[0], c[1], c[2], c[3]])
+                .collect();
+            assert_eq!(got, vb.joints, "joints (identity remap)");
+        }
+        if !vb.weights.is_empty() {
+            let f = on_disk
+                .fields
+                .iter()
+                .find(|f| f.semantic_name == "BLENDWEIGHT")
+                .unwrap();
+            let flat = on_disk.blend_weights(f).expect("weights");
+            for (i, want) in vb.weights.iter().enumerate() {
+                for k in 0..4 {
+                    assert!(
+                        (flat[i * 4 + k] - want[k]).abs() <= 3.0 / 255.0,
+                        "weight vertex {i} lane {k}: {} vs {}",
+                        flat[i * 4 + k],
+                        want[k]
+                    );
+                }
+            }
+        }
+
+        let idesc = BufferDesc {
+            block_index: 0,
+            element_count: enc.index_count,
+            element_size: enc.index_size,
+            meshopt: true,
+            zstd: false,
+            fields: Vec::new(),
+        };
+        let idx = idesc.decode(&enc.midx, false).expect("decode midx");
+        assert_eq!(
+            idx.read_indices(0, enc.index_count, 0).expect("indices"),
+            indices,
+            "index round-trip"
+        );
     }
 }
