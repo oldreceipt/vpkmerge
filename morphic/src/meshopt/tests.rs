@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::{decode_index_buffer, decode_vertex_buffer, encode_vertex_buffer};
+use super::{decode_index_buffer, decode_vertex_buffer, encode_index_buffer, encode_vertex_buffer};
 
 #[derive(Deserialize)]
 struct Golden {
@@ -144,6 +144,85 @@ fn vertex_encode_round_trips_through_decoder() {
         checked >= 3,
         "expected to round-trip the committed vertex fixtures, got {checked}"
     );
+}
+
+/// Index analog of [`vertex_encode_round_trips_through_decoder`]: the Tier 1b
+/// gate. Re-encode each committed index fixture's decoded triangle list and
+/// assert it decodes back to the oracle golden byte-for-byte (so a re-encoded
+/// `MIDX` block reads back identically through the codec the engine also uses).
+#[test]
+fn index_encode_round_trips_through_decoder() {
+    let dir = fixtures_dir();
+    let mut checked = 0usize;
+
+    for entry in std::fs::read_dir(&dir).expect("meshopt fixtures dir present") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("meshopt") {
+            continue;
+        }
+        let golden_path = path.with_extension("meshopt.json");
+        let golden: Golden =
+            serde_json::from_str(&std::fs::read_to_string(&golden_path).expect("read golden"))
+                .expect("parse golden");
+        if golden.kind != "index" {
+            continue;
+        }
+
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let raw = std::fs::read(&path).expect("read .meshopt");
+
+        // Original decoded triangle list (already validated == oracle elsewhere).
+        let decoded = decode_index_buffer(golden.element_count, golden.element_size, &raw)
+            .unwrap_or_else(|e| panic!("{name}: decode failed: {e}"));
+
+        // Re-encode it, then decode the re-encoded buffer.
+        let reencoded = encode_index_buffer(golden.element_count, golden.element_size, &decoded)
+            .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
+        assert_eq!(reencoded[0], 0xe1, "{name}: expected index codec v1 header");
+
+        let redecoded = decode_index_buffer(golden.element_count, golden.element_size, &reencoded)
+            .unwrap_or_else(|e| panic!("{name}: re-decode failed: {e}"));
+
+        assert_eq!(
+            redecoded.len(),
+            golden.decoded_len,
+            "{name}: re-decoded length mismatch"
+        );
+        assert_eq!(
+            redecoded, decoded,
+            "{name}: index re-encode/re-decode did not round-trip"
+        );
+        assert_eq!(
+            sha256_hex(&redecoded),
+            golden.sha256,
+            "{name}: round-tripped bytes differ from oracle"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 2,
+        "expected to round-trip the committed index fixtures, got {checked}"
+    );
+}
+
+/// The committed index fixtures are all 16-bit; exercise the 32-bit (`index_size
+/// == 4`) lane too with a synthetic triangle list whose indices exceed `u16` and
+/// include a backwards jump (negative delta).
+#[test]
+fn index_encode_round_trips_u32() {
+    let indices: [u32; 12] = [0, 1, 2, 2, 1, 3, 100, 200, 300, 70_000, 1, 70_001];
+    let index_count = indices.len();
+    let mut raw = Vec::with_capacity(index_count * 4);
+    for i in &indices {
+        raw.extend_from_slice(&i.to_le_bytes());
+    }
+
+    let encoded = encode_index_buffer(index_count, 4, &raw).expect("encode u32 indices");
+    assert_eq!(encoded[0], 0xe1, "expected index codec v1 header");
+
+    let decoded = decode_index_buffer(index_count, 4, &encoded).expect("decode u32 indices");
+    assert_eq!(decoded, raw, "u32 index round-trip mismatch");
 }
 
 /// `zigzag8` must be the exact inverse of the decoder's `unzigzag8` across all

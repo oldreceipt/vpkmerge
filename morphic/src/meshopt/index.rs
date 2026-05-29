@@ -244,3 +244,87 @@ pub fn decode_index_buffer(
     }
     Ok(dest)
 }
+
+/// Zigzag-encodes a (wrapping) delta so small magnitudes of either sign stay
+/// short. Exact inverse of the decoder's `(v >> 1) ^ (0 - (v & 1))`.
+#[inline]
+fn zigzag32(d: u32) -> u32 {
+    (d << 1) ^ (d >> 31).wrapping_neg()
+}
+
+/// Appends `v` as the same LEB128 varint `decode_vbyte` reads back: 7 bits per
+/// byte, low group first, continuation bit set on every byte but the last.
+fn encode_vbyte(out: &mut Vec<u8>, mut v: u32) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            out.push(byte | 0x80);
+        } else {
+            out.push(byte);
+            break;
+        }
+    }
+}
+
+/// Encodes a meshoptimizer index buffer (codec v1, header `0xe1`) that
+/// [`decode_index_buffer`] reads back byte-for-byte. Correctness-first: every
+/// triangle uses the fully-explicit code (`codetri = 0xff`, `codeaux = 0xff`),
+/// which makes all three indices zigzag-vbyte deltas in the data stream and
+/// reads back without depending on edge/vertex FIFO history. The output is not
+/// byte-identical to Valve's compressor (it forgoes the FIFO-relative codes), only
+/// round-trip equivalent under the same (VRF-matched) decoder the engine uses.
+pub fn encode_index_buffer(
+    index_count: usize,
+    index_size: usize,
+    indices: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    if !index_count.is_multiple_of(3) {
+        return Err(DecodeError::Meshopt("index count not a multiple of 3"));
+    }
+    if index_size != 2 && index_size != 4 {
+        return Err(DecodeError::Meshopt("index size must be 2 or 4"));
+    }
+    if indices.len() != index_count * index_size {
+        return Err(DecodeError::Meshopt("index buffer length mismatch"));
+    }
+
+    let read_index = |i: usize| -> u32 {
+        let off = i * index_size;
+        if index_size == 2 {
+            u32::from(u16::from_le_bytes([indices[off], indices[off + 1]]))
+        } else {
+            u32::from_le_bytes([
+                indices[off],
+                indices[off + 1],
+                indices[off + 2],
+                indices[off + 3],
+            ])
+        }
+    };
+
+    let triangles = index_count / 3;
+    let mut out = Vec::new();
+    out.push(INDEX_HEADER | DECODE_INDEX_VERSION); // 0xe1
+
+    // codetri stream: one fully-explicit code (0xf0..0xff range, 0xff) per triangle.
+    out.resize(out.len() + triangles, 0xff);
+
+    // data stream: per triangle a 0xff codeaux byte (feb = fec = 15), then the
+    // three indices as zigzag-vbyte deltas from the running `last`.
+    let mut last = 0u32;
+    for tri in 0..triangles {
+        out.push(0xff);
+        for lane in 0..3 {
+            let idx = read_index(tri * 3 + lane);
+            encode_vbyte(&mut out, zigzag32(idx.wrapping_sub(last)));
+            last = idx;
+        }
+    }
+
+    // Trailing 16-byte codeaux table: only the FIFO-relative codes (0xf0..0xfe)
+    // read it, which the all-explicit path never emits, so its contents are
+    // irrelevant. It must still be present for the decoder's slicing.
+    out.resize(out.len() + 16, 0);
+    Ok(out)
+}

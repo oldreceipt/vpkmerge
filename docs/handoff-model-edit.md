@@ -249,9 +249,20 @@ Caveats / notes:
   model does not separate them); it needs mesh surgery or the texture route.
 
 ### Then build, in order (T1b -> T1d)
-- **T1b - meshopt index encoder.** `meshopt::encode_index_buffer` (inverse of the
-  existing `decode_index_buffer`; codec v1). Gate: `decode(encode(x)) == x` on the
-  committed `*_i*.meshopt` fixtures, mirroring the vertex-encoder test.
+- **T1b - meshopt index encoder: DONE.** `meshopt::encode_index_buffer` (inverse of
+  the existing `decode_index_buffer`; codec v1, header `0xe1`). Correctness-first,
+  mirroring the vertex encoder's philosophy: every triangle uses the fully-explicit
+  code (`codetri = 0xff`, `codeaux = 0xff`), so all three indices are zigzag-vbyte
+  deltas in the data stream and read back without depending on the edge/vertex FIFO
+  history. Not byte-identical to Valve's compressor (forgoes the FIFO-relative
+  codes), only round-trip equivalent under the same VRF-matched decoder the engine
+  uses. **Offline gate (no game): PASSED.**
+  `meshopt::tests::index_encode_round_trips_through_decoder` re-encodes each committed
+  index fixture's decoded triangle list (gun_lod3 11040 idx, body_lod3 1530 idx, both
+  u16), re-decodes, and asserts byte-identity *and* the oracle SHA-256; plus
+  `index_encode_round_trips_u32` covers the 32-bit lane (the committed fixtures are all
+  u16) with a synthetic list including a backwards jump. CI green (fmt/clippy/test).
+  In-game proof of an index re-encode is deferred to the T1c/T1d add-geometry round-trip.
 - **T1c - new vertex buffer assembly + skin-weight encode.** Read the new mesh from
   an edited glb (the `gltf` reader gives positions, normals, uv, and
   `read_joints`/`read_weights`). Build a fresh interleaved vertex stream at a chosen
@@ -279,7 +290,7 @@ Caveats / notes:
   textures into the addon VPK alongside the model (reuse `pack`).
 
 ### Reuse (already built)
-meshopt **vertex** encoder; `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
+meshopt **vertex** encoder + **index** encoder (T1b); `resource::rebuild_with_block`; `kv3::rewrap_uncompressed`
 (byte-faithful uncompressed re-emit, engine-accepted for model blocks) +
 `kv3::patch`/`neutralize_draw_calls` (in-place scalar edits with absolute-offset
 walking); the `gltf` reader (positions/normals/uv/joints/weights); `vbib` layout
