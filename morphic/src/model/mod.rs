@@ -18,6 +18,7 @@ mod edit;
 mod glb;
 mod math;
 mod mesh;
+mod nm;
 mod pose;
 mod skeleton;
 mod topology;
@@ -38,7 +39,8 @@ pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{
     assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, MeshPart, Primitive, VertexBuffer,
 };
-pub use pose::{bake_pose, bake_pose_from};
+pub use nm::{bake_nm_pose, decode_nm_pose, decode_nm_skeleton, NmPose, NmSkeleton};
+pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
 pub use skeleton::{invert_remap, localize_joints, Bone, Skeleton};
 pub use topology::{
     draw_call_targets, reencode_all_mdat_identity, remove_draw_calls_by_material,

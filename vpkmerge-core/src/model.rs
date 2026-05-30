@@ -48,11 +48,13 @@ pub struct PoseSelection {
     pub clips: Vec<String>,
     /// Frame index to sample (clamped to the clip's range).
     pub frame: usize,
-    /// Error out instead of falling back to the static bind pose when neither
-    /// the model nor its base-pak donor carries any candidate clip. Lets a
-    /// caller tell "posed" from "would be an unposed bind/T-pose still" and fall
-    /// back to a 2D portrait. WIP heroes (`models/heroes_wip/...`) ship the rig
-    /// but bake no clips into the `.vmdl_c`, so they only ever bind-pose.
+    /// Error out instead of falling back to the static bind pose when no posed
+    /// frame is reachable: neither the model nor its base-pak donor carries a
+    /// candidate clip, and no loose NM pose clip resolves. Lets a caller tell
+    /// "posed" from "would be an unposed bind/T-pose still" and fall back to a 2D
+    /// portrait. WIP heroes (`models/heroes_wip/...`) embed no clips in the
+    /// `.vmdl_c`; their menu pose is recovered from a loose NM clip
+    /// (`clips/*.vnmclip_c`) when present, else they bind-pose.
     pub require: bool,
 }
 
@@ -182,8 +184,19 @@ fn export_resolved(
                 })
                 .transpose()?
         };
+        let donor_has_clip = donor.as_ref().is_some_and(carries_clip);
+        // Newer WIP heroes embed no clips and have no clip-carrying donor (their
+        // base entry is the same clipless model): their menu/idle pose ships as a
+        // loose NM clip (`clips/<name>.vnmclip_c` + `<h>.vnmskel_c`) behind an
+        // animation graph. Resolve and bake that static single frame directly.
+        // It wins over a clipless donor but never over a real embedded/donor clip.
+        let nm_posed = if has_own_clip || donor_has_clip {
+            None
+        } else {
+            bake_loose_nm_pose(&vpks, entry, &model, &candidates)
+        };
         if pose.require {
-            let has_clip = has_own_clip || donor.as_ref().is_some_and(carries_clip);
+            let has_clip = has_own_clip || donor_has_clip || nm_posed.is_some();
             let has_skeleton = !model.skeleton.bones.is_empty();
             if !has_skeleton || !has_clip {
                 anyhow::bail!(
@@ -195,6 +208,8 @@ fn export_resolved(
         }
         model = if has_own_clip {
             morphic::model::bake_pose(&model, &candidates, pose.frame)
+        } else if let Some(nm) = nm_posed {
+            nm
         } else if let Some(donor) = &donor {
             morphic::model::bake_pose_from(&model, donor, &candidates, pose.frame)
         } else {
@@ -687,6 +702,57 @@ fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Resolves and bakes a WIP hero's loose NM menu/idle pose. The hero's `.vmdl_c`
+/// embeds no clips; its pose lives in `<model_dir>/clips/<name>.vnmclip_c` with a
+/// sibling `<h>.vnmskel_c`. For each candidate clip name this tries the bare name
+/// and a `<stem>_<name>` variant (Mina prefixes the codename, e.g.
+/// `vampirebat_hero_pose`), reads the `.vnmskel_c` the clip references, and bakes
+/// the static pose onto `model`. `None` when no loose pose clip resolves.
+fn bake_loose_nm_pose(
+    vpks: &[valve_pak::VPK],
+    entry: &str,
+    model: &morphic::model::Model,
+    candidates: &[&str],
+) -> Option<morphic::model::Model> {
+    let (dir, file) = entry.rsplit_once('/')?;
+    let stem = file.strip_suffix(".vmdl_c").unwrap_or(file);
+    for cand in candidates {
+        for name in [(*cand).to_string(), format!("{stem}_{cand}")] {
+            let clip_path = format!("{dir}/clips/{name}.vnmclip_c");
+            let Some(clip_bytes) = read_entry(vpks, &clip_path) else {
+                continue;
+            };
+            let Ok(pose) = morphic::model::decode_nm_pose(&clip_bytes) else {
+                continue;
+            };
+            let skel_path = nm_skeleton_entry(&pose.skeleton_ref, dir, stem);
+            let Some(skel_bytes) = read_entry(vpks, &skel_path) else {
+                continue;
+            };
+            let Ok(skel) = morphic::model::decode_nm_skeleton(&skel_bytes) else {
+                continue;
+            };
+            if let Ok(posed) = morphic::model::bake_nm_pose(model, &skel, &pose) {
+                return Some(posed);
+            }
+        }
+    }
+    None
+}
+
+/// Compiled `.vnmskel_c` entry path for a clip's `m_skeleton` reference (append
+/// `_c` to the uncompiled path), falling back to the conventional
+/// `<dir>/<stem>.vnmskel_c` when the reference is absent.
+fn nm_skeleton_entry(skeleton_ref: &str, dir: &str, stem: &str) -> String {
+    if skeleton_ref.is_empty() {
+        format!("{dir}/{stem}.vnmskel_c")
+    } else if skeleton_ref.ends_with("_c") {
+        skeleton_ref.to_string()
+    } else {
+        format!("{skeleton_ref}_c")
+    }
 }
 
 /// A compiled model found inside a VPK, with its structural summary.

@@ -953,4 +953,60 @@ mod pose_bake {
             [1.0, 2.0, 3.0],
         );
     }
+
+    #[test]
+    fn named_pose_shifts_matched_bone_and_binds_the_rest() {
+        use super::super::{bake_pose_named, LocalPose};
+        use std::collections::HashMap;
+
+        let model = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![],
+        };
+
+        // A pose keyed by bone name (the NM path) translates the matched bone.
+        let mut by_name = HashMap::new();
+        by_name.insert(
+            "root".to_string(),
+            LocalPose {
+                translation: Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                rotation: ID,
+                scale: 1.0,
+            },
+        );
+        let baked = bake_pose_named(&model, &by_name);
+        assert!(baked.skeleton.bones.is_empty(), "skeleton stripped");
+        approx(
+            baked.meshes[0].vertex_buffers[0].positions[0],
+            [11.0, 2.0, 3.0],
+        );
+
+        // A name that matches no bone leaves the mesh at its bind pose (how the
+        // model's cloth/twist/helper bones, absent from an NM clip, are handled).
+        let mut unmatched = HashMap::new();
+        unmatched.insert(
+            "nonexistent".to_string(),
+            LocalPose {
+                translation: Vec3 {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                rotation: ID,
+                scale: 1.0,
+            },
+        );
+        let bind = bake_pose_named(&model, &unmatched);
+        approx(
+            bind.meshes[0].vertex_buffers[0].positions[0],
+            [1.0, 2.0, 3.0],
+        );
+    }
 }
