@@ -91,12 +91,16 @@ pub enum Seg {
 /// not fit the original encoding (e.g. a byte-stored value growing past 255),
 /// it errors rather than corrupt the block (that needs a structural re-encode).
 ///
-/// Errors if the block is not v5, if any path is missing / not an integer scalar
-/// / ambiguous, or if a value does not fit its field's width.
+/// Errors if the block is not v4/v5, if any path is missing / not an integer
+/// scalar / ambiguous, or if a value does not fit its field's width.
 pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, DecodeError> {
     let mut out = rewrap_uncompressed(block)?;
-    if out.len() < 120 || u32::from_le_bytes([out[0], out[1], out[2], out[3]]) & 0xFF != 5 {
-        return Err(DecodeError::Kv3("scalar patch requires KV3 v5"));
+    // v5 uses a two-buffer layout (120-byte header); v4 a single buffer (72-byte
+    // header). Both patch in place once decompressed; only the lane math differs.
+    let version = u32_at(&out, 0)? & 0xFF;
+    let min_header = if version == 5 { 120 } else { 72 };
+    if out.len() < min_header || (version != 4 && version != 5) {
+        return Err(DecodeError::Kv3("scalar patch requires KV3 v4 or v5"));
     }
 
     let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
@@ -128,6 +132,57 @@ pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, D
         let bytes = fit_scalar(edits[h.edit].1, h.datatype)?;
         out.get_mut(h.offset..h.offset + bytes.len())
             .ok_or(DecodeError::Kv3("scalar patch offset out of range"))?
+            .copy_from_slice(&bytes);
+    }
+    Ok(out)
+}
+
+/// Sets `DOUBLE` (f64) fields located by KV3 path, in place, on a byte-faithful
+/// uncompressed re-wrap of `block`. The double sibling of [`set_scalars`]: built to
+/// retint a material's `g_vColorTint` vector (an array of f64 RGBA in a `.vmat_c`)
+/// without re-encoding, so the rest of the material (textures, flags, shader) stays
+/// byte-identical. Each edit's path must resolve to exactly one **real** `DOUBLE`
+/// (8 bytes in the b8 lane); a tagless `DOUBLE_ZERO`/`DOUBLE_ONE` (a 0.0/1.0 with no
+/// stored bytes) is not patchable in place and counts as "not found".
+///
+/// Errors if the block is not v4/v5, or if any path is missing / not a real double
+/// / ambiguous.
+pub fn set_doubles(block: &[u8], edits: &[(Vec<Seg>, f64)]) -> Result<Vec<u8>, DecodeError> {
+    let mut out = rewrap_uncompressed(block)?;
+    let version = u32_at(&out, 0)? & 0xFF;
+    let min_header = if version == 5 { 120 } else { 72 };
+    if out.len() < min_header || (version != 4 && version != 5) {
+        return Err(DecodeError::Kv3("double patch requires KV3 v4 or v5"));
+    }
+
+    let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
+    let hits = {
+        let mut w = PathWalk::new(&out, &targets)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        w.double_hits
+    };
+
+    for i in 0..edits.len() {
+        match hits.iter().filter(|h| h.edit == i).count() {
+            1 => {}
+            0 => {
+                return Err(DecodeError::Kv3(
+                    "double patch path not found or not a real double",
+                ))
+            }
+            _ => {
+                return Err(DecodeError::Kv3(
+                    "double patch path is ambiguous (matched more than one field)",
+                ))
+            }
+        }
+    }
+
+    for h in &hits {
+        let bytes = edits[h.edit].1.to_le_bytes();
+        out.get_mut(h.offset..h.offset + 8)
+            .ok_or(DecodeError::Kv3("double patch offset out of range"))?
             .copy_from_slice(&bytes);
     }
     Ok(out)
@@ -261,6 +316,9 @@ enum BoolKind {
 /// equals one of `targets`. Used by [`set_scalars`].
 struct PathWalk<'a> {
     block: &'a [u8],
+    /// KV3 version (4 or 5): selects the OBJECT member-count source (b4 lane for
+    /// v4, the object-length lane for v5).
+    version: u32,
     types: Lane,
     obj_lengths: Lane,
     main: [Lane; 4],
@@ -270,13 +328,16 @@ struct PathWalk<'a> {
     path: Vec<Seg>,
     hits: Vec<Hit>,
     bool_hits: Vec<BoolHit>,
+    double_hits: Vec<Hit>,
 }
 
 impl<'a> PathWalk<'a> {
     fn new(block: &'a [u8], targets: &'a [&'a [Seg]]) -> Result<Self, DecodeError> {
-        let l = lanes(block)?;
+        let version = u32_at(block, 0)? & 0xFF;
+        let l = lanes(block, version)?;
         Ok(PathWalk {
             block,
+            version,
             types: l.types,
             obj_lengths: l.obj_lengths,
             main: l.main,
@@ -286,6 +347,7 @@ impl<'a> PathWalk<'a> {
             path: Vec::new(),
             hits: Vec::new(),
             bool_hits: Vec::new(),
+            double_hits: Vec::new(),
         })
     }
 
@@ -358,6 +420,20 @@ impl<'a> PathWalk<'a> {
         }
     }
 
+    /// Records the current real `DOUBLE` (b8, 8 bytes) as a hit if its path
+    /// matches a target. Tagless `DOUBLE_ZERO`/`DOUBLE_ONE` carry no bytes and so
+    /// are never recorded (they cannot be patched in place).
+    fn record_double(&mut self) {
+        let offset = self.main[B8].at();
+        if let Some(edit) = self.targets.iter().position(|t| self.path.as_slice() == *t) {
+            self.double_hits.push(Hit {
+                edit,
+                offset,
+                datatype: node::DOUBLE,
+            });
+        }
+    }
+
     /// Records the current scalar as a hit if its path matches a target.
     fn record(&mut self, lane: usize, datatype: u8) {
         let offset = self.main[lane].at();
@@ -388,7 +464,10 @@ impl<'a> PathWalk<'a> {
                 self.record(B8, datatype);
                 self.main[B8].pos += 8;
             }
-            DOUBLE => self.main[B8].pos += 8,
+            DOUBLE => {
+                self.record_double();
+                self.main[B8].pos += 8;
+            }
             INT16 | UINT16 => {
                 self.record(B2, datatype);
                 self.main[B2].pos += 2;
@@ -401,8 +480,11 @@ impl<'a> PathWalk<'a> {
                 self.record_bool_value(self.main[B1].at());
                 self.main[B1].pos += 1;
             }
+            // BINARY_BLOB consumes nothing from the typed lanes (its bytes live in
+            // the separate blob region the reader pulls from), so it advances no
+            // cursor here, like the tagless constants.
             NULL | BOOLEAN_TRUE | BOOLEAN_FALSE | INT64_ZERO | INT64_ONE | DOUBLE_ZERO
-            | DOUBLE_ONE => {}
+            | DOUBLE_ONE | BINARY_BLOB => {}
             ARRAY => {
                 let n = self.lane_u32(B4)?;
                 for i in 0..n {
@@ -444,7 +526,13 @@ impl<'a> PathWalk<'a> {
                 std::mem::swap(&mut self.main, &mut self.aux);
             }
             OBJECT => {
-                let n = self.obj_len()?;
+                // v5 reads the member count from the object-length lane; v4 reads
+                // it from the b4 lane inline (it has no object-length lane).
+                let n = if self.version >= 5 {
+                    self.obj_len()?
+                } else {
+                    self.lane_u32(B4)?
+                };
                 for _ in 0..n {
                     let type_off = self.types.at();
                     let vt = self.read_type()?;
@@ -513,9 +601,89 @@ struct Lanes {
     strings: Vec<String>,
 }
 
+/// Computes the [`Lanes`] of an uncompressed block, dispatching on KV3 version:
+/// v5's two-buffer layout or v4's single buffer. (v1..=3 are not patched in place.)
+fn lanes(block: &[u8], version: u32) -> Result<Lanes, DecodeError> {
+    match version {
+        5 => lanes_v5(block),
+        4 => lanes_v4(block),
+        _ => Err(DecodeError::Kv3("KV3 in-place patch supports only v4/v5")),
+    }
+}
+
+/// Computes the [`Lanes`] of an uncompressed **v4** block. Mirrors `reader`'s
+/// `layout_single`: one buffer at offset 72 laid out as
+/// `[b1][align2 b2][align4 b4][align8 b8][strings][types][trailer]`. The string
+/// count is the first int of b4 (so the b4 value lane starts 4 bytes in); strings
+/// and types are inline regions, not sub-buffers. There is no object-length lane
+/// (OBJECT member counts come from b4 at walk time) and no auxiliary buffer.
+fn lanes_v4(block: &[u8]) -> Result<Lanes, DecodeError> {
+    const BUF: usize = 72; // single buffer base in an uncompressed v4 block
+
+    // v4 header counts (see reader::decode).
+    let count_b1 = i32_at(block, 28)? as usize;
+    let count_b4 = i32_at(block, 32)? as usize;
+    let count_b8 = i32_at(block, 36)? as usize;
+    let count_b2 = i32_at(block, 64)? as usize;
+
+    let mut off = 0usize;
+    let b1_start = off;
+    off += count_b1;
+    let (b2_start, _) = lane(&mut off, count_b2, 2);
+    let (b4_start, _) = lane(&mut off, count_b4, 4);
+    // b8 is 8-aligned whether or not it is present (mirrors `layout_single`); the
+    // string region begins immediately after it.
+    let b8_start = if count_b8 > 0 {
+        lane(&mut off, count_b8, 8).0
+    } else {
+        align(&mut off, 8);
+        off
+    };
+
+    // String count is the first int of b4; the strings themselves are the
+    // null-terminated run at `off`, and the type stream follows them.
+    let string_count = u32::try_from(i32_at(block, BUF + b4_start)?)
+        .map_err(|_| DecodeError::Kv3("negative string count"))? as usize;
+    let mut sp = BUF + off;
+    let mut strings = Vec::with_capacity(string_count);
+    for _ in 0..string_count {
+        strings.push(read_cstr(block, &mut sp)?);
+    }
+    let types = Lane { base: sp, pos: 0 };
+
+    let main = [
+        Lane {
+            base: BUF + b1_start,
+            pos: 0,
+        },
+        Lane {
+            base: BUF + b2_start,
+            pos: 0,
+        },
+        Lane {
+            base: BUF + b4_start + 4, // skip the leading string count
+            pos: 0,
+        },
+        Lane {
+            base: BUF + b8_start,
+            pos: 0,
+        },
+    ];
+    // v4 has no object-length lane and no auxiliary buffer; those lanes are never
+    // read while walking a v4 block, so an empty placeholder is correct.
+    let empty = Lane { base: 0, pos: 0 };
+    Ok(Lanes {
+        types,
+        obj_lengths: empty,
+        main,
+        aux: [empty, empty, empty, empty],
+        strings,
+    })
+}
+
 /// Computes the [`Lanes`] of an uncompressed v5 block. Mirrors `reader::decode`'s
 /// field offsets and buffer layout.
-fn lanes(block: &[u8]) -> Result<Lanes, DecodeError> {
+fn lanes_v5(block: &[u8]) -> Result<Lanes, DecodeError> {
     // Header counts (v5). Aux counts are the "first" count block; main counts
     // sit in the v5-specific tail.
     let aux_b1 = i32_at(block, 28)? as usize;
@@ -610,7 +778,9 @@ fn lanes(block: &[u8]) -> Result<Lanes, DecodeError> {
 
 impl<'a> Walk<'a> {
     fn new(block: &'a [u8], targets: &'a [(usize, usize)]) -> Result<Self, DecodeError> {
-        let l = lanes(block)?;
+        // `neutralize_draw_calls` (the only Walk caller) is v5-only and has already
+        // verified the block is v5 before constructing the walker.
+        let l = lanes(block, 5)?;
         Ok(Walk {
             block,
             types: l.types,

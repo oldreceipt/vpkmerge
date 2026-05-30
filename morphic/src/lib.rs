@@ -104,3 +104,17 @@ pub fn patch_kv3_resource_scalars(
     let new_data = kv3::set_scalars(data, edits)?;
     resource.rebuild_with_data(&new_data)
 }
+
+/// Patch `DOUBLE` (f64) fields of a resource's KV3 `DATA` block in place by path,
+/// preserving every other byte. The double sibling of [`patch_kv3_resource_scalars`],
+/// built to retint a material's `g_vColorTint` RGBA vector in a `.vmat_c` without a
+/// lossy re-encode. Edits and their path contract are exactly [`kv3::set_doubles`]'s.
+pub fn patch_kv3_resource_doubles(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, f64)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_doubles(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
