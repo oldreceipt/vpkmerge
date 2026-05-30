@@ -69,6 +69,110 @@ pub fn to_glb_textured(model: &Model, files: &dyn FileResolver) -> Result<Vec<u8
     build(model, Some(files))
 }
 
+/// Writes a single vertex buffer as a minimal `.glb` for external editing
+/// (Blender): one mesh, one triangle primitive over `vb` with POSITION + NORMAL,
+/// plus a custom `_ORIGID` SCALAR attribute holding each vertex's original index.
+///
+/// Positions are emitted in raw Source space (no Y-up/scale transform), so the
+/// edited positions read straight back into [`super::replace_vertex_positions`]
+/// with no inverse transform (the model just appears Z-up in a glTF viewer). The
+/// `_ORIGID` carrier survives Blender's import/export vertex split + reorder, so
+/// the edited mesh maps back to the original buffer by id. `indices` is the
+/// buffer's triangulation (concatenated draw-call indices).
+pub fn to_edit_glb(vb: &VertexBuffer, indices: &[u32]) -> Result<Vec<u8>, DecodeError> {
+    let mut b = Builder::default();
+    b.root.asset.generator = Some("morphic".to_owned());
+    let count = vb.element_count;
+
+    let pos_bytes: Vec<u8> = vb.positions.iter().flat_map(f32x).collect();
+    let pos_view = b.add_view(&pos_bytes, json::buffer::Target::ArrayBuffer);
+    let (min, max) = bounds(&vb.positions);
+    let position = b.add_accessor(
+        pos_view,
+        count,
+        json::accessor::ComponentType::F32,
+        json::accessor::Type::Vec3,
+        Some((min, max)),
+    );
+
+    let mut attributes = BTreeMap::new();
+    attributes.insert(Valid(json::mesh::Semantic::Positions), position);
+
+    if vb.normals.len() == count {
+        let nb: Vec<u8> = vb.normals.iter().flat_map(f32x).collect();
+        let nv = b.add_view(&nb, json::buffer::Target::ArrayBuffer);
+        let na = b.add_accessor(
+            nv,
+            count,
+            json::accessor::ComponentType::F32,
+            json::accessor::Type::Vec3,
+            None,
+        );
+        attributes.insert(Valid(json::mesh::Semantic::Normals), na);
+    }
+
+    // _ORIGID carrier: per-vertex f32 index (exact for counts < 2^24).
+    let id_bytes: Vec<u8> = (0..count).flat_map(|i| (i as f32).to_le_bytes()).collect();
+    let id_view = b.add_view(&id_bytes, json::buffer::Target::ArrayBuffer);
+    let id_acc = b.add_accessor(
+        id_view,
+        count,
+        json::accessor::ComponentType::F32,
+        json::accessor::Type::Scalar,
+        None,
+    );
+    attributes.insert(
+        Valid(json::mesh::Semantic::Extras(ORIGID_ATTR.to_string())),
+        id_acc,
+    );
+
+    let tri_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+    let tri_view = b.add_view(&tri_bytes, json::buffer::Target::ElementArrayBuffer);
+    let tri_acc = b.add_accessor(
+        tri_view,
+        indices.len(),
+        json::accessor::ComponentType::U32,
+        json::accessor::Type::Scalar,
+        None,
+    );
+
+    let primitive = json::mesh::Primitive {
+        attributes,
+        indices: Some(tri_acc),
+        material: None,
+        mode: Valid(json::mesh::Mode::Triangles),
+        targets: None,
+        extensions: None,
+        extras: Default::default(),
+    };
+    let mesh = b.root.push(json::Mesh {
+        primitives: vec![primitive],
+        weights: None,
+        name: Some("edit".to_string()),
+        extensions: None,
+        extras: Default::default(),
+    });
+    let node = b.root.push(json::Node {
+        mesh: Some(mesh),
+        name: Some("edit".to_string()),
+        ..default_node()
+    });
+    b.root.push(json::Scene {
+        nodes: vec![node],
+        extensions: None,
+        extras: Default::default(),
+        name: None,
+    });
+    b.root.scene = Some(json::Index::new(0));
+    b.finish()
+}
+
+/// Semantic name for the original-vertex-index carrier. `gltf-json`'s
+/// `Semantic::Extras` serialization prepends one `_`, so this string `"ORIGID"`
+/// lands on disk as the conventional `_ORIGID` custom attribute (a single
+/// underscore, which Blender round-trips cleanly).
+pub(crate) const ORIGID_ATTR: &str = "ORIGID";
+
 fn build(model: &Model, files: Option<&dyn FileResolver>) -> Result<Vec<u8>, DecodeError> {
     let mut b = Builder::default();
     b.root.asset.generator = Some("morphic".to_owned());
@@ -374,24 +478,26 @@ impl Builder {
     }
 
     /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
-    /// accessors), or `None` when the whole part is a non-renderable shell.
+    /// accessors), or `None` when the whole part is dropped ([`is_dropped`]).
     /// Deadlock's NPR shells (the inverted-hull `*_outline` and the additive
     /// `*_glow` effect meshes) are dropped: as plain glTF geometry they collapse
     /// to an opaque hull that whitewashes the model. Reproducing them is a
-    /// renderer-side (three.js) concern, not a baked one.
+    /// renderer-side (three.js) concern, not a baked one. Hidden-by-default
+    /// alt-forms (Viscous's `inflated` Goo Ball) are dropped too: see
+    /// [`is_alt_form`].
     fn add_mesh(
         &mut self,
         part: &MeshPart,
         mat_index: &mut BTreeMap<String, json::Index<json::Material>>,
         files: Option<&dyn FileResolver>,
     ) -> Option<json::Index<json::Mesh>> {
-        if is_shell(&part.name) {
+        if is_dropped(&part.name) {
             return None;
         }
         let renderable: Vec<_> = part
             .primitives
             .iter()
-            .filter(|p| !is_shell(&p.material))
+            .filter(|p| !is_dropped(&p.material))
             .collect();
         if renderable.is_empty() {
             return None;
@@ -812,6 +918,30 @@ pub(crate) fn is_glow_material(path: &str) -> bool {
 /// (`is_glow_material`). Such geometry is dropped from the GLB.
 pub(crate) fn is_shell(name: &str) -> bool {
     is_outline_material(name) || is_glow_material(name)
+}
+
+/// True for a hero "alt-form" mesh part that is hidden in the default
+/// menu/idle pose and only revealed while an ability is active. Unlike a shell
+/// this is real, fully-shaded geometry; the game hides it (a zeroed bone scale /
+/// visibility flag driven outside the locomotion clips we sample), so a static
+/// posed export keeps it at full bind size and it swallows the body.
+///
+/// Currently just Viscous's Goo Ball: mesh part `inflated` (material
+/// `viscous_ball`), a ~1.4x-body sphere present in EVERY clip we tried
+/// (`ui_hero_select`, `primary_stand_idle`, ...), so no pose clip collapses it.
+/// Matched on the part name so all of its primitives (incl. the shared
+/// `black`/`viscous_swatches` ones) drop together; the material token is a
+/// belt-and-braces match should a skin rename the part.
+pub(crate) fn is_alt_form(name: &str) -> bool {
+    let lc = name.to_ascii_lowercase();
+    lc == "inflated" || lc.contains("viscous_ball")
+}
+
+/// True for any mesh part or material omitted from a static hero-card GLB: a
+/// non-renderable NPR shell ([`is_shell`]) or a hidden-by-default alt-form
+/// ([`is_alt_form`]).
+pub(crate) fn is_dropped(name: &str) -> bool {
+    is_shell(name) || is_alt_form(name)
 }
 
 /// Appends `_c` to a source resource path unless it is already a compiled path.

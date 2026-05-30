@@ -18,14 +18,29 @@ use std::path::{Path, PathBuf};
 pub mod model;
 pub mod portrait;
 pub use model::{
-    edit_model_geometry, export_hero_model, export_model, inspect_models, model_vertex_targets,
-    AnimOptions, GeometryEdit, GeometryEditReport, ModelEntry, ModelInfo, PoseSelection,
-    VertexTarget, DEFAULT_POSE_CLIPS,
+    apply_model_edit_glb, edit_model_geometry, export_hero_model, export_model,
+    export_model_buffer_glb, inspect_models, model_draw_call_targets, model_vertex_targets,
+    recolor_models_to_addon, reencode_model_mdat, remove_model_material, replace_model_part,
+    AnimOptions, DrawCallInfo, GeometryEdit, GeometryEditReport, MaterialRemovalReport, ModelEntry,
+    ModelInfo, ModelRecolorEntry, PartReplacementReport, PoseSelection, RemovedDrawCall,
+    ReplacedMeshPart, VertexTarget, DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
 pub mod soundevents;
 pub use soundevents::{EventSummary, SoundEvents};
+
+pub mod recolor;
+pub use recolor::{
+    inspect_texture, recolor_model_vertex_colors, recolor_texture_hue, recolor_texture_image,
+    recolor_texture_preview_png, ModelRecolorStats, Recolor, TextureSummary,
+};
+
+pub mod hero_recolor;
+pub use hero_recolor::{
+    recipe_for, recolor_hero_preview_png, recolor_hero_to_addon, recolor_particle_bytes,
+    HeroRecolorRecipe, HeroRecolorReport,
+};
 
 #[derive(Debug, Clone)]
 pub struct ModInfo {
@@ -251,6 +266,23 @@ pub fn pack<O: AsRef<Path>>(files: &[(&str, &[u8])], output: O) -> Result<()> {
         .save(output)
         .with_context(|| format!("saving {}", output.display()))?;
     Ok(())
+}
+
+/// Read one entry's raw bytes out of a VPK.
+///
+/// A small convenience for callers that don't depend on `valve_pak` directly
+/// (e.g. the CLI), mirroring what `SoundEvents::from_vpk` does internally.
+/// Chunked inputs are transparent: open the `_dir.vpk` and the chunk files are
+/// read automatically.
+pub fn read_vpk_entry<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result<Vec<u8>> {
+    let vpk_path = vpk_path.as_ref();
+    let vpk =
+        valve_pak::open(vpk_path).with_context(|| format!("opening {}", vpk_path.display()))?;
+    let mut file = vpk
+        .get_file(entry)
+        .with_context(|| format!("no entry {entry:?} in {}", vpk_path.display()))?;
+    file.read_all()
+        .with_context(|| format!("reading {entry:?} from {}", vpk_path.display()))
 }
 
 /// Route entries from `input` into N output VPKs according to `outputs`.

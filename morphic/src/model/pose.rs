@@ -17,10 +17,21 @@
 use std::collections::HashMap;
 
 use super::glb::default_weights;
-use super::math::{Mat4, Vec3};
+use super::math::{Mat4, Quat, Vec3};
 use super::mesh::{MeshPart, VertexBuffer};
 use super::skeleton::{Bone, Skeleton};
 use super::{BoneTrack, Clip, Model};
+
+/// A bone's parent-space (local) transform, sampled from an external clip whose
+/// tracks are keyed by bone *name* rather than by this model's bone index (e.g.
+/// a loose NM clip; see [`super::nm`]). Composed the same way as a posed bone's
+/// local in [`posed_local`], so a value equal to the bone's bind reproduces bind.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalPose {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: f32,
+}
 
 /// Bakes a single frame of the first matching clip into the mesh, returning a
 /// static [`Model`] (empty skeleton, no skin weights, no animations).
@@ -53,6 +64,35 @@ pub fn bake_pose_from(model: &Model, donor: &Model, clips: &[&str], frame: usize
     let palette =
         donor_palette(model, donor, clips, frame).or_else(|| self_palette(model, clips, frame));
     bake_with(model, palette.as_deref())
+}
+
+/// Bakes a single static pose whose per-bone local transforms are supplied by
+/// *bone name* (`pose_by_name`), mapping them onto `model`'s own skeleton. Bones
+/// absent from the map keep their bind local. This is the by-name path
+/// [`bake_pose_from`] uses, generalized to a clip source that is not a [`Clip`]
+/// (a loose NM pose, decoded in [`super::nm`]): same hero, same rig, no
+/// retargeting. An empty skeleton, or an empty map, yields the static bind pose.
+#[must_use]
+pub fn bake_pose_named<S: std::hash::BuildHasher>(
+    model: &Model,
+    pose_by_name: &HashMap<String, LocalPose, S>,
+) -> Model {
+    if model.skeleton.bones.is_empty() {
+        return bake_with(model, None);
+    }
+    let posed_local = model
+        .skeleton
+        .bones
+        .iter()
+        .map(|b| match pose_by_name.get(&b.name) {
+            Some(lp) => Mat4::from_scale(lp.scale)
+                .mul(&Mat4::from_quaternion(lp.rotation))
+                .mul(&Mat4::from_translation(lp.translation)),
+            None => b.local_bind,
+        })
+        .collect::<Vec<_>>();
+    let palette = finish_palette(&model.skeleton, &posed_local);
+    bake_with(model, Some(&palette))
 }
 
 /// Builds the static output `Model` from `model`'s meshes and an optional skin

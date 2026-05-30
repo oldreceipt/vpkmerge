@@ -183,6 +183,75 @@ pub fn remap_table(data: &Value, mesh_index: usize) -> Option<Vec<usize>> {
     Some(out)
 }
 
+/// Inverts a mesh bone-remap table (mesh-local -> model bone, as
+/// [`remap_table`] returns) into a `model bone -> mesh-local` lookup. The read
+/// path applies the remap *forward* (on-disk `BLENDINDICES` are local, decoded to
+/// model bones); the write path needs the inverse to put a model-space `JOINTS_0`
+/// back into the mesh's local palette. If two local slots map to the same model
+/// bone (palette duplicate), the lowest local wins (either references the same
+/// bone, so the result is identical).
+#[must_use]
+pub fn invert_remap(remap: &[usize]) -> std::collections::HashMap<usize, u16> {
+    let mut inv = std::collections::HashMap::with_capacity(remap.len());
+    for (local, &model) in remap.iter().enumerate() {
+        if let Ok(local_u16) = u16::try_from(local) {
+            inv.entry(model).or_insert(local_u16);
+        }
+    }
+    inv
+}
+
+/// Maps a skinned mesh's model-space `JOINTS_0` into a target mesh's local
+/// `BLENDINDICES` space using that mesh's bone remap (local -> model). This is
+/// T1d-c: the new mesh is skinned against the exported hero skeleton (glTF joint
+/// indices == model bone indices), but the replaced part's draw call resolves
+/// `BLENDINDICES` through the *target mesh's* palette, so each influence must be
+/// expressed as a local palette slot.
+///
+/// Per influence lane: a *significant* influence (non-zero weight, or lane 0 when
+/// no weights are supplied) must resolve to a local slot, else this errors so a
+/// mis-skinned part fails loudly instead of binding to the wrong bone. A
+/// non-significant lane (zero weight) maps to its local slot if the bone is in the
+/// palette, else to local 0 (its index is unused at render time).
+///
+/// `weights` is optional: a rigid mesh (`BLENDINDICES` but no `BLENDWEIGHT`)
+/// passes `None`, and only lane 0 is treated as significant.
+pub fn localize_joints(
+    joints: &[[u16; 4]],
+    weights: Option<&[[f32; 4]]>,
+    remap: &[usize],
+) -> Result<Vec<[u16; 4]>, DecodeError> {
+    if let Some(w) = weights {
+        if w.len() != joints.len() {
+            return Err(DecodeError::Model("JOINTS_0 / WEIGHTS_0 count mismatch"));
+        }
+    }
+    let inv = invert_remap(remap);
+
+    let mut out = Vec::with_capacity(joints.len());
+    for (i, j) in joints.iter().enumerate() {
+        let mut local = [0u16; 4];
+        for (k, &model) in j.iter().enumerate() {
+            let significant = match weights {
+                Some(w) => w[i][k] > 0.0,
+                None => k == 0,
+            };
+            match inv.get(&usize::from(model)) {
+                Some(&l) => local[k] = l,
+                None if !significant => local[k] = 0,
+                None => {
+                    return Err(DecodeError::Model(
+                        "JOINTS_0 references a model bone outside the target mesh's bone palette \
+                         (weight-paint the new mesh to bones the replaced part already uses)",
+                    ))
+                }
+            }
+        }
+        out.push(local);
+    }
+    Ok(out)
+}
+
 fn read_vec3(v: &Value) -> Result<Vec3, DecodeError> {
     let a = v
         .as_array()
@@ -216,4 +285,83 @@ fn f64_to_f32(v: &Value) -> Result<f32, DecodeError> {
     v.as_f64()
         .map(|d| d as f32)
         .ok_or(DecodeError::Model("expected numeric component"))
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+
+    /// `invert_remap` turns a subset palette (local -> model) into model -> local.
+    #[test]
+    fn invert_remap_inverts_a_subset_palette() {
+        // The gun's real palette prefix: local 2 -> model 4, local 4 -> model 7.
+        let remap = vec![0usize, 1, 4, 5, 7, 31];
+        let inv = invert_remap(&remap);
+        assert_eq!(inv.get(&0), Some(&0));
+        assert_eq!(inv.get(&1), Some(&1));
+        assert_eq!(inv.get(&4), Some(&2));
+        assert_eq!(inv.get(&5), Some(&3));
+        assert_eq!(inv.get(&7), Some(&4));
+        assert_eq!(inv.get(&31), Some(&5));
+        assert_eq!(inv.get(&99), None, "bone not in palette");
+    }
+
+    /// A palette duplicate resolves to the lowest local (both reference the same
+    /// model bone, so the choice is render-equivalent).
+    #[test]
+    fn invert_remap_keeps_lowest_local_on_duplicate() {
+        let remap = vec![3usize, 7, 3];
+        let inv = invert_remap(&remap);
+        assert_eq!(inv.get(&3), Some(&0), "first local wins");
+    }
+
+    /// Model-space joints are mapped into the local palette; the read path's
+    /// forward remap would turn them back into the original model bones.
+    #[test]
+    fn localize_joints_maps_into_local_palette() {
+        let remap = vec![0usize, 1, 4, 5, 7, 31];
+        // model bones 7, 4, 1, 0 -> local 4, 2, 1, 0.
+        let joints = vec![[7u16, 4, 1, 0]];
+        let weights = vec![[0.5f32, 0.3, 0.2, 0.0]];
+        let local = localize_joints(&joints, Some(&weights), &remap).expect("localize");
+        assert_eq!(local, vec![[4, 2, 1, 0]]);
+        // The forward remap recovers the model bones for the weighted lanes.
+        for k in 0..3 {
+            assert_eq!(remap[usize::from(local[0][k])], usize::from(joints[0][k]));
+        }
+    }
+
+    /// A significant (non-zero-weight) influence on a bone outside the palette is
+    /// a hard error: the part would otherwise bind to the wrong bone.
+    #[test]
+    fn localize_joints_errors_on_significant_bone_outside_palette() {
+        let remap = vec![0usize, 1, 4];
+        let joints = vec![[9u16, 0, 0, 0]]; // model bone 9 not in palette
+        let weights = vec![[1.0f32, 0.0, 0.0, 0.0]];
+        assert!(localize_joints(&joints, Some(&weights), &remap).is_err());
+    }
+
+    /// A zero-weight lane referencing an out-of-palette bone is tolerated (maps to
+    /// local 0); its index is unused at render time.
+    #[test]
+    fn localize_joints_ignores_zero_weight_out_of_palette() {
+        let remap = vec![0usize, 1, 4];
+        let joints = vec![[4u16, 99, 99, 99]];
+        let weights = vec![[1.0f32, 0.0, 0.0, 0.0]];
+        let local = localize_joints(&joints, Some(&weights), &remap).expect("localize");
+        assert_eq!(local, vec![[2, 0, 0, 0]]);
+    }
+
+    /// A rigid mesh (no weights): only lane 0 must resolve; the rest map to 0.
+    #[test]
+    fn localize_joints_rigid_only_lane0_significant() {
+        let remap = vec![0usize, 1, 4, 7];
+        let joints = vec![[7u16, 88, 88, 88]];
+        let local = localize_joints(&joints, None, &remap).expect("localize rigid");
+        assert_eq!(local, vec![[3, 0, 0, 0]]);
+
+        // But a rigid mesh whose lane 0 is out of palette still errors.
+        let bad = vec![[88u16, 0, 0, 0]];
+        assert!(localize_joints(&bad, None, &remap).is_err());
+    }
 }

@@ -11,7 +11,7 @@
 mod index;
 mod vertex;
 
-pub use index::decode_index_buffer;
+pub use index::{decode_index_buffer, encode_index_buffer};
 pub use vertex::{decode_vertex_buffer, encode_vertex_buffer};
 
 #[cfg(test)]

@@ -18,20 +18,34 @@ mod edit;
 mod glb;
 mod math;
 mod mesh;
+mod nm;
 mod pose;
 mod skeleton;
+mod topology;
 mod vbib;
 
 #[cfg(test)]
 mod tests;
 
 pub use animation::{BoneTrack, Clip};
-pub use edit::{read_vertex_positions, replace_vertex_positions, vertex_targets, VertexTarget};
+pub use edit::{
+    apply_edited_glb, build_mesh_buffers, build_mesh_buffers_from_glb,
+    build_mesh_buffers_to_layout, export_buffer_for_edit, read_edited_mesh, read_vertex_colors,
+    read_vertex_positions, recolor_vertex_buffer, replace_vertex_positions, vertex_targets,
+    EncodedMesh, VertexTarget,
+};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
-pub use mesh::{MeshPart, Primitive, VertexBuffer};
-pub use pose::{bake_pose, bake_pose_from};
-pub use skeleton::{Bone, Skeleton};
+pub use mesh::{
+    assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, MeshPart, Primitive, VertexBuffer,
+};
+pub use nm::{bake_nm_pose, decode_nm_pose, decode_nm_skeleton, NmPose, NmSkeleton};
+pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
+pub use skeleton::{invert_remap, localize_joints, Bone, Skeleton};
+pub use topology::{
+    draw_call_targets, reencode_all_mdat_identity, remove_draw_calls_by_material,
+    replace_mesh_part, DrawCallInfo, RemovedDrawCall, ReplacedMeshPart,
+};
 
 use crate::error::DecodeError;
 use crate::resource::Resource;

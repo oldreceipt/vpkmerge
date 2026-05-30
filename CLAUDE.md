@@ -151,6 +151,54 @@ Built for a Grimoire per-ability sound picker (control `volume`/`pitch`/clip cho
 just swap the audio). Full writeup + the pending in-game verification step:
 [docs/spike-vsndevts-kv3.md](./docs/spike-vsndevts-kv3.md).
 
+## Texture recolor (`.vtex_c`)
+
+`vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top
+mip, set every pixel's hue to a target (keeping each pixel's saturation and value), then
+`morphic::replace_mip_chain` re-encodes the full mip chain in the texture's own format.
+Packing the result at the source entry path overrides the base texture, no `.vmat_c` edit.
+Hue is **set** (absolute), not rotated, so the same hue value matches the particle recolor;
+neutral pixels (saturation 0) stay neutral. **LDR (8-bit) only** (HDR f16 is refused).
+
+API: `recolor_texture_hue(bytes, hue) -> Vec<u8>` (full re-encode), `recolor_texture_image`
+(fast, no re-encode, for a live UI preview), `recolor_texture_preview_png`, `inspect_texture`,
+and `read_vpk_entry(vpk, entry)`.
+
+Exposed as `vpkmerge texture <file|entry> [--from-vpk <vpk>] --hue <DEG> [--preview <PNG>]
+[--encode OUT] [--encode-vpk OUT_dir.vpk [--vpk-entry PATH]]`. Built for the Deadlock
+ability-VFX recolor (ult dragon, projectile self-illum), the texture half of the particle
+recolor. Full writeup: [../grimoire/docs/ability-vfx-recolor.md](../grimoire/docs/ability-vfx-recolor.md).
+
+## Model vertex-color recolor (`.vmdl_c`)
+
+The **third** VFX recolor mechanism (after particle params + texture hue): some effects
+bake their color into the mesh's per-vertex `COLOR` attribute (Paige's ult horse/knight),
+which a material tint can only multiply, not replace. `vpkmerge_core::recolor_model_vertex_colors`
+decodes each mesh vertex buffer, sets every `COLOR` vertex's hue to a target (keeping S+V,
+the **same `set_hue` as the texture/particle recolor** so one hue lands all three), and writes
+it back. Positions/normals/UVs/skin weights are byte-preserved. **In-game confirmed** (Paige
+ult horse/knight read purple).
+
+Two buffer encodings, both written **without re-encoding meshopt** (a re-encode is not
+byte-compatible with the engine's meshopt decoder and renders garbled):
+- **Uncompressed** buffer (Deadlock hero models): the `COLOR` bytes are patched in place in
+  the file: output is byte-identical except the color lane (no container rebuild).
+- **Meshopt** buffer (Deadlock `models/particle/*`): decoded, color-edited, then stored
+  **uncompressed** with `m_bMeshoptCompressed` flipped to false in the `CTRL` registry
+  (byte-faithfully, via `morphic::kv3::set_bools`). The engine reads uncompressed natively.
+
+`morphic` primitives: `recolor_vertex_buffer`, `read_vertex_colors`,
+`OnDiskBuffer::write_colors`, `VertexTarget::has_color`, `kv3::set_bools`.
+
+Exposed as `vpkmerge model recolor [--list] --vpk <vpk> [--base <vpk>] --hue <DEG>
+--encode-vpk <OUT_dir.vpk> <ENTRY>...` (multi-model -> one addon, mirrors `texture`).
+
+**Finding the right model is the hard part:** an ult's rendered body is referenced by its
+model particle (`.vpcf_c`), not named obviously. Paige's ult body is
+`models/particle/bookworm_horse_knight.vmdl_c` (from `bookworm_ultimate_model.vpcf_c`), not
+the `heroes_wip/bookworm/bookworm_horse*` models. Full writeup + workflow:
+[docs/handoff-vertex-color-recolor.md](docs/handoff-vertex-color-recolor.md).
+
 ## Related
 
 - `../grimoire/` is the mod manager that uses these VPKs. The user plans to eventually fold the GUI logic into the Grimoire desktop client; treat `gui/` as a prototype for that integration.

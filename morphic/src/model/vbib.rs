@@ -266,6 +266,80 @@ impl OnDiskBuffer {
         Ok(())
     }
 
+    /// Every `COLOR` attribute in this buffer's layout, cloned so the caller can
+    /// hold them while mutating `self` via [`write_colors`]. A buffer usually has
+    /// exactly one, but a paint/AO split could carry more (different semantic
+    /// indices); the recolor path edits all of them.
+    pub fn color_fields(&self) -> Vec<InputLayoutField> {
+        self.fields
+            .iter()
+            .filter(|f| f.semantic_name == "COLOR")
+            .cloned()
+            .collect()
+    }
+
+    /// Overwrites the `attr` lane (a `COLOR` attribute) in-place with `colors`
+    /// (RGBA in 0..1), leaving every other interleaved attribute byte-for-byte
+    /// untouched. The color analog of [`write_positions`]: the basis of a
+    /// vertex-color recolor (rewrite the baked per-vertex tint, keep topology).
+    ///
+    /// Quantizes back into the attribute's on-disk format, covering the three
+    /// formats [`vector4`] reads (`R8G8B8A8_UNORM`, `R16G16B16A16_FLOAT`,
+    /// `R32G32B32A32_FLOAT`). Errors on an unsupported format or a count mismatch
+    /// (a vertex-count change is a topology edit, out of scope).
+    ///
+    /// [`vector4`]: Self::vector4
+    pub fn write_colors(
+        &mut self,
+        attr: &InputLayoutField,
+        colors: &[[f32; 4]],
+    ) -> Result<(), DecodeError> {
+        if attr.semantic_name != "COLOR" {
+            return Err(DecodeError::Model(
+                "write_colors called on a non-COLOR attribute",
+            ));
+        }
+        if colors.len() != self.element_count {
+            return Err(DecodeError::Model(
+                "color count does not match vertex count (topology change not supported)",
+            ));
+        }
+        let offset = attr.offset;
+        let stride = self.element_size;
+        for (i, c) in colors.iter().enumerate() {
+            let o = i * stride + offset;
+            match attr.format {
+                DxgiFormat::R8G8B8A8Unorm => {
+                    let bytes = [unorm8(c[0]), unorm8(c[1]), unorm8(c[2]), unorm8(c[3])];
+                    self.write_at(o, &bytes)?;
+                }
+                DxgiFormat::R16G16B16A16Float => {
+                    for (k, &v) in c.iter().enumerate() {
+                        let bits = half::f16::from_f32(v).to_bits().to_le_bytes();
+                        self.write_at(o + k * 2, &bits)?;
+                    }
+                }
+                DxgiFormat::R32G32B32A32Float => {
+                    for (k, &v) in c.iter().enumerate() {
+                        self.write_at(o + k * 4, &v.to_le_bytes())?;
+                    }
+                }
+                _ => return Err(DecodeError::Model("unsupported COLOR format for write")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Copies `bytes` into `self.data` at `o`, erroring if it would run past the
+    /// buffer. The shared bounds-checked write under [`write_colors`].
+    fn write_at(&mut self, o: usize, bytes: &[u8]) -> Result<(), DecodeError> {
+        self.data
+            .get_mut(o..o + bytes.len())
+            .ok_or(DecodeError::Model("color write past buffer"))?
+            .copy_from_slice(bytes);
+        Ok(())
+    }
+
     /// Generic 2-component attribute (UVs), with the half/unorm/snorm variants.
     pub fn vector2(&self, attr: &InputLayoutField) -> Result<Vec<[f32; 2]>, DecodeError> {
         let mut out = Vec::with_capacity(self.element_count);
@@ -469,6 +543,13 @@ impl OnDiskBuffer {
     }
 }
 
+/// Quantize a 0..1 channel to `u8` unorm (the inverse of `vector4`'s
+/// `u8 / 255.0`), clamping out-of-range values. The cast is lossless after the
+/// clamp+round; truncation/sign-loss are blanket-allowed for this module.
+fn unorm8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 fn read_n<const N: usize>(data: &[u8], o: usize) -> Result<[u8; N], DecodeError> {
     let end = o
         .checked_add(N)
@@ -631,6 +712,77 @@ mod tests {
                 "post-bytes"
             );
         }
+    }
+
+    /// `write_colors` overwrites only the 4-byte COLOR lane (`R8G8B8A8_UNORM`),
+    /// the values round-trip through `vector4` within the u8 quantum, and every
+    /// other byte of the stride is preserved.
+    #[test]
+    fn write_colors_touches_only_the_color_lane() {
+        // 2 vertices, stride 16: COLOR (4 u8) at offset 8, with marker bytes
+        // before (0..8) and after (12..16) to prove the rest is untouched.
+        let stride = 16usize;
+        let count = 2usize;
+        let mut data = vec![0u8; count * stride];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_add(1); // distinct, non-zero filler
+        }
+        let color = InputLayoutField {
+            semantic_name: "COLOR".to_string(),
+            semantic_index: 0,
+            format: DxgiFormat::R8G8B8A8Unorm,
+            offset: 8,
+        };
+        let mut buf = OnDiskBuffer {
+            data: data.clone(),
+            element_count: count,
+            element_size: stride,
+            fields: vec![color.clone()],
+        };
+
+        let new = [[0.0f32, 0.5, 1.0, 1.0], [1.0, 0.25, 0.0, 0.75]];
+        buf.write_colors(&color, &new).expect("write colors");
+
+        // Colors read back within the unorm quantum.
+        let got = buf.vector4(&color).expect("read colors");
+        for (g, w) in got.iter().zip(&new) {
+            for k in 0..4 {
+                assert!((g[k] - w[k]).abs() <= 1.0 / 255.0, "{g:?} vs {w:?}");
+            }
+        }
+
+        // Bytes outside the COLOR lane (0..8 and 12..16 of each vertex) unchanged.
+        for v in 0..count {
+            let base = v * stride;
+            assert_eq!(
+                &buf.data[base..base + 8],
+                &data[base..base + 8],
+                "pre-bytes"
+            );
+            assert_eq!(
+                &buf.data[base + 12..base + 16],
+                &data[base + 12..base + 16],
+                "post-bytes"
+            );
+        }
+    }
+
+    /// `write_colors` rejects a count that does not match the vertex count.
+    #[test]
+    fn write_colors_rejects_count_mismatch() {
+        let color = InputLayoutField {
+            semantic_name: "COLOR".to_string(),
+            semantic_index: 0,
+            format: DxgiFormat::R8G8B8A8Unorm,
+            offset: 0,
+        };
+        let mut buf = OnDiskBuffer {
+            data: vec![0u8; 4],
+            element_count: 1,
+            element_size: 4,
+            fields: vec![color.clone()],
+        };
+        assert!(buf.write_colors(&color, &[[0.0; 4], [0.0; 4]]).is_err());
     }
 
     #[test]

@@ -6,7 +6,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub use morphic::model::{BlockSummary, ModelInfo, VertexTarget};
+pub use morphic::model::{
+    BlockSummary, DrawCallInfo, ModelInfo, RemovedDrawCall, ReplacedMeshPart, VertexTarget,
+};
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
 /// naming is not uniform across Deadlock heroes (Vindicta uses `ui_hero_pose`,
@@ -46,11 +48,13 @@ pub struct PoseSelection {
     pub clips: Vec<String>,
     /// Frame index to sample (clamped to the clip's range).
     pub frame: usize,
-    /// Error out instead of falling back to the static bind pose when neither
-    /// the model nor its base-pak donor carries any candidate clip. Lets a
-    /// caller tell "posed" from "would be an unposed bind/T-pose still" and fall
-    /// back to a 2D portrait. WIP heroes (`models/heroes_wip/...`) ship the rig
-    /// but bake no clips into the `.vmdl_c`, so they only ever bind-pose.
+    /// Error out instead of falling back to the static bind pose when no posed
+    /// frame is reachable: neither the model nor its base-pak donor carries a
+    /// candidate clip, and no loose NM pose clip resolves. Lets a caller tell
+    /// "posed" from "would be an unposed bind/T-pose still" and fall back to a 2D
+    /// portrait. WIP heroes (`models/heroes_wip/...`) embed no clips in the
+    /// `.vmdl_c`; their menu pose is recovered from a loose NM clip
+    /// (`clips/*.vnmclip_c`) when present, else they bind-pose.
     pub require: bool,
 }
 
@@ -180,8 +184,19 @@ fn export_resolved(
                 })
                 .transpose()?
         };
+        let donor_has_clip = donor.as_ref().is_some_and(carries_clip);
+        // Newer WIP heroes embed no clips and have no clip-carrying donor (their
+        // base entry is the same clipless model): their menu/idle pose ships as a
+        // loose NM clip (`clips/<name>.vnmclip_c` + `<h>.vnmskel_c`) behind an
+        // animation graph. Resolve and bake that static single frame directly.
+        // It wins over a clipless donor but never over a real embedded/donor clip.
+        let nm_posed = if has_own_clip || donor_has_clip {
+            None
+        } else {
+            bake_loose_nm_pose(&vpks, entry, &model, &candidates)
+        };
         if pose.require {
-            let has_clip = has_own_clip || donor.as_ref().is_some_and(carries_clip);
+            let has_clip = has_own_clip || donor_has_clip || nm_posed.is_some();
             let has_skeleton = !model.skeleton.bones.is_empty();
             if !has_skeleton || !has_clip {
                 anyhow::bail!(
@@ -193,6 +208,8 @@ fn export_resolved(
         }
         model = if has_own_clip {
             morphic::model::bake_pose(&model, &candidates, pose.frame)
+        } else if let Some(nm) = nm_posed {
+            nm
         } else if let Some(donor) = &donor {
             morphic::model::bake_pose_from(&model, donor, &candidates, pose.frame)
         } else {
@@ -391,6 +408,243 @@ pub fn edit_model_geometry(
     })
 }
 
+/// One model recolored by [`recolor_models_to_addon`].
+#[derive(Debug, Clone)]
+pub struct ModelRecolorEntry {
+    pub entry: String,
+    pub stats: crate::recolor::ModelRecolorStats,
+}
+
+/// Recolor the baked per-vertex colors of one or more model entries (read from
+/// `vpk`, then `base`) to `recolor`, packing them all into one addon VPK at
+/// `out`, each at its own entry path so it overrides the base pak in place. The
+/// model analog of the multi-entry `vpkmerge texture` recolor (the third VFX
+/// recolor mechanism, alongside particle params and texture hue).
+///
+/// Returns a per-entry report. Errors if an entry is missing, or carries no
+/// color-bearing vertex buffer (a likely wrong-model mistake) so a silent
+/// no-op addon is never written.
+pub fn recolor_models_to_addon(
+    vpk: impl AsRef<Path>,
+    entries: &[String],
+    base: Option<&Path>,
+    recolor: crate::recolor::Recolor,
+    out: impl AsRef<Path>,
+) -> Result<Vec<ModelRecolorEntry>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let mut packed: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut report = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let bytes =
+            read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+        let (recolored, stats) = crate::recolor::recolor_model_vertex_colors(&bytes, recolor)
+            .with_context(|| format!("recoloring {entry}"))?;
+        if stats.buffers_recolored == 0 {
+            anyhow::bail!("{entry} has no color-bearing vertex buffer to recolor (wrong model?)");
+        }
+        packed.push((entry.clone(), recolored));
+        report.push(ModelRecolorEntry {
+            entry: entry.clone(),
+            stats,
+        });
+    }
+    let refs: Vec<(&str, &[u8])> = packed
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    crate::pack(&refs, out.as_ref())
+        .with_context(|| format!("packing recolored models into {}", out.as_ref().display()))?;
+    Ok(report)
+}
+
+/// Exports one vertex buffer (by global block index) of a model to a `.glb` for
+/// reshaping in Blender: a single triangle mesh carrying a `_ORIGID` per-vertex
+/// attribute that maps the edit back to the original buffer (see
+/// [`apply_model_edit_glb`]). The model is read from `vpk` (then `base`).
+pub fn export_model_buffer_glb(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    block_index: usize,
+    out_glb: impl AsRef<Path>,
+) -> Result<()> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let glb = morphic::model::export_buffer_for_edit(&bytes, block_index)
+        .with_context(|| format!("exporting buffer at block {block_index} of {entry}"))?;
+    let out = out_glb.as_ref();
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(out, &glb).with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
+/// Applies a Blender-reshaped `.glb` (from [`export_model_buffer_glb`]) back onto
+/// a model: maps the edited positions to the original buffer via `_ORIGID`,
+/// splices, and packs a standalone addon VPK at `vpk_entry` (default `entry`).
+pub fn apply_model_edit_glb(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    block_index: usize,
+    glb_bytes: &[u8],
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<String> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let edited = morphic::model::apply_edited_glb(&bytes, block_index, glb_bytes)
+        .with_context(|| format!("applying edited glb to block {block_index} of {entry}"))?;
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+    Ok(vpk_entry)
+}
+
+/// What a [`remove_model_material`] run dropped and where it was packed.
+#[derive(Debug, Clone)]
+pub struct MaterialRemovalReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    /// Each draw call removed (its mesh, material, and vertex/index counts).
+    pub removed: Vec<RemovedDrawCall>,
+}
+
+/// Lists a model's renderable (LOD0) draw calls: the mesh part, the material each
+/// renders, and the vertex/index counts. The CLI uses this for `--list-drawcalls`
+/// so a user can find the exact material string to pass to
+/// [`remove_model_material`].
+pub fn model_draw_call_targets(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+) -> Result<Vec<DrawCallInfo>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    morphic::model::draw_call_targets(&bytes)
+        .with_context(|| format!("reading draw calls for {entry}"))
+}
+
+/// Removes every draw call whose material contains `material` (case-insensitive
+/// substring) from the model, across all LODs, and packs the edited `.vmdl_c`
+/// into a standalone addon VPK at `vpk_entry` (defaulting to `entry`, so it
+/// overrides the base pak). This is a draw-call-only edit (Tier 1a): the shared
+/// vertex/index buffers are untouched, so the targeted part simply stops
+/// rendering.
+///
+/// Errors if `material` matches no draw call (so a typo fails loudly rather than
+/// repacking the model unchanged); use [`model_draw_call_targets`] to discover
+/// the exact names.
+pub fn remove_model_material(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    material: &str,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<MaterialRemovalReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let (edited, removed) = morphic::model::remove_draw_calls_by_material(&bytes, material)
+        .with_context(|| {
+            format!("removing draw calls matching {material:?} from {entry} (try --list-drawcalls)")
+        })?;
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(MaterialRemovalReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        removed,
+    })
+}
+
+/// What a [`replace_model_part`] run swapped and where it was packed.
+#[derive(Debug, Clone)]
+pub struct PartReplacementReport {
+    pub entry: String,
+    pub vpk_entry: String,
+    pub replaced: ReplacedMeshPart,
+}
+
+/// Replaces an existing mesh part's geometry (Tier 1d): reads a new mesh from a
+/// `.glb` (one primitive; `glb_mesh` picks it out of a multi-mesh export) and
+/// splices it over the model's `mesh_name` part in place, then packs the edited
+/// `.vmdl_c` into a standalone addon VPK at `vpk_entry` (default `entry`, so it
+/// overrides the base pak).
+///
+/// The new mesh may have any vertex/index count; it must be skinned against the
+/// model skeleton (glTF joint indices == model bone indices) and bound to bones the
+/// target part already uses (its bone palette is reused, not grown). The target
+/// part must have exactly one vertex buffer, one index buffer, and one draw call
+/// (e.g. the gun); errors loudly otherwise. See `docs/handoff-model-edit.md` (T1d).
+#[allow(clippy::too_many_arguments)] // VPK in, mesh selectors, addon VPK out
+pub fn replace_model_part(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    mesh_name: &str,
+    glb_bytes: &[u8],
+    glb_mesh: Option<&str>,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<PartReplacementReport> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+
+    let (vb, indices) = morphic::model::read_edited_mesh(glb_bytes, glb_mesh)
+        .with_context(|| "reading the replacement mesh from the glb".to_string())?;
+    let (edited, replaced) = morphic::model::replace_mesh_part(&bytes, mesh_name, &vb, &indices)
+        .with_context(|| format!("replacing mesh part {mesh_name:?} in {entry}"))?;
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+
+    Ok(PartReplacementReport {
+        entry: entry.to_string(),
+        vpk_entry,
+        replaced,
+    })
+}
+
+/// Diagnostic: re-encodes every `MDAT` block of the model unchanged and packs the
+/// result into a standalone addon VPK. Used to probe whether the engine accepts our
+/// re-encoded model KV3 blocks at all, independent of any edit (see
+/// [`morphic::model::reencode_all_mdat_identity`]). Returns the number of blocks
+/// re-encoded.
+pub fn reencode_model_mdat(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<usize> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let (reencoded, count) = morphic::model::reencode_all_mdat_identity(&bytes)
+        .with_context(|| format!("re-encoding MDAT blocks of {entry}"))?;
+    let vpk_entry = vpk_entry.unwrap_or(entry);
+    crate::pack(&[(vpk_entry, reencoded.as_slice())], out_vpk.as_ref()).with_context(|| {
+        format!(
+            "packing re-encoded model into {}",
+            out_vpk.as_ref().display()
+        )
+    })?;
+    Ok(count)
+}
+
 /// Mean position over all the given buffers (the shared scale pivot).
 // The vertex count -> f32 cast is an averaging divisor; precision loss at
 // realistic mesh sizes does not meaningfully move the centroid.
@@ -448,6 +702,57 @@ fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Resolves and bakes a WIP hero's loose NM menu/idle pose. The hero's `.vmdl_c`
+/// embeds no clips; its pose lives in `<model_dir>/clips/<name>.vnmclip_c` with a
+/// sibling `<h>.vnmskel_c`. For each candidate clip name this tries the bare name
+/// and a `<stem>_<name>` variant (Mina prefixes the codename, e.g.
+/// `vampirebat_hero_pose`), reads the `.vnmskel_c` the clip references, and bakes
+/// the static pose onto `model`. `None` when no loose pose clip resolves.
+fn bake_loose_nm_pose(
+    vpks: &[valve_pak::VPK],
+    entry: &str,
+    model: &morphic::model::Model,
+    candidates: &[&str],
+) -> Option<morphic::model::Model> {
+    let (dir, file) = entry.rsplit_once('/')?;
+    let stem = file.strip_suffix(".vmdl_c").unwrap_or(file);
+    for cand in candidates {
+        for name in [(*cand).to_string(), format!("{stem}_{cand}")] {
+            let clip_path = format!("{dir}/clips/{name}.vnmclip_c");
+            let Some(clip_bytes) = read_entry(vpks, &clip_path) else {
+                continue;
+            };
+            let Ok(pose) = morphic::model::decode_nm_pose(&clip_bytes) else {
+                continue;
+            };
+            let skel_path = nm_skeleton_entry(&pose.skeleton_ref, dir, stem);
+            let Some(skel_bytes) = read_entry(vpks, &skel_path) else {
+                continue;
+            };
+            let Ok(skel) = morphic::model::decode_nm_skeleton(&skel_bytes) else {
+                continue;
+            };
+            if let Ok(posed) = morphic::model::bake_nm_pose(model, &skel, &pose) {
+                return Some(posed);
+            }
+        }
+    }
+    None
+}
+
+/// Compiled `.vnmskel_c` entry path for a clip's `m_skeleton` reference (append
+/// `_c` to the uncompiled path), falling back to the conventional
+/// `<dir>/<stem>.vnmskel_c` when the reference is absent.
+fn nm_skeleton_entry(skeleton_ref: &str, dir: &str, stem: &str) -> String {
+    if skeleton_ref.is_empty() {
+        format!("{dir}/{stem}.vnmskel_c")
+    } else if skeleton_ref.ends_with("_c") {
+        skeleton_ref.to_string()
+    } else {
+        format!("{skeleton_ref}_c")
+    }
 }
 
 /// A compiled model found inside a VPK, with its structural summary.

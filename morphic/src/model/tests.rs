@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::{mesh, skeleton};
+use super::{mesh, skeleton, topology};
 use crate::kv3::{self, Value};
 
 #[derive(Deserialize)]
@@ -208,6 +208,268 @@ fn body_draw_calls_match_golden() {
 
     approx3(smin, body.scene_min, "body scene min");
     approx3(smax, body.scene_max, "body scene max");
+}
+
+/// Re-encoding the body `MDAT` as uncompressed KV3 v4 and decoding it again must
+/// reproduce the exact same tree. This is the offline crux for Tier 1a: it proves
+/// the KV3 writer faithfully round-trips a *model* metadata block (not just the
+/// soundevents `tests/kv3.rs` already covers), which is what lets a re-encoded
+/// `MDAT` splice back in. Source 2 reads the uncompressed buffer; the in-game
+/// confirm (a removed draw call) is tracked in `docs/handoff-model-edit.md`.
+#[test]
+fn mdat_reencodes_round_trip() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let format = kv3::Format::from_payload(&bytes).expect("read kv3 format guid");
+    let tree = kv3::decode(&bytes).expect("decode mdat");
+
+    let reencoded = kv3::encode(&tree, &format);
+    let back = kv3::decode(&reencoded).expect("decode re-encoded mdat");
+
+    assert_eq!(tree, back, "MDAT tree changed across encode/decode");
+}
+
+/// The faithful uncompressed re-wrap decodes to the exact same tree as the
+/// original compressed block, and is genuinely uncompressed (larger, compression
+/// method 0). Unlike the lossy `kv3::encode` round-trip, this preserves the
+/// original type stream verbatim (value flags + typed-array tags), which the
+/// engine's model loader needs (see `docs/handoff-model-edit.md` T1a).
+#[test]
+fn mdat_rewrap_uncompressed_is_value_faithful() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    let rewrapped = kv3::rewrap_uncompressed(&bytes).expect("rewrap");
+    assert!(
+        rewrapped.len() > bytes.len(),
+        "uncompressed re-wrap should be larger than the LZ4 original"
+    );
+    // compressionMethod field (offset 20) must be 0.
+    assert_eq!(
+        u32::from_le_bytes([rewrapped[20], rewrapped[21], rewrapped[22], rewrapped[23]]),
+        0,
+        "re-wrap must be uncompressed"
+    );
+
+    let back = kv3::decode(&rewrapped).expect("decode re-wrapped");
+    assert_eq!(original, back, "re-wrap changed the decoded tree");
+}
+
+/// `find_matching_draw_calls` locates the dress draw call in the body `MDAT` at
+/// its `(scene_object, draw_call)` indices without mutating anything.
+#[test]
+fn find_dress_draw_call_locates_it() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let tree = kv3::decode(&bytes).expect("decode mdat");
+
+    let matches = |m: &str| m.to_ascii_lowercase().contains("vindicta_dress");
+    let found = topology::find_matching_draw_calls(&tree, &matches);
+
+    assert_eq!(found.len(), 1, "exactly one dress draw call");
+    assert_eq!(
+        (found[0].scene_object, found[0].draw_call),
+        (0, 2),
+        "dress is scene object 0, draw call 2"
+    );
+    assert!(found[0].material.contains("vindicta_dress"));
+    assert!(found[0].index_count > 0, "dress carries indices");
+}
+
+/// Neutralizing the dress draw call zeros exactly its `m_nIndexCount` and leaves
+/// every other byte of the block's decoded tree identical. This is the in-place,
+/// byte-faithful edit (no lossy re-encode) that the engine's model loader accepts:
+/// the draw call survives but submits zero primitives, so the dress stops drawing.
+#[test]
+fn neutralizing_dress_zeros_only_its_index_count() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    // Dress is scene object 0, draw call 2 (see find_dress_draw_call_locates_it).
+    let patched = kv3::neutralize_draw_calls(&bytes, &[(0, 2)]).expect("neutralize");
+    let edited = kv3::decode(&patched).expect("decode patched");
+
+    // Expected tree: the original with scene object 0 / draw call 2's
+    // m_nIndexCount set to 0, and nothing else changed.
+    let mut expected = original.clone();
+    let dress = expected
+        .get_mut("m_sceneObjects")
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(0),
+            _ => None,
+        })
+        .and_then(|so| so.get_mut("m_drawCalls"))
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(2),
+            _ => None,
+        })
+        .expect("locate dress draw call");
+    let idx = dress.get_mut("m_nIndexCount").expect("m_nIndexCount field");
+    assert!(
+        matches!(idx, Value::Int(n) if *n > 0),
+        "dress index count should start positive, got {idx:?}"
+    );
+    *idx = Value::Int(0);
+
+    assert_eq!(
+        edited, expected,
+        "only the dress m_nIndexCount changed to 0"
+    );
+}
+
+/// The T1d-a scalar-set primitive locates a field by KV3 path and sets it. Setting
+/// the dress draw call's `m_nIndexCount` to 0 must produce byte-identical output to
+/// `neutralize_draw_calls` (cross-checking the path walker against the proven one),
+/// and setting it to a new value must change only that field in the decoded tree.
+#[test]
+fn set_scalars_edits_field_by_path() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let original = kv3::decode(&bytes).expect("decode original");
+
+    // Dress is scene object 0, draw call 2 (see find_dress_draw_call_locates_it).
+    let path = vec![
+        kv3::Seg::Key("m_sceneObjects".into()),
+        kv3::Seg::Index(0),
+        kv3::Seg::Key("m_drawCalls".into()),
+        kv3::Seg::Index(2),
+        kv3::Seg::Key("m_nIndexCount".into()),
+    ];
+
+    // Setting to 0 by path == zeroing via neutralize_draw_calls, byte for byte.
+    let via_set = kv3::set_scalars(&bytes, &[(path.clone(), 0)]).expect("set 0");
+    let via_neutralize = kv3::neutralize_draw_calls(&bytes, &[(0, 2)]).expect("neutralize");
+    assert_eq!(
+        via_set, via_neutralize,
+        "set-to-0 by path should byte-match neutralize_draw_calls"
+    );
+
+    // Setting to a new positive value changes only that field in the tree.
+    let patched = kv3::set_scalars(&bytes, &[(path, 12_345)]).expect("set value");
+    let edited = kv3::decode(&patched).expect("decode patched");
+    let mut expected = original;
+    let dress = expected
+        .get_mut("m_sceneObjects")
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(0),
+            _ => None,
+        })
+        .and_then(|so| so.get_mut("m_drawCalls"))
+        .and_then(|v| match v {
+            Value::Array(a) => a.get_mut(2),
+            _ => None,
+        })
+        .expect("locate dress draw call");
+    *dress.get_mut("m_nIndexCount").expect("m_nIndexCount") = Value::Int(12_345);
+    assert_eq!(edited, expected, "only the targeted m_nIndexCount changed");
+}
+
+/// A path that does not resolve to an integer scalar is rejected, not silently
+/// ignored.
+#[test]
+fn set_scalars_rejects_missing_path() {
+    let bytes = std::fs::read(fixtures().join("hornet_mdat0.kv3bin")).expect("read mdat fixture");
+    let bogus = vec![kv3::Seg::Key("m_doesNotExist".into())];
+    assert!(kv3::set_scalars(&bytes, &[(bogus, 1)]).is_err());
+}
+
+/// T1d-d's CTRL edits, proven on the committed `CTRL` block (which `set_scalars`
+/// has not been exercised on before, only `MDAT`): set the gun's vertex/index element
+/// counts and a layout field's format+offset by path, and confirm exactly those
+/// scalars change in the decoded tree, everything else byte-faithful. This is the
+/// buffer-registry half of replace-in-place, without needing the full pak.
+#[test]
+fn set_scalars_edits_ctrl_buffer_registry() {
+    let bytes = std::fs::read(fixtures().join("hornet_ctrl.kv3bin")).expect("read ctrl fixture");
+    let original = kv3::decode(&bytes).expect("decode ctrl");
+
+    // The gun is embedded_meshes[1] with one vertex buffer and one index buffer.
+    let vb = |k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_vertexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+    let ib = |k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_indexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+    let field = |i: usize, k: &str| {
+        vec![
+            kv3::Seg::Key("embedded_meshes".into()),
+            kv3::Seg::Index(1),
+            kv3::Seg::Key("m_vertexBuffers".into()),
+            kv3::Seg::Index(0),
+            kv3::Seg::Key("m_inputLayoutFields".into()),
+            kv3::Seg::Index(i),
+            kv3::Seg::Key(k.into()),
+        ]
+    };
+
+    let edits = vec![
+        (vb("m_nElementCount"), 9999),
+        (vb("m_nElementSizeInBytes"), 60),
+        (ib("m_nElementCount"), 8888),
+        // field 0 (POSITION) m_Format is a small INT32_AS_BYTE; field 1 (TEXCOORD)
+        // m_nOffset is 12. Both are byte-stored scalars, so settable. (POSITION's
+        // own m_nOffset is the tagless 0 constant and is deliberately not touched.)
+        (field(0, "m_Format"), 2),
+        (field(1, "m_nOffset"), 16),
+    ];
+    let patched = kv3::set_scalars(&bytes, &edits).expect("set ctrl scalars");
+    let edited = kv3::decode(&patched).expect("decode patched ctrl");
+
+    // The gun's buffers reflect the edits (read variant-agnostically: CTRL counts
+    // may decode as UInt where MDAT counts decode as Int).
+    let gun = &edited
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap()[1];
+    let v0 = &gun
+        .get("m_vertexBuffers")
+        .and_then(Value::as_array)
+        .unwrap()[0];
+    let i0 = &gun.get("m_indexBuffers").and_then(Value::as_array).unwrap()[0];
+    let fields = v0
+        .get("m_inputLayoutFields")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert_eq!(
+        v0.get("m_nElementCount").and_then(Value::as_int),
+        Some(9999)
+    );
+    assert_eq!(
+        v0.get("m_nElementSizeInBytes").and_then(Value::as_int),
+        Some(60)
+    );
+    assert_eq!(
+        i0.get("m_nElementCount").and_then(Value::as_int),
+        Some(8888)
+    );
+    assert_eq!(fields[0].get("m_Format").and_then(Value::as_int), Some(2));
+    assert_eq!(fields[1].get("m_nOffset").and_then(Value::as_int), Some(16));
+
+    // POSITION's offset (the untouched tagless 0) is intact, and every mesh other
+    // than the gun is byte-faithful through the rewrap.
+    assert_eq!(fields[0].get("m_nOffset").and_then(Value::as_int), Some(0));
+    let orig_meshes = original
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap();
+    let new_meshes = edited
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .unwrap();
+    for (i, (o, n)) in orig_meshes.iter().zip(new_meshes).enumerate() {
+        if i != 1 {
+            assert_eq!(o, n, "mesh {i} (not the gun) is unchanged");
+        }
+    }
 }
 
 #[test]
@@ -468,6 +730,25 @@ fn glow_shells_are_detected_but_noglow_is_kept() {
     assert!(!super::glb::is_shell("body"));
 }
 
+#[test]
+fn viscous_goo_ball_alt_form_is_dropped() {
+    // Viscous's Goo Ball alt-form: matched on the mesh-part name so all of its
+    // primitives drop together, and on the `viscous_ball` material token.
+    assert!(super::glb::is_alt_form("inflated"));
+    assert!(super::glb::is_alt_form(
+        "models/heroes_staging/viscous/materials/viscous_ball.vmat"
+    ));
+    assert!(super::glb::is_dropped("inflated"));
+    // It is real geometry, not an NPR shell, so `is_shell` must NOT claim it.
+    assert!(!super::glb::is_shell("inflated"));
+    // Viscous's actual body parts/materials are kept.
+    assert!(!super::glb::is_alt_form("body"));
+    assert!(!super::glb::is_dropped("body"));
+    assert!(!super::glb::is_alt_form(
+        "models/heroes_staging/viscous/materials/viscous_body.vmat"
+    ));
+}
+
 mod pose_bake {
     use super::super::animation::{BoneTrack, Clip};
     use super::super::math::{Mat4, Quat, Vec3};
@@ -688,6 +969,62 @@ mod pose_bake {
         let baked = bake_pose_from(&skin, &donor, &["ui_hero_pose"], 0);
         approx(
             baked.meshes[0].vertex_buffers[0].positions[0],
+            [1.0, 2.0, 3.0],
+        );
+    }
+
+    #[test]
+    fn named_pose_shifts_matched_bone_and_binds_the_rest() {
+        use super::super::{bake_pose_named, LocalPose};
+        use std::collections::HashMap;
+
+        let model = Model {
+            skeleton: Skeleton {
+                bones: vec![root_bone()],
+            },
+            meshes: vec![one_part(skinned_vertex([1.0, 2.0, 3.0]))],
+            animations: vec![],
+        };
+
+        // A pose keyed by bone name (the NM path) translates the matched bone.
+        let mut by_name = HashMap::new();
+        by_name.insert(
+            "root".to_string(),
+            LocalPose {
+                translation: Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                rotation: ID,
+                scale: 1.0,
+            },
+        );
+        let baked = bake_pose_named(&model, &by_name);
+        assert!(baked.skeleton.bones.is_empty(), "skeleton stripped");
+        approx(
+            baked.meshes[0].vertex_buffers[0].positions[0],
+            [11.0, 2.0, 3.0],
+        );
+
+        // A name that matches no bone leaves the mesh at its bind pose (how the
+        // model's cloth/twist/helper bones, absent from an NM clip, are handled).
+        let mut unmatched = HashMap::new();
+        unmatched.insert(
+            "nonexistent".to_string(),
+            LocalPose {
+                translation: Vec3 {
+                    x: 99.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                rotation: ID,
+                scale: 1.0,
+            },
+        );
+        let bind = bake_pose_named(&model, &unmatched);
+        approx(
+            bind.meshes[0].vertex_buffers[0].positions[0],
             [1.0, 2.0, 3.0],
         );
     }

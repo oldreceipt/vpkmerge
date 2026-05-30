@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### morphic
+
+- New `patch_kv3_resource_scalars(file_bytes, edits)`: byte-faithful in place edit of integer scalar fields in a resource's KV3 `DATA` block, located by path (`&[(Vec<kv3::Seg>, i64)]`). Unlike `encode_kv3_resource` (which rebuilds the `DATA` from a value tree and so downgrades v5 to v4 and drops value flags + typed array tags, fatal for particles/models), this `rewrap_uncompressed`s the block (preserving v5 framing, flags, and typed tags), applies `kv3::set_scalars`, and rebuilds the container. Built for particle recoloring (retint `m_ConstantColor` / gradient `m_Color` channels without invalidating resource references); the lossy re-encode path renders the engine's red error particle.
+
 ## v0.7.0
 
 Hardens the posed-export path that Grimoire's Locker hero previews depend on. Hero body-model discovery is now deterministic, `--pose` can refuse to emit an unposed model, and Deadlock's comic-outline shells no longer leak into the GLB as a white halo.
