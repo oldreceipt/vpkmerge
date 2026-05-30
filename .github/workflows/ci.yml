@@ -65,7 +65,9 @@ jobs:
         run: cargo check -p vpkmerge-core -p vpkmerge-cli --lib --bins --tests
 
       - name: test core + cli
-        run: cargo test -p vpkmerge-core -p vpkmerge-cli
+        # --lib --bins --tests, not the default (which builds examples too): skip
+        # dev-only `examples/`.
+        run: cargo test -p vpkmerge-core -p vpkmerge-cli --lib --bins --tests
 
   frontend:
     name: Frontend (Vite build)
