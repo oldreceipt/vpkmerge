@@ -68,7 +68,10 @@ enum Command {
     /// Recolor a hero's full ability VFX (particles + color textures + baked
     /// vertex colors) to one hue and pack it into a single addon VPK. The
     /// one-call bridge for a mod manager: composes all three recolor mechanisms
-    /// over a built-in per-hero recipe (Paige / `bookworm` for now).
+    /// over a built-in per-hero recipe. Pinned: `bookworm` (Paige, full
+    /// particles+textures+models), plus particle-only `unicorn` (Celeste),
+    /// `gigawatt` (Seven), `vampirebat` (Mina), `necro` (Graves), `wraith`,
+    /// `inferno` (Infernus).
     RecolorHero(RecolorHeroCmd),
 }
 
@@ -159,8 +162,9 @@ struct TextureCmd {
 
 #[derive(Args)]
 struct RecolorHeroCmd {
-    /// Hero model/particle codename to recolor (e.g. `bookworm` for Paige). Only
-    /// heroes with a pinned recipe are supported so far.
+    /// Hero model/particle codename to recolor (e.g. `bookworm` for Paige,
+    /// `vampirebat` for Mina). Only heroes with a pinned recipe are supported;
+    /// an unknown codename lists the pinned set.
     #[arg(long, value_name = "CODENAME")]
     hero: String,
 
@@ -1424,14 +1428,23 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
     .with_context(|| format!("recoloring hero {} to hue {}", args.hero, args.hue))?;
 
     eprintln!(
-        "{}: {} particle(s) recolored ({} color-free skipped), {} texture(s), {} model(s) ({} verts)",
+        "{}: {} particle(s) recolored ({} color-free skipped, {} unpatchable left vanilla), {} texture(s), {} material tint(s), {} model(s) ({} verts)",
         report.codename,
         report.particles_recolored,
         report.particles_no_color,
+        report.particles_unpatchable,
         report.textures_recolored,
+        report.materials_recolored,
         report.models_recolored,
         report.model_vertices,
     );
+    if report.particles_unpatchable > 0 {
+        eprintln!(
+            "  warning: {} color-bearing particle(s) could not be patched in place (non-v5 KV3); \
+             this hero's recolor is PARTIAL.",
+            report.particles_unpatchable,
+        );
+    }
     println!(
         "wrote {}: {} entries, hero {} recolored to hue {} deg (overrides the base in place)",
         out.display(),

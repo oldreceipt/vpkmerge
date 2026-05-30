@@ -44,6 +44,10 @@ pub struct HeroRecolorRecipe {
     pub particle_prefixes: Vec<String>,
     /// Color-bearing `.vtex_c` entries (self-illum / albedo color maps).
     pub texture_entries: Vec<String>,
+    /// `.vmat_c` entries whose ability color is a material `g_vColorTint` constant
+    /// (not a texture): the `g_t*color` slot is a flat 4x4 placeholder, so the color
+    /// is retinted by an in-place double patch ([`recolor_material_color_bytes`]).
+    pub material_entries: Vec<String>,
     /// `.vmdl_c` entries whose color is baked into mesh vertex colors.
     pub model_entries: Vec<String>,
     /// A representative color-bearing `.vtex_c` (one of `texture_entries`) to
@@ -58,9 +62,35 @@ pub struct HeroRecolorRecipe {
 /// The built-in recipe for a hero codename, or `None` if no recipe is pinned yet.
 #[must_use]
 pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
-    match codename.to_lowercase().as_str() {
+    let codename = codename.to_lowercase();
+    match codename.as_str() {
         "bookworm" => Some(paige_recipe()),
-        "unicorn" => Some(celeste_recipe()),
+        // Particle-only heroes: ability/weapon VFX carry color purely through
+        // `.vpcf_c` color params (no color textures or baked vertex colors), so one
+        // `--hue` lands the whole ability/weapon set and nothing on the skin. Each
+        // was pinned from an in-game recolor mod and confirmed with
+        // `examples/particle_scan.rs` (base vs mod). Source hue is noted for
+        // reference; the actual target hue is supplied at recolor time.
+        //   codename    hero       src pak  .vpcf_c edited  source hue
+        //   unicorn     Celeste    pak07    228             ~329 (pink)
+        //   gigawatt    Seven      pak01    170             ~300 (magenta)
+        //   vampirebat  Mina       pak05    117             ~295 (pink)
+        //   necro       Graves     pak09    246             ~330 (pink)
+        //   wraith      Wraith     pak11    127             ~330 (pink)
+        //   inferno     Infernus   pak08    143             ~220 (blue)
+        // Seven/Wraith/Infernus carry KV3 v4 particles; the in-place patcher handles
+        // v4 + v5, so all recolor at full coverage.
+        //
+        // Graves (`necro`) is NOT particle-only (see `necro_recipe`): her large ability
+        // maps are grayscale (particle-tinted), but the gravestone's transmissive glow
+        // is a small chromatic texture, and the pickup-sphere / ult-jar color is a
+        // material `g_vColorTint` CONSTANT (its `g_tColor` slot is a flat 4x4
+        // placeholder), retinted by the in-place double patch. So her recipe adds one
+        // texture + two materials on top of the particles.
+        "necro" => Some(necro_recipe()),
+        "unicorn" | "gigawatt" | "vampirebat" | "wraith" | "inferno" => {
+            Some(particle_only_recipe(&codename))
+        }
         _ => None,
     }
 }
@@ -94,6 +124,9 @@ fn paige_recipe() -> HeroRecolorRecipe {
         .iter()
         .map(|s| (*s).to_string())
         .collect(),
+        // Paige's ability color is all real textures + vertex colors, no tint
+        // constants.
+        material_entries: Vec::new(),
         model_entries: [
             // the ult body that actually renders (found via the ult model particle)
             "models/particle/bookworm_horse_knight.vmdl_c",
@@ -112,22 +145,73 @@ fn paige_recipe() -> HeroRecolorRecipe {
     }
 }
 
-/// Celeste (`unicorn`). Particle-only: her ability VFX carry color purely through
-/// `.vpcf_c` color params (no color-bearing textures or baked mesh vertex colors),
-/// so the recipe is the two `particles/{abilities,weapon_fx}/unicorn/` prefixes and
-/// nothing else. Pinned from her in-game pink recolor mod (`pak07`), which retints
-/// both namespaces (250 ability + 27 weapon particles); a base-vs-mod scan put the
-/// target hue at ~329 deg.
-fn celeste_recipe() -> HeroRecolorRecipe {
+/// Particle-only recipe: just the two `particles/{abilities,weapon_fx}/<codename>/`
+/// prefixes, no color textures or vertex-color models. The shape shared by every
+/// hero whose ability VFX carry color purely through `.vpcf_c` color params, so one
+/// `--hue` lands the whole ability/weapon set and touches nothing on the skin. The
+/// per-hero provenance (source mod + scanned hue) is tabulated at [`recipe_for`].
+fn particle_only_recipe(codename: &str) -> HeroRecolorRecipe {
     HeroRecolorRecipe {
-        codename: "unicorn".to_string(),
+        codename: codename.to_string(),
         particle_prefixes: vec![
-            "particles/abilities/unicorn/".to_string(),
-            "particles/weapon_fx/unicorn/".to_string(),
+            format!("particles/abilities/{codename}/"),
+            format!("particles/weapon_fx/{codename}/"),
         ],
         texture_entries: Vec::new(),
+        material_entries: Vec::new(),
         model_entries: Vec::new(),
         // Particle-only: no color texture to render as a swatch.
+        preview_texture: None,
+    }
+}
+
+/// Graves (`necro`). Particles carry most of her VFX color (her large ability maps
+/// are grayscale, tinted by the particle color), but two ability MODELS hold their
+/// color in a material `g_vColorTint` constant rather than a texture, and the
+/// gravestone's transmissive glow is a small chromatic texture. See the audit notes
+/// at [`recipe_for`]. Her large color maps stay particle-driven (no `texture_entries`
+/// beyond the glow); no baked vertex colors.
+fn necro_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "necro".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/necro/".to_string(),
+            "particles/weapon_fx/necro/".to_string(),
+        ],
+        // Her ability PROPS (the zombie/shambler, the ult jar, the gravestone) carry
+        // their green in real albedo + transmissive textures, in-game confirmed as the
+        // missing piece (particles + tint constants alone left the 3D props green).
+        // These live in the hero material dir but are ability props, not her body
+        // skin (head/hand/upper/lower/hair/skirt/bag/eye stay vanilla).
+        texture_entries: [
+            // shambler = the summoned zombie: albedo (2048, chromatic) + transmissive
+            "models/heroes_wip/necro/materials/necro_shambler_color_tga_7b1de566.vtex_c",
+            "models/heroes_wip/necro/materials/necro_shambler_vmat_g_tnprtransmissivecolor_337e62d.vtex_c",
+            // ult jar (jar of dread) + its glass
+            "models/heroes_wip/necro/materials/necro_jar_of_dread_color_tga_7f34b26.vtex_c",
+            "models/heroes_wip/necro/materials/necro_jar_glass_color_tga_c6d5a0ec.vtex_c",
+            // gravestone: faint-green albedo + the green transmissive glow (the
+            // standing model and the destruction fx reference it at two paths).
+            "models/heroes_wip/necro/materials/necro_gravestone_color_tga_8a0745c.vtex_c",
+            "models/heroes_wip/necro/materials/necro_gravestone_vmat_g_tnprtransmissivecolor_e8edad5e.vtex_c",
+            "models/abilities/materials/necro_gravestone_destruction_vmat_g_tnprtransmissivecolor_e8edad5e.vtex_c",
+            // the raised soul-picker hand model (necro_hand): bony albedo + the green
+            // transmissive glow around it.
+            "models/heroes_wip/necro/materials/necro_hand_color_tga_b2300f7f.vtex_c",
+            "models/heroes_wip/necro/materials/necro_hand_vmat_g_tnprtransmissivecolor_c987b5a.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        // Material g_vColorTint constants (g_tColor slot is a flat 4x4 placeholder):
+        // the soul pickup sphere, the ult jar glass, and the picker hands' green
+        // energy (necro_hands).
+        material_entries: vec![
+            "models/abilities/materials/necro_pickup_sphere.vmat_c".to_string(),
+            "materials/particle/abilities/necro/necro_jar_glass.vmat_c".to_string(),
+            "models/abilities/materials/necro_hands.vmat_c".to_string(),
+        ],
+        model_entries: Vec::new(),
         preview_texture: None,
     }
 }
@@ -143,7 +227,17 @@ pub struct HeroRecolorReport {
     pub particles_recolored: usize,
     /// `.vpcf_c` files under the prefixes that carry no color param (left alone).
     pub particles_no_color: usize,
+    /// `.vpcf_c` files that carry color but could not be patched in place (e.g. a
+    /// non-v5 KV3 block the in-place scalar patcher does not handle). Skipped and
+    /// left vanilla rather than aborting the whole bake; a nonzero count means the
+    /// recolor is partial for this hero.
+    pub particles_unpatchable: usize,
     pub textures_recolored: usize,
+    /// `.vmat_c` entries whose `g_vColorTint` constant was retinted in place.
+    pub materials_recolored: usize,
+    /// `.vmat_c` entries that carry a tint but couldn't be patched in place yet
+    /// (e.g. a compressed binary-blob section `rewrap_uncompressed` doesn't handle).
+    pub materials_unpatchable: usize,
     pub models_recolored: usize,
     /// Vertices whose baked color changed across the recolored models.
     pub model_vertices: usize,
@@ -160,7 +254,9 @@ pub struct HeroRecolorReport {
 /// if no recipe is pinned for `codename`, or if a recipe texture/model entry is
 /// missing from the VPK(s) (a likely path-drift bug) so a silently incomplete
 /// addon is never written. Particles that carry no color param are skipped, not
-/// an error (most of a hero's `.vpcf_c` are color-free helpers).
+/// an error (most of a hero's `.vpcf_c` are color-free helpers); a color-bearing
+/// particle that can't be patched in place (a non-v5 KV3 block) is also skipped
+/// (counted in `particles_unpatchable`) rather than aborting the whole bake.
 pub fn recolor_hero_to_addon(
     vpk: impl AsRef<Path>,
     base: Option<&Path>,
@@ -171,7 +267,8 @@ pub fn recolor_hero_to_addon(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (only `bookworm` / Paige is pinned so far)"
+             (pinned: bookworm/Paige, plus particle-only unicorn, gigawatt, \
+             vampirebat, necro, wraith, inferno)"
         )
     })?;
 
@@ -191,14 +288,19 @@ pub fn recolor_hero_to_addon(
     for entry in &particle_entries {
         let bytes = read_entry(&vpks, entry)
             .with_context(|| format!("reading particle {entry} (listed but unreadable)"))?;
-        match recolor_particle_bytes(&bytes, recolor)
-            .with_context(|| format!("recoloring particle {entry}"))?
-        {
-            Some(new_bytes) => {
+        match recolor_particle_bytes(&bytes, recolor) {
+            Ok(Some(new_bytes)) => {
                 packed.push((entry.clone(), new_bytes));
                 report.particles_recolored += 1;
             }
-            None => report.particles_no_color += 1,
+            Ok(None) => report.particles_no_color += 1,
+            // A particle that carries color but can't be patched in place (a non-v5
+            // KV3 block the scalar patcher rejects) is skipped, not fatal: leave it
+            // vanilla and keep going so the rest of the hero still recolors.
+            Err(e) => {
+                report.particles_unpatchable += 1;
+                eprintln!("  note: skipping {entry} (left vanilla): {e:#}");
+            }
         }
     }
 
@@ -214,6 +316,27 @@ pub fn recolor_hero_to_addon(
                 packed.push((entry.clone(), new_bytes));
                 report.textures_recolored += 1;
             }
+            None => missing.push(entry),
+        }
+    }
+
+    // Material color-tint constants: retint each `.vmat_c`'s `g_vColorTint` in
+    // place. A material with no patchable tint, or one whose block can't be
+    // rewrapped uncompressed yet (a compressed binary-blob section, e.g. baked
+    // shader data), is skipped with a note rather than aborting the whole hero.
+    for entry in &recipe.material_entries {
+        match read_entry(&vpks, entry) {
+            Some(bytes) => match recolor_material_color_bytes(&bytes, recolor) {
+                Ok(Some(new_bytes)) => {
+                    packed.push((entry.clone(), new_bytes));
+                    report.materials_recolored += 1;
+                }
+                Ok(None) => eprintln!("  note: {entry} has no g_vColorTint constant; skipping"),
+                Err(e) => {
+                    report.materials_unpatchable += 1;
+                    eprintln!("  note: skipping material {entry} (left vanilla): {e:#}");
+                }
+            },
             None => missing.push(entry),
         }
     }
@@ -272,7 +395,8 @@ pub fn recolor_hero_preview_png(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (only `bookworm` / Paige is pinned so far)"
+             (pinned: bookworm/Paige, plus particle-only unicorn, gigawatt, \
+             vampirebat, necro, wraith, inferno)"
         )
     })?;
     let preview_texture = recipe.preview_texture.as_deref().with_context(|| {
@@ -308,6 +432,74 @@ pub fn recolor_particle_bytes(vpcf_bytes: &[u8], recolor: Recolor) -> Result<Opt
     }
     let new_bytes = morphic::patch_kv3_resource_scalars(vpcf_bytes, &edits)
         .map_err(|e| anyhow::anyhow!("patching particle color scalars: {e}"))?;
+    Ok(Some(new_bytes))
+}
+
+/// Recolor a material's `g_vColorTint*` constants in place to `recolor`'s hue
+/// (keeping each tint's saturation + value via the shared [`recolored`]), returning
+/// the new bytes, or `None` if the material has no patchable color-tint constant.
+///
+/// The third color carrier (after particle params and color textures): some ability
+/// models hold their color in a material `g_vColorTint` (an RGBA `f64` vector in the
+/// `.vmat_c`), with the `g_t*color` texture slot a flat 4x4 placeholder. This retints
+/// that constant via an in-place double patch ([`morphic::patch_kv3_resource_doubles`]),
+/// leaving the rest of the material (textures, flags, shader) byte-identical. Only
+/// the RGB channels are touched; alpha and any channel stored as a tagless 0.0/1.0
+/// (not patchable in place) are left as-is.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::float_cmp // exact 0.0/1.0 compare detects a tagless DOUBLE node (intended)
+)]
+pub fn recolor_material_color_bytes(
+    vmat_bytes: &[u8],
+    recolor: Recolor,
+) -> Result<Option<Vec<u8>>> {
+    let value = morphic::decode_kv3_resource(vmat_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding material KV3: {e}"))?;
+    let Some(params) = value.get("m_vectorParams").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+
+    let mut edits: Vec<(Vec<Seg>, f64)> = Vec::new();
+    for (i, param) in params.iter().enumerate() {
+        let name = param.get("m_name").and_then(Value::as_str).unwrap_or("");
+        if !name.starts_with("g_vColorTint") {
+            continue;
+        }
+        let Some(rgba) = param.get("m_value").and_then(Value::as_array) else {
+            continue;
+        };
+        let chan = |k: usize| rgba.get(k).and_then(Value::as_f64);
+        let (Some(r), Some(g), Some(b)) = (chan(0), chan(1), chan(2)) else {
+            continue;
+        };
+        let to_byte = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as i64;
+        let out = recolored([to_byte(r), to_byte(g), to_byte(b)], recolor);
+        for (k, &orig) in [r, g, b].iter().enumerate() {
+            // Only a real DOUBLE node (orig not the tagless 0.0/1.0) is patchable in
+            // place; a 0/1 channel has no stored bytes, so leave it as-is.
+            if orig == 0.0 || orig == 1.0 {
+                continue;
+            }
+            edits.push((
+                vec![
+                    Seg::Key("m_vectorParams".to_string()),
+                    Seg::Index(i),
+                    Seg::Key("m_value".to_string()),
+                    Seg::Index(k),
+                ],
+                out[k] as f64 / 255.0,
+            ));
+        }
+    }
+
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    let new_bytes = morphic::patch_kv3_resource_doubles(vmat_bytes, &edits)
+        .map_err(|e| anyhow::anyhow!("patching material color tint: {e}"))?;
     Ok(Some(new_bytes))
 }
 
@@ -469,6 +661,57 @@ mod tests {
         assert!(r.preview_texture.is_none());
         // codename lookup is case-insensitive
         assert!(recipe_for("UNICORN").is_some());
+    }
+
+    #[test]
+    fn particle_only_heroes_are_pinned() {
+        // Seven/Mina/Wraith/Infernus: all particle-only, same shape as Celeste,
+        // prefixes derived from the codename. Hue is supplied at recolor time, so the
+        // recipe itself carries no color. (Graves/necro is NOT here: see below.)
+        for code in ["gigawatt", "vampirebat", "wraith", "inferno"] {
+            let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
+            assert_eq!(r.codename, code);
+            assert_eq!(
+                r.particle_prefixes,
+                [
+                    format!("particles/abilities/{code}/"),
+                    format!("particles/weapon_fx/{code}/"),
+                ]
+            );
+            assert!(
+                r.texture_entries.is_empty(),
+                "{code} should be particle-only"
+            );
+            assert!(
+                r.material_entries.is_empty(),
+                "{code} should be particle-only"
+            );
+            assert!(r.model_entries.is_empty(), "{code} should be particle-only");
+            assert!(r.preview_texture.is_none());
+        }
+        // case-insensitive, and a hero with no pinned recipe still returns None
+        assert!(recipe_for("GIGAWATT").is_some());
+        assert!(recipe_for("hornet").is_none());
+    }
+
+    #[test]
+    fn graves_recipe_adds_glow_texture_and_tint_materials() {
+        // Graves (necro): particles + the gravestone glow texture + the two
+        // g_vColorTint materials (pickup sphere, jar). NOT particle-only.
+        let r = recipe_for("necro").expect("necro recipe");
+        assert_eq!(r.codename, "necro");
+        assert_eq!(r.particle_prefixes.len(), 2);
+        // ability-prop albedo/transmissive textures (shambler/jar/gravestone)
+        assert!(r.texture_entries.len() >= 4, "ability-prop color textures");
+        assert!(r.texture_entries.iter().any(|t| t.contains("shambler")));
+        assert!(r.texture_entries.iter().any(|t| t.contains("jar_of_dread")));
+        assert_eq!(
+            r.material_entries.len(),
+            3,
+            "pickup sphere + jar + picker hands"
+        );
+        assert!(r.material_entries.iter().all(|m| m.ends_with(".vmat_c")));
+        assert!(r.model_entries.is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let vpk = args.get(1).expect("usage: listentries <vpk>");
     let info = inspect(vpk).expect("inspect");
-    for e in &info.entries {
-        println!("{} ({} bytes)", e.path, e.size);
+    for p in &info.file_paths {
+        println!("{p}");
     }
 }
