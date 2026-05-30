@@ -478,24 +478,26 @@ impl Builder {
     }
 
     /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
-    /// accessors), or `None` when the whole part is a non-renderable shell.
+    /// accessors), or `None` when the whole part is dropped ([`is_dropped`]).
     /// Deadlock's NPR shells (the inverted-hull `*_outline` and the additive
     /// `*_glow` effect meshes) are dropped: as plain glTF geometry they collapse
     /// to an opaque hull that whitewashes the model. Reproducing them is a
-    /// renderer-side (three.js) concern, not a baked one.
+    /// renderer-side (three.js) concern, not a baked one. Hidden-by-default
+    /// alt-forms (Viscous's `inflated` Goo Ball) are dropped too: see
+    /// [`is_alt_form`].
     fn add_mesh(
         &mut self,
         part: &MeshPart,
         mat_index: &mut BTreeMap<String, json::Index<json::Material>>,
         files: Option<&dyn FileResolver>,
     ) -> Option<json::Index<json::Mesh>> {
-        if is_shell(&part.name) {
+        if is_dropped(&part.name) {
             return None;
         }
         let renderable: Vec<_> = part
             .primitives
             .iter()
-            .filter(|p| !is_shell(&p.material))
+            .filter(|p| !is_dropped(&p.material))
             .collect();
         if renderable.is_empty() {
             return None;
@@ -916,6 +918,30 @@ pub(crate) fn is_glow_material(path: &str) -> bool {
 /// (`is_glow_material`). Such geometry is dropped from the GLB.
 pub(crate) fn is_shell(name: &str) -> bool {
     is_outline_material(name) || is_glow_material(name)
+}
+
+/// True for a hero "alt-form" mesh part that is hidden in the default
+/// menu/idle pose and only revealed while an ability is active. Unlike a shell
+/// this is real, fully-shaded geometry; the game hides it (a zeroed bone scale /
+/// visibility flag driven outside the locomotion clips we sample), so a static
+/// posed export keeps it at full bind size and it swallows the body.
+///
+/// Currently just Viscous's Goo Ball: mesh part `inflated` (material
+/// `viscous_ball`), a ~1.4x-body sphere present in EVERY clip we tried
+/// (`ui_hero_select`, `primary_stand_idle`, ...), so no pose clip collapses it.
+/// Matched on the part name so all of its primitives (incl. the shared
+/// `black`/`viscous_swatches` ones) drop together; the material token is a
+/// belt-and-braces match should a skin rename the part.
+pub(crate) fn is_alt_form(name: &str) -> bool {
+    let lc = name.to_ascii_lowercase();
+    lc == "inflated" || lc.contains("viscous_ball")
+}
+
+/// True for any mesh part or material omitted from a static hero-card GLB: a
+/// non-renderable NPR shell ([`is_shell`]) or a hidden-by-default alt-form
+/// ([`is_alt_form`]).
+pub(crate) fn is_dropped(name: &str) -> bool {
+    is_shell(name) || is_alt_form(name)
 }
 
 /// Appends `_c` to a source resource path unless it is already a compiled path.

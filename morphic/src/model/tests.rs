@@ -730,6 +730,25 @@ fn glow_shells_are_detected_but_noglow_is_kept() {
     assert!(!super::glb::is_shell("body"));
 }
 
+#[test]
+fn viscous_goo_ball_alt_form_is_dropped() {
+    // Viscous's Goo Ball alt-form: matched on the mesh-part name so all of its
+    // primitives drop together, and on the `viscous_ball` material token.
+    assert!(super::glb::is_alt_form("inflated"));
+    assert!(super::glb::is_alt_form(
+        "models/heroes_staging/viscous/materials/viscous_ball.vmat"
+    ));
+    assert!(super::glb::is_dropped("inflated"));
+    // It is real geometry, not an NPR shell, so `is_shell` must NOT claim it.
+    assert!(!super::glb::is_shell("inflated"));
+    // Viscous's actual body parts/materials are kept.
+    assert!(!super::glb::is_alt_form("body"));
+    assert!(!super::glb::is_dropped("body"));
+    assert!(!super::glb::is_alt_form(
+        "models/heroes_staging/viscous/materials/viscous_body.vmat"
+    ));
+}
+
 mod pose_bake {
     use super::super::animation::{BoneTrack, Clip};
     use super::super::math::{Mat4, Quat, Vec3};
