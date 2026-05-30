@@ -88,9 +88,11 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // placeholder), retinted by the in-place double patch. So her recipe adds one
         // texture + two materials on top of the particles.
         "necro" => Some(necro_recipe()),
-        "unicorn" | "gigawatt" | "vampirebat" | "wraith" | "inferno" => {
-            Some(particle_only_recipe(&codename))
-        }
+        // Infernus (`inferno`) is also NOT particle-only: his body self-illum accents
+        // and flame materials carry fire color (g_vColorTint / g_vSelfIllumTint), see
+        // `inferno_recipe`.
+        "inferno" => Some(inferno_recipe()),
+        "unicorn" | "gigawatt" | "vampirebat" | "wraith" => Some(particle_only_recipe(&codename)),
         _ => None,
     }
 }
@@ -210,7 +212,48 @@ fn necro_recipe() -> HeroRecolorRecipe {
             "models/abilities/materials/necro_pickup_sphere.vmat_c".to_string(),
             "materials/particle/abilities/necro/necro_jar_glass.vmat_c".to_string(),
             "models/abilities/materials/necro_hands.vmat_c".to_string(),
+            // the green flame aura around the picker hand is self-illum: its color is
+            // g_vSelfIllumTint (the selfillum texture is just a grayscale mask).
+            "models/heroes_wip/necro/materials/necro_flame_effect_hand.vmat_c".to_string(),
+            "models/heroes_wip/necro/materials/necro_flame_effect.vmat_c".to_string(),
         ],
+        model_entries: Vec::new(),
+        preview_texture: None,
+    }
+}
+
+/// Infernus (`inferno`). Beyond particles, his fire color also lives in his body
+/// and flame MATERIALS: the body's self-illum accents (`inferno_body`'s
+/// `g_vSelfIllumTint`) and the flame layers (`inferno_flame01..03`, `_arm`,
+/// `_strip` carry orange in `g_vColorTint`/`g_vSelfIllumTint`), plus the arm
+/// flame's orange color ramp texture. His body ALBEDO (skin) stays vanilla; only
+/// the self-illum accents + flames retint. NOTE: the flame-dash model materials
+/// (`inferno_flame_dash_burn`/`_shield`) currently fail to decode (a KV3 blob-frame
+/// reader limitation), so the dash relies on its (recolored) particles for now.
+fn inferno_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "inferno".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/inferno/".to_string(),
+            "particles/weapon_fx/inferno/".to_string(),
+        ],
+        // the orange fire ramp the arm flame samples for its color.
+        texture_entries: vec![
+            "models/heroes_staging/inferno_v4/materials/infernus_flame_ramp_psd_db54d26.vtex_c"
+                .to_string(),
+        ],
+        // body self-illum accents + the flame layers (g_vColorTint / g_vSelfIllumTint).
+        material_entries: [
+            "models/heroes_staging/inferno_v4/materials/inferno_body.vmat_c",
+            "models/heroes_staging/inferno_v4/materials/inferno_flame01.vmat_c",
+            "models/heroes_staging/inferno_v4/materials/inferno_flame02.vmat_c",
+            "models/heroes_staging/inferno_v4/materials/inferno_flame03.vmat_c",
+            "models/heroes_staging/inferno_v4/materials/inferno_flame_arm.vmat_c",
+            "models/heroes_staging/inferno_v4/materials/inferno_flame_strip.vmat_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
         model_entries: Vec::new(),
         preview_texture: None,
     }
@@ -465,7 +508,11 @@ pub fn recolor_material_color_bytes(
     let mut edits: Vec<(Vec<Seg>, f64)> = Vec::new();
     for (i, param) in params.iter().enumerate() {
         let name = param.get("m_name").and_then(Value::as_str).unwrap_or("");
-        if !name.starts_with("g_vColorTint") {
+        // g_vColorTint = albedo/diffuse tint; g_vSelfIllumTint = emissive (flame /
+        // glow) color. Both carry ability color, on different materials. A white or
+        // gray tint recolors to nothing (a neutral stays neutral, and a 1.0 channel
+        // is a tagless double that is skipped), so matching both broadly is safe.
+        if !(name.starts_with("g_vColorTint") || name.starts_with("g_vSelfIllumTint")) {
             continue;
         }
         let Some(rgba) = param.get("m_value").and_then(Value::as_array) else {
@@ -668,7 +715,7 @@ mod tests {
         // Seven/Mina/Wraith/Infernus: all particle-only, same shape as Celeste,
         // prefixes derived from the codename. Hue is supplied at recolor time, so the
         // recipe itself carries no color. (Graves/necro is NOT here: see below.)
-        for code in ["gigawatt", "vampirebat", "wraith", "inferno"] {
+        for code in ["gigawatt", "vampirebat", "wraith"] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
             assert_eq!(
@@ -707,8 +754,8 @@ mod tests {
         assert!(r.texture_entries.iter().any(|t| t.contains("jar_of_dread")));
         assert_eq!(
             r.material_entries.len(),
-            3,
-            "pickup sphere + jar + picker hands"
+            5,
+            "pickup sphere + jar + picker hands + 2 flame auras"
         );
         assert!(r.material_entries.iter().all(|m| m.ends_with(".vmat_c")));
         assert!(r.model_entries.is_empty());
