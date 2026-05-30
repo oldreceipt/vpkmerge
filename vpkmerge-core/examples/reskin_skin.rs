@@ -259,8 +259,8 @@ fn dress_rough(pattern: &str, x: u32, y: u32, w: u32, h: u32) -> u8 {
         }
         "shatterbloom" => {
             let (shard, crack, crack_core, _) = shatterbloom_fields(x, y, w, h);
-            let rough = 54.0 + shard * 24.0 - crack * 25.0 - crack_core * 12.0;
-            rough.clamp(22.0, 92.0) as u8
+            let rough = 145.0 + shard * 22.0 - crack * 82.0 - crack_core * 26.0;
+            rough.clamp(46.0, 176.0) as u8
         }
         _ => {
             let v = opart_v(x, y, w, h);

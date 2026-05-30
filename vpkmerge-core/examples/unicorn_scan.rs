@@ -35,7 +35,12 @@ fn walk(v: &Value, path: &str, colorish: bool, out: &mut BTreeMap<String, [f64; 
         Value::Object(p) => {
             for (k, c) in p {
                 let kl = k.to_lowercase();
-                walk(c, &format!("{path}/{k}"), kl.contains("color") || kl.contains("tint"), out);
+                walk(
+                    c,
+                    &format!("{path}/{k}"),
+                    kl.contains("color") || kl.contains("tint"),
+                    out,
+                );
             }
         }
         Value::Array(items) => {
@@ -129,7 +134,10 @@ fn main() -> anyhow::Result<()> {
                 let avg = if file_hues.is_empty() {
                     "none".to_string()
                 } else {
-                    format!("{:.0}", file_hues.iter().sum::<f64>() / file_hues.len() as f64)
+                    format!(
+                        "{:.0}",
+                        file_hues.iter().sum::<f64>() / file_hues.len() as f64
+                    )
                 };
                 let name = p.rsplit('/').next().unwrap_or(p);
                 diff_lines.push(format!("DIFF  {name}  colors_changed={changed} hue={avg}"));
@@ -150,7 +158,8 @@ fn main() -> anyhow::Result<()> {
     ));
     buf.push_str(&format!(
         "mean hue across {} changed color fields = {:.0} deg\n\n",
-        all_changed_hues.len(), mean
+        all_changed_hues.len(),
+        mean
     ));
     diff_lines.sort();
     for l in &diff_lines {
