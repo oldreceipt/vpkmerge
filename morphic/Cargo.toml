@@ -24,6 +24,11 @@ bcdec_rs = "0.2"
 # prebuilt ISPC object files (no toolchain needed). The `ispc` feature would
 # rebuild from .ispc sources at build time; we leave it off.
 intel_tex_2 = "0.5"
+# Data-parallel block compression. intel_tex's compress_blocks_into is SIMD but
+# single-threaded; BCn 4x4 blocks are independent, so the BCn re-encode of a
+# large mip (the cost in an ability recolor: a 4096x4096 BC7 top mip) is split
+# into block-row strips across cores.
+rayon = "1"
 # Inline PNG / JPEG / WebP pass-through: VTexFormat::PNG_* / JPEG_* / WEBP_*
 # textures store the payload as a literal compressed image inside the DATA
 # block's pixel region. `image` parses just what it needs.
