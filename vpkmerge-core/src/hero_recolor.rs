@@ -88,11 +88,17 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // placeholder), retinted by the in-place double patch. So her recipe adds one
         // texture + two materials on top of the particles.
         "necro" => Some(necro_recipe()),
-        // Infernus (`inferno`) is also NOT particle-only: his body self-illum accents
-        // and flame materials carry fire color (g_vColorTint / g_vSelfIllumTint), see
-        // `inferno_recipe`.
-        "inferno" => Some(inferno_recipe()),
-        "unicorn" | "gigawatt" | "vampirebat" | "wraith" => Some(particle_only_recipe(&codename)),
+        // Infernus (`inferno`) is PARTICLE-ONLY. A promotion to a full recipe (flame
+        // materials + a flame-ramp texture) was tried and reverted: it renders his
+        // upper body / arms as a flat-red error material in-game. The in-place
+        // `.vmat_c` recolor (`recolor_material_color_bytes`, which rewraps the
+        // material uncompressed and double-patches the tint) is not engine-loadable
+        // for these materials, and the recolored ramp the body samples breaks with
+        // it. His particle recolor alone was the in-game-confirmed blue (~220); the
+        // body/flame-material recolor needs a verified mechanism before it returns.
+        "unicorn" | "gigawatt" | "vampirebat" | "wraith" | "inferno" => {
+            Some(particle_only_recipe(&codename))
+        }
         _ => None,
     }
 }
@@ -217,43 +223,6 @@ fn necro_recipe() -> HeroRecolorRecipe {
             "models/heroes_wip/necro/materials/necro_flame_effect_hand.vmat_c".to_string(),
             "models/heroes_wip/necro/materials/necro_flame_effect.vmat_c".to_string(),
         ],
-        model_entries: Vec::new(),
-        preview_texture: None,
-    }
-}
-
-/// Infernus (`inferno`). Beyond particles, his fire color also lives in his body
-/// and flame MATERIALS: the body's self-illum accents (`inferno_body`'s
-/// `g_vSelfIllumTint`) and the flame layers (`inferno_flame01..03`, `_arm`,
-/// `_strip` carry orange in `g_vColorTint`/`g_vSelfIllumTint`), plus the arm
-/// flame's orange color ramp texture. His body ALBEDO (skin) stays vanilla; only
-/// the self-illum accents + flames retint. NOTE: the flame-dash model materials
-/// (`inferno_flame_dash_burn`/`_shield`) currently fail to decode (a KV3 blob-frame
-/// reader limitation), so the dash relies on its (recolored) particles for now.
-fn inferno_recipe() -> HeroRecolorRecipe {
-    HeroRecolorRecipe {
-        codename: "inferno".to_string(),
-        particle_prefixes: vec![
-            "particles/abilities/inferno/".to_string(),
-            "particles/weapon_fx/inferno/".to_string(),
-        ],
-        // the orange fire ramp the arm flame samples for its color.
-        texture_entries: vec![
-            "models/heroes_staging/inferno_v4/materials/infernus_flame_ramp_psd_db54d26.vtex_c"
-                .to_string(),
-        ],
-        // body self-illum accents + the flame layers (g_vColorTint / g_vSelfIllumTint).
-        material_entries: [
-            "models/heroes_staging/inferno_v4/materials/inferno_body.vmat_c",
-            "models/heroes_staging/inferno_v4/materials/inferno_flame01.vmat_c",
-            "models/heroes_staging/inferno_v4/materials/inferno_flame02.vmat_c",
-            "models/heroes_staging/inferno_v4/materials/inferno_flame03.vmat_c",
-            "models/heroes_staging/inferno_v4/materials/inferno_flame_arm.vmat_c",
-            "models/heroes_staging/inferno_v4/materials/inferno_flame_strip.vmat_c",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect(),
         model_entries: Vec::new(),
         preview_texture: None,
     }
@@ -715,7 +684,7 @@ mod tests {
         // Seven/Mina/Wraith/Infernus: all particle-only, same shape as Celeste,
         // prefixes derived from the codename. Hue is supplied at recolor time, so the
         // recipe itself carries no color. (Graves/necro is NOT here: see below.)
-        for code in ["gigawatt", "vampirebat", "wraith"] {
+        for code in ["gigawatt", "vampirebat", "wraith", "inferno"] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
             assert_eq!(

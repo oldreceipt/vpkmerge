@@ -1428,21 +1428,23 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
     .with_context(|| format!("recoloring hero {} to hue {}", args.hero, args.hue))?;
 
     eprintln!(
-        "{}: {} particle(s) recolored ({} color-free skipped, {} unpatchable left vanilla), {} texture(s), {} material tint(s), {} model(s) ({} verts)",
+        "{}: {} particle(s) recolored ({} color-free skipped, {} unpatchable left vanilla), {} texture(s), {} material tint(s) ({} left vanilla), {} model(s) ({} verts)",
         report.codename,
         report.particles_recolored,
         report.particles_no_color,
         report.particles_unpatchable,
         report.textures_recolored,
         report.materials_recolored,
+        report.materials_unpatchable,
         report.models_recolored,
         report.model_vertices,
     );
-    if report.particles_unpatchable > 0 {
+    if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
         eprintln!(
-            "  warning: {} color-bearing particle(s) could not be patched in place (non-v5 KV3); \
-             this hero's recolor is PARTIAL.",
-            report.particles_unpatchable,
+            "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \
+             place (non-v5 KV3 / binary-blob section) and were left vanilla; this hero's recolor \
+             is PARTIAL.",
+            report.particles_unpatchable, report.materials_unpatchable,
         );
     }
     println!(
