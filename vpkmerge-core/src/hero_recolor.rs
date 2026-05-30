@@ -94,6 +94,7 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // burning / lava textures. We match that: no body material, recolor the
         // vanilla fire textures in place. See [`inferno_recipe`].
         "inferno" => Some(inferno_recipe()),
+        "yamato" => Some(yamato_recipe()),
         "unicorn" | "gigawatt" | "vampirebat" | "wraith" => Some(particle_only_recipe(&codename)),
         _ => None,
     }
@@ -196,6 +197,38 @@ fn inferno_recipe() -> HeroRecolorRecipe {
     }
 }
 
+/// Yamato: most ability/weapon VFX color lives in particle color params. Unlike
+/// the generic particle-only heroes, three status particles live under
+/// `particles/status_fx/`, and a few hero-specific textures are chromatic:
+/// a green projected blade-dash self-illum swatch plus the two shadow-redemption
+/// status maps. The other Yamato ability textures audited from `pak01` are white
+/// alpha masks or grayscale ramps, so they are left particle-tinted. The `pak01`
+/// audit patched 234 `.vpcf_c` files cleanly, with 66 color-free helpers skipped.
+fn yamato_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "yamato".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/yamato/".to_string(),
+            "particles/weapon_fx/yamato/".to_string(),
+            "particles/status_fx/status_fx_yamato".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/projected/yamato_blade_dash_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/yamato/yamato_shadow_redemption_complete_status.vtex_c",
+            "materials/particle/abilities/yamato/yamato_shadow_redemption_nokill_status.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/yamato/yamato_shadow_redemption_complete_status.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
 /// Graves (`necro`). Particles carry most of her VFX color (her large ability maps
 /// are grayscale, tinted by the particle color), but two ability MODELS hold their
 /// color in a material `g_vColorTint` constant rather than a texture, and the
@@ -258,6 +291,12 @@ fn necro_recipe() -> HeroRecolorRecipe {
             "models/heroes_wip/necro/materials/necro_picker_hand_effect.vmat_c".to_string(),
             "models/heroes_wip/necro/materials/necro_picker_effect.vmat_c".to_string(),
             "models/heroes_wip/necro/materials/picker_hand_glow.vmat_c".to_string(),
+            // The gravestone's glowing skull / R.I.P. text / cracks: a g_vSelfIllumTint
+            // (the necro yellow-green that reads as gold on the bright emissive),
+            // masked by a grayscale selfillum texture. The standing stone and its
+            // destruction fx carry the tint on the material, not a texture.
+            "models/heroes_wip/necro/materials/necro_gravestone.vmat_c".to_string(),
+            "models/abilities/materials/necro_gravestone_destruction.vmat_c".to_string(),
         ],
         model_entries: Vec::new(),
         preview_texture: None,
@@ -317,8 +356,8 @@ pub fn recolor_hero_to_addon(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, plus \
-             particle-only unicorn, gigawatt, vampirebat, wraith)"
+             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, yamato/Yamato, \
+             plus particle-only unicorn, gigawatt, vampirebat, wraith)"
         )
     })?;
 
@@ -447,8 +486,8 @@ pub fn recolor_hero_preview_png(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, plus \
-             particle-only unicorn, gigawatt, vampirebat, wraith)"
+             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, yamato/Yamato, \
+             plus particle-only unicorn, gigawatt, vampirebat, wraith)"
         )
     })?;
     let preview_texture = recipe.preview_texture.as_deref().with_context(|| {
@@ -800,8 +839,8 @@ mod tests {
     fn particle_only_heroes_are_pinned() {
         // Seven/Mina/Wraith: all particle-only, same shape as Celeste, prefixes
         // derived from the codename. Hue is supplied at recolor time, so the recipe
-        // itself carries no color. (Graves/necro and Infernus are NOT here: they have
-        // their own recipes with tint-constant materials.)
+        // itself carries no color. (Graves/necro, Infernus, and Yamato are NOT here:
+        // they have their own recipes.)
         for code in ["gigawatt", "vampirebat", "wraith"] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
@@ -829,6 +868,38 @@ mod tests {
     }
 
     #[test]
+    fn yamato_recipe_adds_status_particles_and_chromatic_textures() {
+        let r = recipe_for("yamato").expect("yamato recipe");
+        assert_eq!(r.codename, "yamato");
+        assert_eq!(
+            r.particle_prefixes,
+            [
+                "particles/abilities/yamato/",
+                "particles/weapon_fx/yamato/",
+                "particles/status_fx/status_fx_yamato",
+            ]
+        );
+        assert_eq!(r.texture_entries.len(), 3);
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("yamato_blade_dash_ground_projected")));
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("shadow_redemption_complete_status")));
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("shadow_redemption_nokill_status")));
+        assert!(r.material_entries.is_empty());
+        assert!(r.model_entries.is_empty());
+        let preview = r.preview_texture.expect("yamato has a preview texture");
+        assert!(r.texture_entries.contains(&preview));
+        assert!(recipe_for("YAMATO").is_some());
+    }
+
+    #[test]
     fn graves_recipe_adds_glow_texture_and_tint_materials() {
         // Graves (necro): particles (incl. the held-weapon ambient flame under
         // particles/heroes/) + ability-prop color textures + the stamped effect-tint
@@ -846,11 +917,12 @@ mod tests {
         assert!(r.texture_entries.iter().any(|t| t.contains("jar_of_dread")));
         assert_eq!(
             r.material_entries.len(),
-            8,
-            "pickup sphere + jar + necro_hands + 2 flame effects + picker hand effect + picker effect + glow aura"
+            10,
+            "pickup sphere + jar + necro_hands + 2 flame effects + picker hand effect + \
+             picker effect + glow aura + 2 gravestone (standing + destruction)"
         );
         assert!(r.material_entries.iter().all(|m| m.ends_with(".vmat_c")));
-        // the held flaming-hand prop + its aura are present
+        // the held flaming-hand prop + its aura + the gravestone glow are present
         assert!(r
             .material_entries
             .iter()
@@ -859,6 +931,10 @@ mod tests {
             .material_entries
             .iter()
             .any(|m| m.ends_with("picker_hand_glow.vmat_c")));
+        assert!(r
+            .material_entries
+            .iter()
+            .any(|m| m.ends_with("necro_gravestone.vmat_c")));
         assert!(r.model_entries.is_empty());
     }
 

@@ -71,7 +71,7 @@ enum Command {
     /// over a built-in per-hero recipe. Pinned: `bookworm` (Paige, full
     /// particles+textures+models), plus particle-only `unicorn` (Celeste),
     /// `gigawatt` (Seven), `vampirebat` (Mina), `necro` (Graves), `wraith`,
-    /// `inferno` (Infernus).
+    /// `inferno` (Infernus), `yamato` (Yamato).
     RecolorHero(RecolorHeroCmd),
 }
 
