@@ -8,6 +8,7 @@
 //! the `CTRL` buffer registry stores), enumerated by [`vertex_targets`].
 
 use crate::error::DecodeError;
+use crate::kv3::{set_bools, Seg, Value};
 use crate::meshopt::{encode_index_buffer, encode_vertex_buffer};
 use crate::resource::Resource;
 
@@ -35,6 +36,9 @@ pub struct VertexTarget {
     /// True when this buffer can be displacement-edited: meshopt-compressed,
     /// not ZSTD, and carrying an `R32G32B32_FLOAT` `POSITION`.
     pub editable: bool,
+    /// True when this buffer carries a `COLOR` attribute (a baked per-vertex
+    /// tint), i.e. is a candidate for [`recolor_vertex_buffer`].
+    pub has_color: bool,
 }
 
 pub(super) fn parse_embedded(
@@ -77,6 +81,7 @@ pub fn vertex_targets(vmdl_bytes: &[u8]) -> Result<Vec<VertexTarget>, DecodeErro
                 stride: d.element_size,
                 meshopt: d.meshopt,
                 editable: d.meshopt && !d.zstd && has_float_position(d),
+                has_color: d.fields.iter().any(|f| f.semantic_name == "COLOR"),
             });
         }
     }
@@ -362,6 +367,156 @@ pub fn replace_vertex_positions(
 
     let new_mvtx = encode_vertex_buffer(desc.element_count, desc.element_size, &on_disk.data)?;
     resource.rebuild_with_block(block_index, &new_mvtx)
+}
+
+/// Reads the first `COLOR` attribute of the vertex buffer at `block_index` as
+/// RGBA in 0..1 (in native vertex order), or `None` if the buffer carries no
+/// `COLOR`. The diagnostic read for a vertex-color recolor: pair with
+/// [`recolor_vertex_buffer`] to sample a baked tint before editing it.
+pub fn read_vertex_colors(
+    vmdl_bytes: &[u8],
+    block_index: usize,
+) -> Result<Option<Vec<[f32; 4]>>, DecodeError> {
+    let (resource, embedded) = parse_embedded(vmdl_bytes)?;
+    let desc = find_vertex_buffer(&embedded, block_index)
+        .ok_or(DecodeError::Model("no vertex buffer at that block index"))?;
+    let raw = resource
+        .get_block_by_index(block_index)
+        .ok_or(DecodeError::Model("MVTX block index out of range"))?;
+    let on_disk = desc.decode(raw, true)?;
+    match on_disk.color_fields().first() {
+        Some(attr) => Ok(Some(on_disk.vector4(attr)?)),
+        None => Ok(None),
+    }
+}
+
+/// Applies `transform` to every `COLOR` attribute (RGBA in 0..1) of the vertex
+/// buffer at `block_index`, re-encodes the buffer in its native meshoptimizer
+/// codec, and splices it back, returning the new `.vmdl_c` bytes and the number
+/// of color lanes edited. The color analog of [`replace_vertex_positions`]:
+/// rewrite the baked per-vertex tint without touching topology or any other
+/// attribute (position, normal, uv, skin weights).
+///
+/// Returns `(bytes, 0)` unchanged if the buffer has no `COLOR`. Handles both a
+/// meshopt-compressed buffer (re-encoded through the vertex codec) and an
+/// uncompressed buffer (the `COLOR` lane is patched in place); errors only on a
+/// ZSTD buffer. In Deadlock hero models the per-vertex color often lives in a
+/// standalone *uncompressed* second buffer, distinct from the meshopt geometry
+/// buffer, so the uncompressed path is the common case here.
+pub fn recolor_vertex_buffer(
+    vmdl_bytes: &[u8],
+    block_index: usize,
+    transform: impl Fn([f32; 4]) -> [f32; 4],
+) -> Result<(Vec<u8>, usize), DecodeError> {
+    let (resource, embedded) = parse_embedded(vmdl_bytes)?;
+    let desc = find_vertex_buffer(&embedded, block_index)
+        .ok_or(DecodeError::Model("no vertex buffer at that block index"))?;
+    if desc.zstd {
+        return Err(DecodeError::Model("ZSTD vertex buffers not supported"));
+    }
+
+    let block_offset = resource
+        .blocks()
+        .get(block_index)
+        .ok_or(DecodeError::Model("MVTX block index out of range"))?
+        .offset as usize;
+    let raw = resource
+        .get_block_by_index(block_index)
+        .ok_or(DecodeError::Model("MVTX block index out of range"))?;
+    let mut on_disk = desc.decode(raw, true)?;
+
+    let color_fields = on_disk.color_fields();
+    if color_fields.is_empty() {
+        return Ok((vmdl_bytes.to_vec(), 0));
+    }
+    for attr in &color_fields {
+        let recolored: Vec<[f32; 4]> = on_disk.vector4(attr)?.into_iter().map(&transform).collect();
+        on_disk.write_colors(attr, &recolored)?;
+    }
+
+    if desc.meshopt {
+        // Re-encoding meshopt is not byte-compatible with the engine's decoder
+        // (my encoder round-trips only through morphic's own decoder, and garbles
+        // in game). Instead convert this buffer to UNCOMPRESSED: splice the edited
+        // interleaved bytes raw and flip m_bMeshoptCompressed=false in CTRL. The
+        // engine reads uncompressed vertex buffers natively (hero models ship them).
+        return convert_meshopt_color_to_uncompressed(vmdl_bytes, block_index, &on_disk.data)
+            .map(|bytes| (bytes, color_fields.len()));
+    }
+
+    // An uncompressed buffer's block *is* the interleaved bytes, so patch the
+    // edited color lane straight into a copy of the original file at the block's
+    // absolute offset. Nothing else moves: the output is byte-identical to the
+    // input except the COLOR bytes (no container rebuild, no re-alignment). This
+    // is the strictest, byte-faithful edit, which the engine accepts where a
+    // re-encode / re-layout can be rejected (see docs/handoff-model-edit.md).
+    let mut out = vmdl_bytes.to_vec();
+    out.get_mut(block_offset..block_offset + on_disk.data.len())
+        .ok_or(DecodeError::Model("uncompressed block past end of file"))?
+        .copy_from_slice(&on_disk.data);
+    Ok((out, color_fields.len()))
+}
+
+/// Converts the meshopt vertex buffer at `block_index` into an uncompressed one
+/// carrying `raw` (its decoded, color-edited interleaved bytes): splices the raw
+/// bytes as the block and flips `m_bMeshoptCompressed` to false for that buffer in
+/// the `CTRL` registry (byte-faithfully, via [`set_bools`]). The engine then reads
+/// the buffer uncompressed. This sidesteps re-encoding meshopt, which is not
+/// byte-compatible with the engine's decoder.
+fn convert_meshopt_color_to_uncompressed(
+    vmdl_bytes: &[u8],
+    block_index: usize,
+    raw: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = Resource::parse(vmdl_bytes)?;
+    let ctrl_index = resource
+        .blocks()
+        .iter()
+        .position(|b| b.kind == CTRL)
+        .ok_or(DecodeError::Model("model has no CTRL block"))?;
+    let ctrl_bytes = resource
+        .get_block_by_index(ctrl_index)
+        .ok_or(DecodeError::Model("CTRL block out of range"))?;
+    let ctrl = crate::kv3::decode(ctrl_bytes)?;
+    let path = meshopt_flag_path(&ctrl, block_index)?;
+    let new_ctrl = set_bools(ctrl_bytes, &[(path, false)])?;
+
+    // Two block swaps: the flipped CTRL, then the raw vertex bytes. Block indices
+    // are preserved across a rebuild, so the second still targets `block_index`.
+    let with_ctrl = resource.rebuild_with_block(ctrl_index, &new_ctrl)?;
+    let resource2 = Resource::parse(&with_ctrl)?;
+    resource2.rebuild_with_block(block_index, raw)
+}
+
+/// Builds the `CTRL` KV3 path to `m_bMeshoptCompressed` of the vertex buffer whose
+/// `m_nBlockIndex` equals `block_index`
+/// (`embedded_meshes[mi].m_vertexBuffers[vi].m_bMeshoptCompressed`).
+fn meshopt_flag_path(ctrl: &Value, block_index: usize) -> Result<Vec<Seg>, DecodeError> {
+    let target =
+        i64::try_from(block_index).map_err(|_| DecodeError::Model("block index too large"))?;
+    let meshes = ctrl
+        .get("embedded_meshes")
+        .and_then(Value::as_array)
+        .ok_or(DecodeError::Model("CTRL has no embedded_meshes"))?;
+    for (mi, em) in meshes.iter().enumerate() {
+        let Some(vbs) = em.get("m_vertexBuffers").and_then(Value::as_array) else {
+            continue;
+        };
+        for (vi, buf) in vbs.iter().enumerate() {
+            if buf.get("m_nBlockIndex").and_then(Value::as_int) == Some(target) {
+                return Ok(vec![
+                    Seg::Key("embedded_meshes".to_string()),
+                    Seg::Index(mi),
+                    Seg::Key("m_vertexBuffers".to_string()),
+                    Seg::Index(vi),
+                    Seg::Key("m_bMeshoptCompressed".to_string()),
+                ]);
+            }
+        }
+    }
+    Err(DecodeError::Model(
+        "no CTRL vertex buffer references that block index",
+    ))
 }
 
 // --- T1c: assemble a brand-new mesh from an edited glb (add-geometry path) ---

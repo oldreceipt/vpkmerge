@@ -58,6 +58,12 @@ enum Command {
     /// Decode a soundevents (`.vsndevts_c`) file to JSON, optionally edit clip
     /// paths / params and re-emit an uncompressed (loadable) file.
     Soundevents(SoundeventsCmd),
+
+    /// Recolor a texture (`.vtex_c`) by shifting every pixel's hue to a target
+    /// (keeping saturation + value), then re-encode in the texture's own
+    /// format. Built for the Deadlock ability-VFX recolor: pack the result at
+    /// the base entry path and it overrides in place, no `.vmat_c` edit needed.
+    Texture(TextureCmd),
 }
 
 #[derive(Args)]
@@ -92,6 +98,47 @@ struct SoundeventsCmd {
     /// e.g. --set "Seven.Wpn.Fire/volume=0.25".
     #[arg(long = "set", value_name = "EVENT/FIELD=NUMBER")]
     set: Vec<String>,
+}
+
+#[derive(Args)]
+struct TextureCmd {
+    /// One or more `.vtex_c` files, or (with --from-vpk) entry paths inside a
+    /// VPK. Pass several to recolor a whole set into one addon (--encode-vpk).
+    #[arg(required = true, num_args = 1..)]
+    inputs: Vec<PathBuf>,
+
+    /// Read INPUTS as entry paths inside this VPK instead of files on disk
+    /// (e.g. `--from-vpk pak01_dir.vpk models/.../bookworm_dragon_color.vtex_c`).
+    #[arg(long, value_name = "VPK")]
+    from_vpk: Option<PathBuf>,
+
+    /// Target hue in degrees (0..360). Every pixel is set to this hue while
+    /// keeping its original saturation and value, so neutral highlights and
+    /// shadows stay neutral. Matches the particle recolor, so the same hue
+    /// lands the dragon, the projectile, and the particle params together.
+    #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
+    hue: f64,
+
+    /// Write a PNG preview of the recolored top mip here (the design-intent
+    /// color, before the lossy `BCn` re-encode) for an eyeball before committing.
+    /// Single input only.
+    #[arg(long, value_name = "PNG")]
+    preview: Option<PathBuf>,
+
+    /// Write the recolored `.vtex_c` to this loose file. Single input only.
+    #[arg(long, value_name = "FILE")]
+    encode: Option<PathBuf>,
+
+    /// After recoloring, pack into a standalone addon VPK at this path. With
+    /// several INPUTS, all recolored textures land in this one addon, each at
+    /// its VPK entry path (see --vpk-entry for the single loose-file case).
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: Option<PathBuf>,
+
+    /// Entry path for the file inside --encode-vpk. Defaults to INPUT when
+    /// reading with --from-vpk; required for a loose-file INPUT. Single input only.
+    #[arg(long = "vpk-entry", value_name = "PATH")]
+    vpk_entry: Option<String>,
 }
 
 #[derive(Args)]
@@ -134,6 +181,48 @@ enum ModelAction {
     /// part's geometry wholesale with a new mesh of any vertex/index count
     /// (`--replace-part <MESH> --from-glb <FILE>`, Tier 1d).
     Edit(ModelEditArgs),
+
+    /// Recolor a model's baked per-vertex `COLOR` to a target hue (keeping
+    /// saturation + value), re-encode the affected vertex buffers, and pack the
+    /// result into an addon VPK. The model half of the Deadlock ability-VFX
+    /// recolor: some effects (Paige's ult horse/knight) bake their color into
+    /// mesh vertex colors, which the particle/texture recolors don't reach. Pass
+    /// several ENTRIES to recolor a whole set into one addon, each overriding its
+    /// base entry in place. Mirrors `vpkmerge texture`.
+    Recolor(ModelRecolorArgs),
+}
+
+#[derive(Args)]
+struct ModelRecolorArgs {
+    /// One or more VPK-internal model paths (`.vmdl_c`) to recolor, read from
+    /// `--vpk`. Several ENTRIES pack into one addon, each at its own path, e.g.
+    /// `models/heroes_wip/bookworm/bookworm_horse.vmdl_c`.
+    #[arg(required = true, num_args = 1.., value_name = "ENTRY")]
+    entries: Vec<String>,
+
+    /// VPK to read the model(s) from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to when `--vpk` does not ship a model.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Target hue in degrees (0..360). Every vertex's color is set to this hue
+    /// while keeping its saturation and value, so neutral vertices stay neutral.
+    /// Matches the particle/texture recolor: the same hue lands all three.
+    #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
+    hue: f64,
+
+    /// List each model's color-bearing vertex buffers (mesh part, block, vertex
+    /// count) and exit without recoloring.
+    #[arg(long)]
+    list: bool,
+
+    /// Pack the recolored model(s) into a standalone addon VPK at this path,
+    /// each at its base entry path so it overrides in place.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -374,6 +463,7 @@ fn main() -> Result<()> {
         Some(Command::Portrait(args)) => run_portrait(args),
         Some(Command::Model(args)) => run_model(args),
         Some(Command::Soundevents(args)) => run_soundevents(args),
+        Some(Command::Texture(args)) => run_texture(args),
         None => run_merge(cli),
     }
 }
@@ -405,6 +495,7 @@ fn run_model(args: ModelCmd) -> Result<()> {
     match args.action {
         Some(ModelAction::Export(e)) => return run_model_export(&e),
         Some(ModelAction::Edit(e)) => return run_model_edit(e),
+        Some(ModelAction::Recolor(e)) => return run_model_recolor(&e),
         None => {}
     }
 
@@ -773,6 +864,50 @@ fn parse_translate(spec: &str) -> Result<[f32; 3]> {
     Ok(out)
 }
 
+/// Recolor one or more models' baked per-vertex colors to a hue and pack them
+/// into one addon VPK (`--list` to just see each model's color buffers).
+fn run_model_recolor(e: &ModelRecolorArgs) -> Result<()> {
+    let base = e.base.as_deref();
+
+    if e.list {
+        for entry in &e.entries {
+            let targets = model_vertex_targets(&e.vpk, entry, base)
+                .with_context(|| format!("listing vertex buffers for {entry}"))?;
+            let color: Vec<_> = targets.iter().filter(|t| t.has_color).collect();
+            println!("{entry}: {} color-bearing vertex buffer(s)", color.len());
+            for t in color {
+                println!(
+                    "  mesh {:<20} block {:>3}  {} verts",
+                    t.mesh_name, t.block_index, t.vertex_count
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let out = e.encode_vpk.as_ref().context(
+        "model recolor: provide --encode-vpk <OUT_dir.vpk> to write the recolored model(s) \
+         (or --list to inspect)",
+    )?;
+
+    let report = vpkmerge_core::recolor_models_to_addon(&e.vpk, &e.entries, base, e.hue, out)?;
+    let total_verts: usize = report.iter().map(|r| r.stats.vertices).sum();
+    for r in &report {
+        eprintln!(
+            "  {} buffer(s), {} color lane(s), {} verts  {}",
+            r.stats.buffers_recolored, r.stats.color_lanes, r.stats.vertices, r.entry
+        );
+    }
+    eprintln!(
+        "wrote {}: {} model(s) recolored to hue {} deg ({} verts), each overriding its base entry in place",
+        out.display(),
+        report.len(),
+        e.hue,
+        total_verts
+    );
+    Ok(())
+}
+
 fn run_merge(cli: Cli) -> Result<()> {
     let Some(output) = cli.output else {
         anyhow::bail!("missing OUTPUT. Run `vpkmerge --help` for usage.");
@@ -1023,6 +1158,137 @@ fn run_soundevents(args: SoundeventsCmd) -> Result<()> {
     } else {
         let json = serde_json::to_string_pretty(&se.to_json()).context("serializing JSON")?;
         println!("{json}");
+    }
+    Ok(())
+}
+
+/// Recolor every entry in `inputs` (read from `vpk`) to `hue` and pack the
+/// whole set into one addon at `out`, each at its own VPK entry path.
+fn recolor_textures_to_addon(inputs: &[PathBuf], vpk: &Path, hue: f64, out: &Path) -> Result<()> {
+    let mut packed: Vec<(String, Vec<u8>)> = Vec::new();
+    for input in inputs {
+        let entry = input.to_string_lossy().into_owned();
+        let bytes = vpkmerge_core::read_vpk_entry(vpk, &entry)?;
+        let summary = vpkmerge_core::inspect_texture(&bytes)
+            .with_context(|| format!("{entry} is not a readable .vtex_c"))?;
+        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        eprintln!(
+            "  {} {}x{} {}mip -> {} bytes  {entry}",
+            summary.format,
+            summary.width,
+            summary.height,
+            summary.mip_count,
+            recolored.len()
+        );
+        packed.push((entry, recolored));
+    }
+    let refs: Vec<(&str, &[u8])> = packed
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    vpkmerge_core::pack(&refs, out)?;
+    eprintln!(
+        "wrote {}: {} textures recolored to hue {hue} deg, each overriding its base entry in place",
+        out.display(),
+        packed.len()
+    );
+    Ok(())
+}
+
+fn run_texture(args: TextureCmd) -> Result<()> {
+    let TextureCmd {
+        inputs,
+        from_vpk,
+        hue,
+        preview,
+        encode,
+        encode_vpk,
+        vpk_entry,
+    } = args;
+
+    // Batch: recolor several entries into one addon (each at its own path).
+    if inputs.len() > 1 {
+        if preview.is_some() || encode.is_some() || vpk_entry.is_some() {
+            anyhow::bail!(
+                "--preview/--encode/--vpk-entry apply to a single input; with multiple \
+                 INPUTS pass only --encode-vpk <OUT_dir.vpk>"
+            );
+        }
+        let out = encode_vpk.as_ref().context(
+            "multiple INPUTS need --encode-vpk <OUT_dir.vpk> to pack them into one addon",
+        )?;
+        let vpk = from_vpk.as_ref().context(
+            "multiple INPUTS must be VPK entry paths: pass --from-vpk <VPK> (each entry packs \
+             back at its own path)",
+        )?;
+        return recolor_textures_to_addon(&inputs, vpk, hue, out);
+    }
+
+    let input = &inputs[0];
+    let label = match &from_vpk {
+        Some(vpk) => format!("{} @ {}", input.display(), vpk.display()),
+        None => input.display().to_string(),
+    };
+
+    let bytes = match &from_vpk {
+        Some(vpk) => vpkmerge_core::read_vpk_entry(vpk, &input.to_string_lossy())?,
+        None => std::fs::read(input).with_context(|| format!("reading {}", input.display()))?,
+    };
+
+    let summary = vpkmerge_core::inspect_texture(&bytes)
+        .with_context(|| format!("{label} is not a readable .vtex_c"))?;
+    eprintln!(
+        "{label}: {} {}x{}, {} mip{} -> hue {hue} deg",
+        summary.format,
+        summary.width,
+        summary.height,
+        summary.mip_count,
+        if summary.mip_count == 1 { "" } else { "s" }
+    );
+
+    // Preview is the design-intent color (pre re-encode); cheap, so do it first.
+    if let Some(out) = &preview {
+        let png = vpkmerge_core::recolor_texture_preview_png(&bytes, hue)?;
+        std::fs::write(out, &png).with_context(|| format!("writing preview {}", out.display()))?;
+        eprintln!("wrote preview {} ({} bytes PNG)", out.display(), png.len());
+    }
+
+    // Outputs: a loose .vtex_c (--encode), a standalone addon VPK (--encode-vpk),
+    // or (if neither, and no --preview) a dry run that just confirms it recolors.
+    if encode.is_some() || encode_vpk.is_some() {
+        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        if let Some(out) = &encode {
+            std::fs::write(out, &recolored)
+                .with_context(|| format!("writing {}", out.display()))?;
+            eprintln!(
+                "wrote {}: {} bytes (recolored .vtex_c)",
+                out.display(),
+                recolored.len()
+            );
+        }
+        if let Some(out) = &encode_vpk {
+            let entry = match (&vpk_entry, &from_vpk) {
+                (Some(e), _) => e.clone(),
+                (None, Some(_)) => input.to_string_lossy().into_owned(),
+                (None, None) => anyhow::bail!(
+                    "--encode-vpk needs an entry path for a loose-file input: pass \
+                     --vpk-entry <PATH> (or read with --from-vpk, which defaults the \
+                     entry to INPUT)"
+                ),
+            };
+            vpkmerge_core::pack(&[(entry.as_str(), recolored.as_slice())], out)?;
+            eprintln!(
+                "wrote {}: 1 entry ({entry}) overrides the base texture in place",
+                out.display()
+            );
+        }
+    } else if preview.is_none() {
+        // Dry run: prove the recolor path works end to end without writing.
+        vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        eprintln!(
+            "dry run OK (recolor succeeds); pass --encode <FILE>, --encode-vpk <OUT_dir.vpk>, \
+             or --preview <PNG> to write output"
+        );
     }
     Ok(())
 }

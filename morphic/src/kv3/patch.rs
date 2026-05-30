@@ -133,6 +133,64 @@ pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, D
     Ok(out)
 }
 
+/// Sets boolean fields located by KV3 path, in place, on a byte-faithful
+/// uncompressed re-wrap of `block` (preserving structure, as the engine's model
+/// loader requires). Each edit is a `(path, value)` resolving to exactly one bool.
+///
+/// The bool's storage form is preserved: a type-encoded bool (`BOOLEAN_TRUE`/
+/// `BOOLEAN_FALSE`, the value is the type byte) has its type byte flipped (keeping
+/// the high flag bits); a value-encoded bool (`BOOLEAN` + a 0/1 b1 byte) has that
+/// byte set. Built to flip `m_bMeshoptCompressed` in a model's `CTRL` buffer
+/// registry when converting a meshopt vertex buffer to an uncompressed one.
+///
+/// Errors if the block is not v5, or if a path is missing / not a bool / ambiguous.
+pub fn set_bools(block: &[u8], edits: &[(Vec<Seg>, bool)]) -> Result<Vec<u8>, DecodeError> {
+    let mut out = rewrap_uncompressed(block)?;
+    if out.len() < 120 || u32::from_le_bytes([out[0], out[1], out[2], out[3]]) & 0xFF != 5 {
+        return Err(DecodeError::Kv3("bool patch requires KV3 v5"));
+    }
+
+    let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
+    let hits = {
+        let mut w = PathWalk::new(&out, &targets)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        w.bool_hits
+    };
+
+    for i in 0..edits.len() {
+        match hits.iter().filter(|h| h.edit == i).count() {
+            1 => {}
+            0 => return Err(DecodeError::Kv3("bool patch path not found or not a bool")),
+            _ => {
+                return Err(DecodeError::Kv3(
+                    "bool patch path is ambiguous (matched more than one field)",
+                ))
+            }
+        }
+    }
+
+    for h in &hits {
+        let want = edits[h.edit].1;
+        let b = out
+            .get_mut(h.offset)
+            .ok_or(DecodeError::Kv3("bool patch offset out of range"))?;
+        match h.kind {
+            // Keep the high flag bits (0x80 = has-flags, 0x40), set the type id.
+            BoolKind::TypeByte => {
+                *b = (*b & 0xC0)
+                    | if want {
+                        node::BOOLEAN_TRUE
+                    } else {
+                        node::BOOLEAN_FALSE
+                    };
+            }
+            BoolKind::ValueByte => *b = u8::from(want),
+        }
+    }
+    Ok(out)
+}
+
 /// Encodes `value` to the little-endian bytes of an integer scalar of node type
 /// `datatype`, erroring if it does not fit (so the field's storage width is never
 /// changed). `INT32_AS_BYTE` reads as an unsigned `u8` (see `reader::read_value`).
@@ -179,6 +237,25 @@ struct Hit {
     datatype: u8,
 }
 
+/// A located boolean field, for [`set_bools`]. A KV3 bool is stored either as its
+/// own type byte (`BOOLEAN_TRUE` / `BOOLEAN_FALSE`, the value *is* the type) or as
+/// a `BOOLEAN` type with a 0/1 value byte in the b1 lane; `kind` says which byte
+/// to patch.
+struct BoolHit {
+    edit: usize,
+    offset: usize,
+    kind: BoolKind,
+}
+
+#[derive(Clone, Copy)]
+enum BoolKind {
+    /// The byte at `offset` is the type byte: set its low 6 bits to
+    /// `BOOLEAN_TRUE`/`BOOLEAN_FALSE`, preserving the high flag bits.
+    TypeByte,
+    /// The byte at `offset` is a b1 value byte: set it to 0/1.
+    ValueByte,
+}
+
 /// Path-tracking sibling of [`Walk`]: walks the value tree (sharing [`lanes`]),
 /// maintaining the current KV3 path, and records each integer scalar whose path
 /// equals one of `targets`. Used by [`set_scalars`].
@@ -192,6 +269,7 @@ struct PathWalk<'a> {
     targets: &'a [&'a [Seg]],
     path: Vec<Seg>,
     hits: Vec<Hit>,
+    bool_hits: Vec<BoolHit>,
 }
 
 impl<'a> PathWalk<'a> {
@@ -207,6 +285,7 @@ impl<'a> PathWalk<'a> {
             targets,
             path: Vec::new(),
             hits: Vec::new(),
+            bool_hits: Vec::new(),
         })
     }
 
@@ -252,6 +331,33 @@ impl<'a> PathWalk<'a> {
         }
     }
 
+    /// Records a type-encoded bool (`BOOLEAN_TRUE`/`BOOLEAN_FALSE`) as a hit if its
+    /// path matches a target. `type_off` is the absolute offset of its type byte.
+    fn record_bool_type(&mut self, datatype: u8, type_off: usize) {
+        if datatype != node::BOOLEAN_TRUE && datatype != node::BOOLEAN_FALSE {
+            return;
+        }
+        if let Some(edit) = self.targets.iter().position(|t| self.path.as_slice() == *t) {
+            self.bool_hits.push(BoolHit {
+                edit,
+                offset: type_off,
+                kind: BoolKind::TypeByte,
+            });
+        }
+    }
+
+    /// Records a value-encoded bool (`BOOLEAN` + a 0/1 b1 byte) as a hit if its
+    /// path matches a target. `value_off` is the absolute offset of the b1 byte.
+    fn record_bool_value(&mut self, value_off: usize) {
+        if let Some(edit) = self.targets.iter().position(|t| self.path.as_slice() == *t) {
+            self.bool_hits.push(BoolHit {
+                edit,
+                offset: value_off,
+                kind: BoolKind::ValueByte,
+            });
+        }
+    }
+
     /// Records the current scalar as a hit if its path matches a target.
     fn record(&mut self, lane: usize, datatype: u8) {
         let offset = self.main[lane].at();
@@ -291,14 +397,19 @@ impl<'a> PathWalk<'a> {
                 self.record(B1, datatype);
                 self.main[B1].pos += 1;
             }
-            BOOLEAN => self.main[B1].pos += 1,
+            BOOLEAN => {
+                self.record_bool_value(self.main[B1].at());
+                self.main[B1].pos += 1;
+            }
             NULL | BOOLEAN_TRUE | BOOLEAN_FALSE | INT64_ZERO | INT64_ONE | DOUBLE_ZERO
             | DOUBLE_ONE => {}
             ARRAY => {
                 let n = self.lane_u32(B4)?;
                 for i in 0..n {
+                    let type_off = self.types.at();
                     let t = self.read_type()?;
                     self.path.push(Seg::Index(i as usize));
+                    self.record_bool_type(t, type_off);
                     self.value(t)?;
                     self.path.pop();
                 }
@@ -335,9 +446,11 @@ impl<'a> PathWalk<'a> {
             OBJECT => {
                 let n = self.obj_len()?;
                 for _ in 0..n {
+                    let type_off = self.types.at();
                     let vt = self.read_type()?;
                     let id = self.lane_u32(B4)?;
                     self.path.push(Seg::Key(self.key(id).to_string()));
+                    self.record_bool_type(vt, type_off);
                     self.value(vt)?;
                     self.path.pop();
                 }

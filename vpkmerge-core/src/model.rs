@@ -393,6 +393,55 @@ pub fn edit_model_geometry(
     })
 }
 
+/// One model recolored by [`recolor_models_to_addon`].
+#[derive(Debug, Clone)]
+pub struct ModelRecolorEntry {
+    pub entry: String,
+    pub stats: crate::recolor::ModelRecolorStats,
+}
+
+/// Recolor the baked per-vertex colors of one or more model entries (read from
+/// `vpk`, then `base`) to `hue_deg`, packing them all into one addon VPK at
+/// `out`, each at its own entry path so it overrides the base pak in place. The
+/// model analog of the multi-entry `vpkmerge texture` recolor (the third VFX
+/// recolor mechanism, alongside particle params and texture hue).
+///
+/// Returns a per-entry report. Errors if an entry is missing, or carries no
+/// color-bearing vertex buffer (a likely wrong-model mistake) so a silent
+/// no-op addon is never written.
+pub fn recolor_models_to_addon(
+    vpk: impl AsRef<Path>,
+    entries: &[String],
+    base: Option<&Path>,
+    hue_deg: f64,
+    out: impl AsRef<Path>,
+) -> Result<Vec<ModelRecolorEntry>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let mut packed: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut report = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let bytes =
+            read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+        let (recolored, stats) = crate::recolor::recolor_model_vertex_colors(&bytes, hue_deg)
+            .with_context(|| format!("recoloring {entry}"))?;
+        if stats.buffers_recolored == 0 {
+            anyhow::bail!("{entry} has no color-bearing vertex buffer to recolor (wrong model?)");
+        }
+        packed.push((entry.clone(), recolored));
+        report.push(ModelRecolorEntry {
+            entry: entry.clone(),
+            stats,
+        });
+    }
+    let refs: Vec<(&str, &[u8])> = packed
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    crate::pack(&refs, out.as_ref())
+        .with_context(|| format!("packing recolored models into {}", out.as_ref().display()))?;
+    Ok(report)
+}
+
 /// Exports one vertex buffer (by global block index) of a model to a `.glb` for
 /// reshaping in Blender: a single triangle mesh carrying a `_ORIGID` per-vertex
 /// attribute that maps the edit back to the original buffer (see

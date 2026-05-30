@@ -833,6 +833,111 @@ fn replace_gun_with_different_count_local() {
     );
 }
 
+/// Vertex-color recolor round-trip on a real color-bearing model (Paige's ult
+/// horse/knight), end to end: pick a `COLOR`-carrying vertex buffer and recolor
+/// it with (a) an identity transform, confirming the edited `.vmdl_c` re-decodes
+/// with its colors AND positions byte-identical (the recolor is lossless and
+/// never touches geometry), then (b) a channel-swap transform, confirming only
+/// the colors changed and positions are still identical. Exercises whichever of
+/// the meshopt / uncompressed buffer paths the chosen entry uses. Gated on
+/// `MORPHIC_MODEL_VPK`; entry via `MORPHIC_RECOLOR_ENTRY` (default the particle
+/// horse/knight, whose color lives in a meshopt buffer, so the re-encode path is
+/// exercised by default).
+#[test]
+fn recolor_vertex_colors_round_trips_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping local vertex-color recolor");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_RECOLOR_ENTRY")
+        .unwrap_or_else(|_| "models/particle/bookworm_horse_knight.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let Ok(mut vf) = vpk.get_file(&entry) else {
+        eprintln!("entry {entry} not in {vpk_path}; skipping vertex-color recolor");
+        return;
+    };
+    let bytes = vf.read_all().expect("read entry");
+
+    let Some(target) = morphic::model::vertex_targets(&bytes)
+        .expect("targets")
+        .into_iter()
+        .find(|t| t.has_color)
+    else {
+        eprintln!("{entry} has no color-bearing buffer; skipping");
+        return;
+    };
+    eprintln!(
+        "recolor: mesh={} block={} verts={} meshopt={}",
+        target.mesh_name, target.block_index, target.vertex_count, target.meshopt
+    );
+
+    let orig_colors = morphic::model::read_vertex_colors(&bytes, target.block_index)
+        .expect("read colors")
+        .expect("buffer carries COLOR");
+    // The recolored buffer may or may not expose a float POSITION; capture it
+    // when present so we can prove geometry is untouched on either path.
+    let orig_pos = morphic::model::read_vertex_positions(&bytes, target.block_index).ok();
+
+    // (a) Identity recolor: colors AND positions byte-identical after re-encode.
+    let (ident, lanes) =
+        morphic::model::recolor_vertex_buffer(&bytes, target.block_index, |c| c).expect("identity");
+    assert!(lanes >= 1, "at least one COLOR lane recolored");
+    morphic::model::decode(&ident).expect("identity recolor re-decodes");
+
+    // A meshopt color buffer is converted to uncompressed (re-encoding meshopt is
+    // not engine-compatible), so the recolored buffer must read back uncompressed;
+    // an already-uncompressed buffer stays uncompressed (in-place byte patch).
+    let after_target = morphic::model::vertex_targets(&ident)
+        .expect("targets")
+        .into_iter()
+        .find(|t| t.block_index == target.block_index)
+        .expect("buffer still present");
+    assert!(
+        !after_target.meshopt,
+        "recolored color buffer must be uncompressed (was meshopt={})",
+        target.meshopt
+    );
+    let ident_colors = morphic::model::read_vertex_colors(&ident, target.block_index)
+        .expect("read")
+        .expect("COLOR");
+    assert_eq!(ident_colors, orig_colors, "identity recolor is lossless");
+    if let Some(p0) = &orig_pos {
+        let p1 = morphic::model::read_vertex_positions(&ident, target.block_index).expect("pos");
+        assert_eq!(&p1, p0, "identity recolor leaves positions byte-identical");
+    }
+
+    // (b) Channel-swap recolor (R<->B): obvious, deterministic change; positions
+    // unchanged.
+    let (swapped, _) = morphic::model::recolor_vertex_buffer(&bytes, target.block_index, |c| {
+        [c[2], c[1], c[0], c[3]]
+    })
+    .expect("swap");
+    morphic::model::decode(&swapped).expect("swap recolor re-decodes");
+    let new_colors = morphic::model::read_vertex_colors(&swapped, target.block_index)
+        .expect("read")
+        .expect("COLOR");
+    assert_eq!(
+        new_colors.len(),
+        orig_colors.len(),
+        "vertex count preserved"
+    );
+    for (o, n) in orig_colors.iter().zip(&new_colors) {
+        assert!((n[0] - o[2]).abs() <= 1.0 / 255.0, "R <- B");
+        assert!((n[1] - o[1]).abs() <= 1.0 / 255.0, "G unchanged");
+        assert!((n[2] - o[0]).abs() <= 1.0 / 255.0, "B <- R");
+        assert!((n[3] - o[3]).abs() <= 1.0 / 255.0, "A unchanged");
+    }
+    if let Some(p0) = &orig_pos {
+        let p1 = morphic::model::read_vertex_positions(&swapped, target.block_index).expect("pos");
+        assert_eq!(&p1, p0, "swap recolor leaves positions byte-identical");
+    }
+    eprintln!(
+        "vertex-color recolor OK: {} verts, identity lossless + channel-swap applied, geometry untouched",
+        orig_colors.len()
+    );
+}
+
 /// Total LOD0 indices belonging to draw calls whose material matches `needle`.
 fn dress_index_count(model: &morphic::model::Model, needle: &str) -> usize {
     let lc = needle.to_ascii_lowercase();

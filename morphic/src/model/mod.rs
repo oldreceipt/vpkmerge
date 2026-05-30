@@ -29,8 +29,9 @@ mod tests;
 pub use animation::{BoneTrack, Clip};
 pub use edit::{
     apply_edited_glb, build_mesh_buffers, build_mesh_buffers_from_glb,
-    build_mesh_buffers_to_layout, export_buffer_for_edit, read_edited_mesh, read_vertex_positions,
-    replace_vertex_positions, vertex_targets, EncodedMesh, VertexTarget,
+    build_mesh_buffers_to_layout, export_buffer_for_edit, read_edited_mesh, read_vertex_colors,
+    read_vertex_positions, recolor_vertex_buffer, replace_vertex_positions, vertex_targets,
+    EncodedMesh, VertexTarget,
 };
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use math::{Mat4, Quat, Vec3};
