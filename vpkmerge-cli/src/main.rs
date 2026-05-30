@@ -193,7 +193,11 @@ struct RecolorHeroCmd {
     /// Pack the whole recolored VFX set into this one addon VPK, each entry at
     /// its base path so it overrides the base game in place. Required unless
     /// `--preview-png` is given.
-    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk", required_unless_present = "preview_png")]
+    #[arg(
+        long = "encode-vpk",
+        value_name = "OUT_dir.vpk",
+        required_unless_present = "preview_png"
+    )]
     encode_vpk: Option<PathBuf>,
 
     /// Skip the (slow) full bake and instead write a fast PNG swatch of the
@@ -1385,9 +1389,13 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
     // Fast path: render the recipe's representative texture as a PNG swatch (no
     // bake, no re-encode), for a live UI preview.
     if let Some(png_out) = &args.preview_png {
-        let png =
-            vpkmerge_core::recolor_hero_preview_png(&args.vpk, args.base.as_deref(), &args.hero, recolor)
-                .with_context(|| format!("previewing hero {} recolor", args.hero))?;
+        let png = vpkmerge_core::recolor_hero_preview_png(
+            &args.vpk,
+            args.base.as_deref(),
+            &args.hero,
+            recolor,
+        )
+        .with_context(|| format!("previewing hero {} recolor", args.hero))?;
         std::fs::write(png_out, &png)
             .with_context(|| format!("writing preview {}", png_out.display()))?;
         eprintln!(

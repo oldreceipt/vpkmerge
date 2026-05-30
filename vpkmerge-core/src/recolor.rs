@@ -392,7 +392,10 @@ mod tests {
             f64::from(darker[2]) / 255.0,
         );
         assert!(vd < v0, "value should drop: {v0} -> {vd}");
-        assert!((sd - s0).abs() <= 0.02, "saturation should hold: {s0} -> {sd}");
+        assert!(
+            (sd - s0).abs() <= 0.02,
+            "saturation should hold: {s0} -> {sd}"
+        );
 
         // Unit scales are exactly the hue-only behavior.
         assert_eq!(set_color(pale, 280.0, 1.0, 1.0), set_hue(pale, 280.0));
@@ -483,7 +486,8 @@ mod tests {
     #[test]
     fn hdr_texture_is_rejected() {
         let bytes = std::fs::read(BC6H_HDR).expect("fixture present");
-        let err = recolor_texture_hue(&bytes, Recolor::hue(90.0)).expect_err("HDR must be rejected");
+        let err =
+            recolor_texture_hue(&bytes, Recolor::hue(90.0)).expect_err("HDR must be rejected");
         let msg = err.to_string();
         assert!(msg.contains("LDR"), "unexpected error: {msg}");
     }
