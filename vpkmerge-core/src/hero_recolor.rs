@@ -88,17 +88,13 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // placeholder), retinted by the in-place double patch. So her recipe adds one
         // texture + two materials on top of the particles.
         "necro" => Some(necro_recipe()),
-        // Infernus (`inferno`) is PARTICLE-ONLY. A promotion to a full recipe (flame
-        // materials + a flame-ramp texture) was tried and reverted: it renders his
-        // upper body / arms as a flat-red error material in-game. The in-place
-        // `.vmat_c` recolor (`recolor_material_color_bytes`, which rewraps the
-        // material uncompressed and double-patches the tint) is not engine-loadable
-        // for these materials, and the recolored ramp the body samples breaks with
-        // it. His particle recolor alone was the in-game-confirmed blue (~220); the
-        // body/flame-material recolor needs a verified mechanism before it returns.
-        "unicorn" | "gigawatt" | "vampirebat" | "wraith" | "inferno" => {
-            Some(particle_only_recipe(&codename))
-        }
+        // Infernus (`inferno`): particles + the fire textures the flames sample. The
+        // reference blue recolor does NOT touch `inferno_body.vmat_c` (the body tint
+        // is not what colors his fire); it recolors the particles + the fire ramp /
+        // burning / lava textures. We match that: no body material, recolor the
+        // vanilla fire textures in place. See [`inferno_recipe`].
+        "inferno" => Some(inferno_recipe()),
+        "unicorn" | "gigawatt" | "vampirebat" | "wraith" => Some(particle_only_recipe(&codename)),
         _ => None,
     }
 }
@@ -173,6 +169,33 @@ fn particle_only_recipe(codename: &str) -> HeroRecolorRecipe {
     }
 }
 
+/// Infernus (`inferno`): recolor his fire via the particle color params. This
+/// matches the reference blue recolor, which does NOT touch `inferno_body.vmat_c`
+/// (the body tint is not what colors his fire).
+///
+/// The reference also recolors the fire ramp / burning / lava textures, but it
+/// does so on hero-specific COPIES it repoints the particles to. The vanilla fire
+/// textures are SHARED across every fire effect in the game, so recoloring them in
+/// place would tint everyone's fire, not just Infernus's. Hero-isolated fire-texture
+/// recolor needs a rename+repoint step (recolor to a new path, edit the particle's
+/// texture reference) that is not built yet, so for now Infernus is recolored by
+/// particle params alone: his fire reads the picked hue but keeps the vanilla fire
+/// texture's luminance/shape.
+fn inferno_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "inferno".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/inferno/".to_string(),
+            "particles/weapon_fx/inferno/".to_string(),
+        ],
+        texture_entries: Vec::new(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        // No representative color texture, so no preview swatch.
+        preview_texture: None,
+    }
+}
+
 /// Graves (`necro`). Particles carry most of her VFX color (her large ability maps
 /// are grayscale, tinted by the particle color), but two ability MODELS hold their
 /// color in a material `g_vColorTint` constant rather than a texture, and the
@@ -185,6 +208,10 @@ fn necro_recipe() -> HeroRecolorRecipe {
         particle_prefixes: vec![
             "particles/abilities/necro/".to_string(),
             "particles/weapon_fx/necro/".to_string(),
+            // The held-weapon ambient flame (the green fire on her gun/hand) lives
+            // under particles/heroes/, not abilities/weapon_fx; the reference pink
+            // recolor edits these too. Without this prefix the held flame stays green.
+            "particles/heroes/necro/".to_string(),
         ],
         // Her ability PROPS (the zombie/shambler, the ult jar, the gravestone) carry
         // their green in real albedo + transmissive textures, in-game confirmed as the
@@ -211,17 +238,26 @@ fn necro_recipe() -> HeroRecolorRecipe {
         .iter()
         .map(|s| (*s).to_string())
         .collect(),
-        // Material g_vColorTint constants (g_tColor slot is a flat 4x4 placeholder):
-        // the soul pickup sphere, the ult jar glass, and the picker hands' green
-        // energy (necro_hands).
+        // Effect-material tints (g_vColorTint / g_vSelfIllumTint), STAMPED with the
+        // brand color (see [`recolor_material_color_bytes`]). The reference pink mod
+        // stamps one color on all of these, including the held flaming-hand prop and
+        // its aura, which a saturation-preserving recolor leaves vanilla.
         material_entries: vec![
             "models/abilities/materials/necro_pickup_sphere.vmat_c".to_string(),
             "materials/particle/abilities/necro/necro_jar_glass.vmat_c".to_string(),
             "models/abilities/materials/necro_hands.vmat_c".to_string(),
-            // the green flame aura around the picker hand is self-illum: its color is
-            // g_vSelfIllumTint (the selfillum texture is just a grayscale mask).
+            // the green flame aura around the picker hand is self-illum (the
+            // selfillum texture is just a grayscale mask).
             "models/heroes_wip/necro/materials/necro_flame_effect_hand.vmat_c".to_string(),
             "models/heroes_wip/necro/materials/necro_flame_effect.vmat_c".to_string(),
+            // The flaming hand she HOLDS as a prop + its glow/aura: the soul-picker
+            // hand effect (its g_vColorTint is white but driven by a dynamic
+            // expression; we stamp the static value + its yellow g_vSelfIllumTint),
+            // the picker effect, and the additive radial-glow aura whose vanilla
+            // g_vColorTint is plain white (stamped via the re-encode promotion path).
+            "models/heroes_wip/necro/materials/necro_picker_hand_effect.vmat_c".to_string(),
+            "models/heroes_wip/necro/materials/necro_picker_effect.vmat_c".to_string(),
+            "models/heroes_wip/necro/materials/picker_hand_glow.vmat_c".to_string(),
         ],
         model_entries: Vec::new(),
         preview_texture: None,
@@ -247,8 +283,10 @@ pub struct HeroRecolorReport {
     pub textures_recolored: usize,
     /// `.vmat_c` entries whose `g_vColorTint` constant was retinted in place.
     pub materials_recolored: usize,
-    /// `.vmat_c` entries that carry a tint but couldn't be patched in place yet
-    /// (e.g. a compressed binary-blob section `rewrap_uncompressed` doesn't handle).
+    /// `.vmat_c` entries that carry a tint but couldn't be patched in place (e.g. a
+    /// non-v5 KV3 block, or a ZSTD-compressed binary-blob section: there is no ZSTD
+    /// encoder, so it cannot be re-emitted). Blobbed **LZ4** v5 materials ARE handled
+    /// now (re-emitted still compressed); they no longer land here.
     pub materials_unpatchable: usize,
     pub models_recolored: usize,
     /// Vertices whose baked color changed across the recolored models.
@@ -279,8 +317,8 @@ pub fn recolor_hero_to_addon(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, plus particle-only unicorn, gigawatt, \
-             vampirebat, necro, wraith, inferno)"
+             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, plus \
+             particle-only unicorn, gigawatt, vampirebat, wraith)"
         )
     })?;
 
@@ -333,9 +371,11 @@ pub fn recolor_hero_to_addon(
     }
 
     // Material color-tint constants: retint each `.vmat_c`'s `g_vColorTint` in
-    // place. A material with no patchable tint, or one whose block can't be
-    // rewrapped uncompressed yet (a compressed binary-blob section, e.g. baked
-    // shader data), is skipped with a note rather than aborting the whole hero.
+    // place. Blobbed LZ4 v5 materials are retinted too (kept compressed, only the
+    // changed buffer recompressed; see docs/spike-blobbed-vmat-recolor.md). A
+    // material with no patchable tint, or one the in-place patcher still can't reach
+    // (a non-v5 block or a ZSTD-blob section), is skipped with a note rather than
+    // aborting the whole hero.
     for entry in &recipe.material_entries {
         match read_entry(&vpks, entry) {
             Some(bytes) => match recolor_material_color_bytes(&bytes, recolor) {
@@ -407,8 +447,8 @@ pub fn recolor_hero_preview_png(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, plus particle-only unicorn, gigawatt, \
-             vampirebat, necro, wraith, inferno)"
+             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, plus \
+             particle-only unicorn, gigawatt, vampirebat, wraith)"
         )
     })?;
     let preview_texture = recipe.preview_texture.as_deref().with_context(|| {
@@ -447,57 +487,87 @@ pub fn recolor_particle_bytes(vpcf_bytes: &[u8], recolor: Recolor) -> Result<Opt
     Ok(Some(new_bytes))
 }
 
-/// Recolor a material's `g_vColorTint*` constants in place to `recolor`'s hue
-/// (keeping each tint's saturation + value via the shared [`recolored`]), returning
-/// the new bytes, or `None` if the material has no patchable color-tint constant.
+/// Recolor a material's `g_vColorTint*` / `g_vSelfIllumTint*` constants by
+/// **stamping** them with one absolute brand color (`recolor`'s hue at its
+/// saturation/value, via [`crate::recolor::stamp_rgb`]), returning the new bytes,
+/// or `None` if the material has no such tint param.
 ///
-/// The third color carrier (after particle params and color textures): some ability
-/// models hold their color in a material `g_vColorTint` (an RGBA `f64` vector in the
-/// `.vmat_c`), with the `g_t*color` texture slot a flat 4x4 placeholder. This retints
-/// that constant via an in-place double patch ([`morphic::patch_kv3_resource_doubles`]),
-/// leaving the rest of the material (textures, flags, shader) byte-identical. Only
-/// the RGB channels are touched; alpha and any channel stored as a tagless 0.0/1.0
-/// (not patchable in place) are left as-is.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::float_cmp // exact 0.0/1.0 compare detects a tagless DOUBLE node (intended)
-)]
+/// The third color carrier (after particle params and color textures): an ability
+/// effect's color is a flat tint constant (an RGBA `f64` vector). The reference
+/// recolor mods stamp ONE brand color on every effect tint, including neutral
+/// white ones (e.g. an additive glow's white `g_vColorTint`). A hue-only,
+/// saturation-preserving recolor can't colorize a white tint, so this stamps the
+/// absolute color instead.
+///
+/// Two write paths, chosen so the result is engine-loadable:
+/// - When every stamped channel is a stored `DOUBLE`, the change is a byte-faithful
+///   in-place double patch ([`morphic::patch_kv3_resource_doubles`]), which also
+///   handles a blobbed material (re-emitted still compressed).
+/// - When a channel is a tagless `DOUBLE_ZERO`/`DOUBLE_ONE` (a neutral 0.0/1.0 with
+///   no stored bytes), it cannot be patched in place; the material is fully
+///   re-encoded ([`morphic::encode_kv3_resource`], which preserves the texture
+///   dependency blocks), promoting the channel to a real double. This fallback is
+///   only taken for a **non-blobbed** material: a re-encode emits blobs
+///   uncompressed, which the engine misreads.
 pub fn recolor_material_color_bytes(
     vmat_bytes: &[u8],
     recolor: Recolor,
 ) -> Result<Option<Vec<u8>>> {
     let value = morphic::decode_kv3_resource(vmat_bytes)
         .map_err(|e| anyhow::anyhow!("decoding material KV3: {e}"))?;
-    let Some(params) = value.get("m_vectorParams").and_then(Value::as_array) else {
+    if value
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .is_none()
+    {
         return Ok(None);
-    };
+    }
+    let target = crate::recolor::stamp_rgb(recolor);
 
-    let mut edits: Vec<(Vec<Seg>, f64)> = Vec::new();
+    let edits = stamp_tint_edits(&value, target);
+    if edits.is_empty() {
+        return Ok(None);
+    }
+
+    // Byte-faithful in-place stamp (every channel is a stored double). Handles a
+    // blobbed material via the compressed re-emit.
+    match morphic::patch_kv3_resource_doubles(vmat_bytes, &edits) {
+        Ok(new_bytes) => Ok(Some(new_bytes)),
+        // A neutral channel (tagless 0.0/1.0) has no stored bytes to patch, so the
+        // in-place patch reports it as "not found". Promote it by re-encoding the
+        // whole material -- but only when there is no blob section to mangle.
+        Err(_) if !morphic::kv3_resource_has_blobs(vmat_bytes).unwrap_or(true) => {
+            let mut tree = value;
+            stamp_tint_tree(&mut tree, target);
+            let new_bytes = morphic::encode_kv3_resource(vmat_bytes, &tree)
+                .map_err(|e| anyhow::anyhow!("re-encoding material to stamp tint: {e}"))?;
+            Ok(Some(new_bytes))
+        }
+        Err(e) => Err(anyhow::anyhow!("patching material color tint: {e}")),
+    }
+}
+
+/// The set of in-place double edits to stamp `target` (linear 0..1 RGB) onto every
+/// `g_vColorTint*` / `g_vSelfIllumTint*` RGB channel that differs from it. A channel
+/// already equal to the target is skipped (no-op); alpha (index 3) is never touched.
+fn stamp_tint_edits(value: &Value, target: [f64; 3]) -> Vec<(Vec<Seg>, f64)> {
+    let mut edits = Vec::new();
+    let Some(params) = value.get("m_vectorParams").and_then(Value::as_array) else {
+        return edits;
+    };
     for (i, param) in params.iter().enumerate() {
-        let name = param.get("m_name").and_then(Value::as_str).unwrap_or("");
-        // g_vColorTint = albedo/diffuse tint; g_vSelfIllumTint = emissive (flame /
-        // glow) color. Both carry ability color, on different materials. A white or
-        // gray tint recolors to nothing (a neutral stays neutral, and a 1.0 channel
-        // is a tagless double that is skipped), so matching both broadly is safe.
-        if !(name.starts_with("g_vColorTint") || name.starts_with("g_vSelfIllumTint")) {
+        if !is_tint_param(param) {
             continue;
         }
         let Some(rgba) = param.get("m_value").and_then(Value::as_array) else {
             continue;
         };
-        let chan = |k: usize| rgba.get(k).and_then(Value::as_f64);
-        let (Some(r), Some(g), Some(b)) = (chan(0), chan(1), chan(2)) else {
-            continue;
-        };
-        let to_byte = |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as i64;
-        let out = recolored([to_byte(r), to_byte(g), to_byte(b)], recolor);
-        for (k, &orig) in [r, g, b].iter().enumerate() {
-            // Only a real DOUBLE node (orig not the tagless 0.0/1.0) is patchable in
-            // place; a 0/1 channel has no stored bytes, so leave it as-is.
-            if orig == 0.0 || orig == 1.0 {
+        for (k, &t) in target.iter().enumerate() {
+            let Some(orig) = rgba.get(k).and_then(Value::as_f64) else {
                 continue;
+            };
+            if (orig - t).abs() <= f64::EPSILON {
+                continue; // already the brand color (e.g. a tint whose R is already 1.0)
             }
             edits.push((
                 vec![
@@ -506,17 +576,40 @@ pub fn recolor_material_color_bytes(
                     Seg::Key("m_value".to_string()),
                     Seg::Index(k),
                 ],
-                out[k] as f64 / 255.0,
+                t,
             ));
         }
     }
+    edits
+}
 
-    if edits.is_empty() {
-        return Ok(None);
+/// Set the RGB of every tint param's `m_value` to `target` directly in the decoded
+/// tree (the re-encode path, which can promote a tagless 0.0/1.0 to a real double).
+fn stamp_tint_tree(value: &mut Value, target: [f64; 3]) {
+    let Some(Value::Array(params)) = value.get_mut("m_vectorParams") else {
+        return;
+    };
+    for param in params.iter_mut() {
+        if !is_tint_param(param) {
+            continue;
+        }
+        if let Some(Value::Array(rgba)) = param.get_mut("m_value") {
+            for (k, &t) in target.iter().enumerate() {
+                if let Some(ch) = rgba.get_mut(k) {
+                    *ch = Value::Double(t);
+                }
+            }
+        }
     }
-    let new_bytes = morphic::patch_kv3_resource_doubles(vmat_bytes, &edits)
-        .map_err(|e| anyhow::anyhow!("patching material color tint: {e}"))?;
-    Ok(Some(new_bytes))
+}
+
+/// True for a `g_vColorTint*` / `g_vSelfIllumTint*` vector param (the flat effect
+/// tints that carry ability color).
+fn is_tint_param(param: &Value) -> bool {
+    param
+        .get("m_name")
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.starts_with("g_vColorTint") || n.starts_with("g_vSelfIllumTint"))
 }
 
 /// If `v` is a numeric array of length 3-4 in Color32 range, return its RGB ints.
@@ -680,11 +773,36 @@ mod tests {
     }
 
     #[test]
+    fn inferno_recipe_is_particle_only() {
+        // Infernus is recolored by particle params alone: matching the reference, we
+        // do NOT touch inferno_body (the body tint does not color his fire), and the
+        // fire textures are shared game-wide so they can't be recolored in place yet.
+        let r = recipe_for("inferno").expect("inferno recipe");
+        assert_eq!(r.codename, "inferno");
+        assert_eq!(
+            r.particle_prefixes,
+            [
+                "particles/abilities/inferno/",
+                "particles/weapon_fx/inferno/"
+            ]
+        );
+        assert!(
+            r.material_entries.is_empty(),
+            "no inferno_body (unmatching)"
+        );
+        assert!(r.texture_entries.is_empty());
+        assert!(r.model_entries.is_empty());
+        assert!(r.preview_texture.is_none());
+        assert!(recipe_for("INFERNO").is_some());
+    }
+
+    #[test]
     fn particle_only_heroes_are_pinned() {
-        // Seven/Mina/Wraith/Infernus: all particle-only, same shape as Celeste,
-        // prefixes derived from the codename. Hue is supplied at recolor time, so the
-        // recipe itself carries no color. (Graves/necro is NOT here: see below.)
-        for code in ["gigawatt", "vampirebat", "wraith", "inferno"] {
+        // Seven/Mina/Wraith: all particle-only, same shape as Celeste, prefixes
+        // derived from the codename. Hue is supplied at recolor time, so the recipe
+        // itself carries no color. (Graves/necro and Infernus are NOT here: they have
+        // their own recipes with tint-constant materials.)
+        for code in ["gigawatt", "vampirebat", "wraith"] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
             assert_eq!(
@@ -712,21 +830,35 @@ mod tests {
 
     #[test]
     fn graves_recipe_adds_glow_texture_and_tint_materials() {
-        // Graves (necro): particles + the gravestone glow texture + the two
-        // g_vColorTint materials (pickup sphere, jar). NOT particle-only.
+        // Graves (necro): particles (incl. the held-weapon ambient flame under
+        // particles/heroes/) + ability-prop color textures + the stamped effect-tint
+        // materials, including the held flaming-hand prop and its aura. NOT particle-only.
         let r = recipe_for("necro").expect("necro recipe");
         assert_eq!(r.codename, "necro");
-        assert_eq!(r.particle_prefixes.len(), 2);
+        assert_eq!(r.particle_prefixes.len(), 3);
+        assert!(r
+            .particle_prefixes
+            .iter()
+            .any(|p| p == "particles/heroes/necro/"));
         // ability-prop albedo/transmissive textures (shambler/jar/gravestone)
         assert!(r.texture_entries.len() >= 4, "ability-prop color textures");
         assert!(r.texture_entries.iter().any(|t| t.contains("shambler")));
         assert!(r.texture_entries.iter().any(|t| t.contains("jar_of_dread")));
         assert_eq!(
             r.material_entries.len(),
-            5,
-            "pickup sphere + jar + picker hands + 2 flame auras"
+            8,
+            "pickup sphere + jar + necro_hands + 2 flame effects + picker hand effect + picker effect + glow aura"
         );
         assert!(r.material_entries.iter().all(|m| m.ends_with(".vmat_c")));
+        // the held flaming-hand prop + its aura are present
+        assert!(r
+            .material_entries
+            .iter()
+            .any(|m| m.ends_with("necro_picker_hand_effect.vmat_c")));
+        assert!(r
+            .material_entries
+            .iter()
+            .any(|m| m.ends_with("picker_hand_glow.vmat_c")));
         assert!(r.model_entries.is_empty());
     }
 
@@ -771,5 +903,72 @@ mod tests {
         // produced, identical to the texture/model `set_hue`. A hue-only recolor
         // (unit saturation + value) reproduces the original behavior.
         assert_eq!(recolored([0, 255, 148], Recolor::hue(280.0)), [170, 0, 255]);
+    }
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/../morphic/fixtures/material/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap_or_else(|_| panic!("read material fixture {name}"))
+    }
+
+    fn tint_rgb(bytes: &[u8], name: &str) -> [f64; 3] {
+        let tree = morphic::decode_kv3_resource(bytes).expect("decode stamped material");
+        let params = tree
+            .get("m_vectorParams")
+            .and_then(Value::as_array)
+            .expect("m_vectorParams");
+        let p = params
+            .iter()
+            .find(|p| p.get("m_name").and_then(Value::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("no {name}"));
+        let v = p.get("m_value").and_then(Value::as_array).expect("m_value");
+        [
+            v[0].as_f64().unwrap(),
+            v[1].as_f64().unwrap(),
+            v[2].as_f64().unwrap(),
+        ]
+    }
+
+    #[test]
+    fn stamps_an_absolute_brand_color_on_neutral_and_blobbed_tints() {
+        // Hue 328 stamps a vivid pink: hsv(328,1,1) = (1.0, 0.0, 0.533...).
+        let recolor = Recolor::new(328.0, 1.0, 1.0);
+        let target = [1.0, 0.0, 0.533_333_3];
+        let close = |got: [f64; 3]| (0..3).all(|k| (got[k] - target[k]).abs() < 1e-5);
+
+        // 1. A neutral WHITE tint (picker_hand_glow g_vColorTint = [1,1,1], stored
+        //    tagless) can't be patched in place, so it takes the re-encode promotion
+        //    path -- and still ends up the brand color.
+        let glow = recolor_material_color_bytes(&fixture("picker_hand_glow.vmat_c"), recolor)
+            .expect("stamp glow")
+            .expect("glow has a tint");
+        assert!(
+            close(tint_rgb(&glow, "g_vColorTint1")),
+            "white aura stamped pink"
+        );
+
+        // 2. A blobbed material with colored tints (necro_hands) stamps in place and
+        //    stays a compressed, blobbed, engine-loadable block.
+        let hands = recolor_material_color_bytes(&fixture("necro_hands.vmat_c"), recolor)
+            .expect("stamp hands")
+            .expect("hands has a tint");
+        assert!(close(tint_rgb(&hands, "g_vColorTint1")));
+        assert!(close(tint_rgb(&hands, "g_vSelfIllumTint1")));
+        assert!(
+            morphic::kv3_resource_has_blobs(&hands).unwrap(),
+            "necro_hands stays blobbed (in-place stamp, not flattened)"
+        );
+
+        // 3. The two-blob held-hand material (its g_vColorTint is white-but-stored,
+        //    its g_vSelfIllumTint colored) stamps in place too, after the blob-frame
+        //    reader fix lets it decode at all.
+        let held =
+            recolor_material_color_bytes(&fixture("necro_picker_hand_effect.vmat_c"), recolor)
+                .expect("stamp held hand")
+                .expect("held hand has a tint");
+        assert!(close(tint_rgb(&held, "g_vColorTint1")));
+        assert!(close(tint_rgb(&held, "g_vSelfIllumTint1")));
     }
 }

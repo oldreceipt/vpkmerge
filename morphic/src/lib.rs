@@ -74,6 +74,20 @@ pub fn decode_kv3_resource(file_bytes: &[u8]) -> Result<kv3::Value, DecodeError>
     kv3::decode(data)
 }
 
+/// Whether a resource's KV3 `DATA` block carries a binary-blob section
+/// (`countBlocks > 0`). A blobbed block must not be re-emitted uncompressed
+/// (the engine misreads the blob framing), so callers use this to choose between
+/// the byte-faithful in-place patch and a full re-encode.
+pub fn kv3_resource_has_blobs(file_bytes: &[u8]) -> Result<bool, DecodeError> {
+    let resource = resource::Resource::parse(file_bytes)?;
+    let data = resource.data_block()?;
+    // countBlocks is the i32 at block offset 56 for KV3 v2..=5.
+    if data.len() < 60 {
+        return Ok(false);
+    }
+    Ok(i32::from_le_bytes([data[56], data[57], data[58], data[59]]) != 0)
+}
+
 /// Re-encode `value` into the `DATA` block of `original`, keeping the original
 /// KV3 format GUID and every non-DATA block (e.g. `RED2`) byte-for-byte. The new
 /// `DATA` is uncompressed KV3 v4. Returns a complete, loadable resource file.

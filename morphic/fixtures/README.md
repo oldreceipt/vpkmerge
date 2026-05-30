@@ -41,6 +41,16 @@ block) plus a `*.material.json` golden from `morphic-oracle material-meta` (VRF'
 shader name + int/float/vector/texture parameter tables). `morphic::material::parse`
 is diffed against it. Re-bless with `just material-meta`.
 
+`material/necro_hands.vmat_c` has no `*.material.json` golden; it is a **blobbed**
+material (KV3 v5, LZ4, `countBlocks = 1`) used by `kv3::patch` tests to exercise
+the in-place tint-double recolor that keeps a blob section compressed (see
+`docs/spike-blobbed-vmat-recolor.md`). `material/necro_picker_hand_effect.vmat_c`
+is a **two-blob** material (`countBlocks = 2`, its `m_dynamicParams` expressions)
+that regresses the blob-frame reader's one-frame-per-blob path.
+`material/picker_hand_glow.vmat_c` has a **neutral white** `g_vColorTint` stored as
+tagless `DOUBLE_ONE`s, exercising the recolor's re-encode promotion path. Neither
+has a `*.material.json` golden.
+
 `kv3/hornet_model_meta.json` is a higher-level golden (not a raw block): the
 compact model summary the M3 mesh/skeleton decoder is diffed against, produced
 by `morphic-oracle model-meta`. It holds the sorted bone-name set, per-LOD0-mesh
@@ -67,6 +77,9 @@ and both index buffers. Re-bless with `just mesh-buffers`.
 | `kv3/hornet_ctrl.kv3bin`                      | `CTRL` block of `models/heroes_staging/hornet_v3/hornet.vmdl_c`      |
 | `kv3/hornet_model_meta.json`                  | `model-meta` summary of `models/heroes_staging/hornet_v3/hornet.vmdl_c` |
 | `material/vindicta_headv2.vmat_c`             | `models/heroes_staging/hornet_v3/materials/vindicta_headv2.vmat_c`  |
+| `material/necro_hands.vmat_c`                 | `models/abilities/materials/necro_hands.vmat_c`                     |
+| `material/necro_picker_hand_effect.vmat_c`    | `models/heroes_wip/necro/materials/necro_picker_hand_effect.vmat_c` |
+| `material/picker_hand_glow.vmat_c`            | `models/heroes_wip/necro/materials/picker_hand_glow.vmat_c`         |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the

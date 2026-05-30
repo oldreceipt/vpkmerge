@@ -179,3 +179,109 @@ fn set_doubles_patches_a_tint_vector_in_place() {
     // patchable target.
     assert!(morphic::patch_kv3_resource_doubles(&v, &[(key(3), 0.5)]).is_err());
 }
+
+#[test]
+fn patch_doubles_retints_a_real_blobbed_material() {
+    use morphic::kv3::Seg;
+
+    // `necro_hands.vmat_c` is a real Deadlock material whose DATA block is KV3 v5,
+    // LZ4-compressed, AND carries a binary-blob section (countBlocks = 1). This is
+    // the shape that cannot be re-emitted uncompressed without the engine misreading
+    // its blob framing, so `patch_kv3_resource_doubles` must retint it while keeping
+    // it compressed. End-to-end (full resource envelope) exercise of the path the
+    // hero ability-VFX recolor drives. The in-game gate (the hand reads recolored,
+    // not red/wireframe) is documented in docs/spike-blobbed-vmat-recolor.md.
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/material/necro_hands.vmat_c"
+    ))
+    .expect("read necro_hands fixture");
+
+    let tree = morphic::decode_kv3_resource(&bytes).expect("decode material");
+    let params = tree
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .expect("m_vectorParams");
+    // Find the first color/self-illum tint param.
+    let pi = params
+        .iter()
+        .position(|p| {
+            p.get("m_name").and_then(Value::as_str).is_some_and(|name| {
+                name.starts_with("g_vColorTint") || name.starts_with("g_vSelfIllumTint")
+            })
+        })
+        .expect("a tint param");
+
+    let path = vec![
+        Seg::Key("m_vectorParams".to_string()),
+        Seg::Index(pi),
+        Seg::Key("m_value".to_string()),
+        Seg::Index(0),
+    ];
+    let patched = morphic::patch_kv3_resource_doubles(&bytes, &[(path, 0.321)]).expect("retint");
+
+    // The whole file still parses, and the channel reads back the new value.
+    let back = morphic::decode_kv3_resource(&patched).expect("decode retinted");
+    let ch = back
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .and_then(|a| a.get(pi))
+        .and_then(|p| p.get("m_value"))
+        .and_then(Value::as_array)
+        .expect("m_value");
+    assert!(
+        (ch[0].as_f64().unwrap() - 0.321).abs() < 1e-9,
+        "channel retinted"
+    );
+    // Every other field is identical (binary blob included): edit the source tree's
+    // one channel and require the full trees to match.
+    let mut expect = tree.clone();
+    if let Some(Value::Array(ps)) = expect.get_mut("m_vectorParams") {
+        if let Some(Value::Array(c)) = ps[pi].get_mut("m_value") {
+            c[0] = Value::Double(0.321);
+        }
+    }
+    assert_eq!(back, expect, "only the targeted channel changed");
+}
+
+#[test]
+fn decodes_a_two_blob_material() {
+    // `necro_picker_hand_effect.vmat_c` carries TWO binary blobs (its
+    // `m_dynamicParams` expressions), framed one-per-blob. The blob-frame decoder
+    // used to assume each frame fills the whole remaining region and rejected this
+    // with "blob frame: expected 12, got 6"; it must now decode both short frames.
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/material/necro_picker_hand_effect.vmat_c"
+    ))
+    .expect("read 2-blob fixture");
+
+    let tree = morphic::decode_kv3_resource(&bytes).expect("decode 2-blob material");
+    // Sanity: it parsed as a real material (its self-illum tint is present), and the
+    // two dynamic-param expressions decoded as non-empty binary blobs.
+    assert!(tree
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .is_some_and(|p| p.iter().any(|param| param
+            .get("m_name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| n.starts_with("g_vSelfIllumTint")))));
+    let blobs: Vec<&[u8]> = collect_binaries(&tree);
+    assert_eq!(blobs.len(), 2, "two dynamic-param blobs");
+    assert!(blobs.iter().all(|b| !b.is_empty()), "blobs are non-empty");
+}
+
+/// Every `Value::Binary` in the tree, in document order.
+fn collect_binaries(value: &Value) -> Vec<&[u8]> {
+    fn walk<'a>(v: &'a Value, out: &mut Vec<&'a [u8]>) {
+        match v {
+            Value::Binary(b) => out.push(b.as_slice()),
+            Value::Array(items) => items.iter().for_each(|x| walk(x, out)),
+            Value::Object(pairs) => pairs.iter().for_each(|(_, x)| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out);
+    out
+}

@@ -9,6 +9,8 @@
 //   survey   --vpk PATH --out CSV
 //   model    --vpk PATH --entry NAME [--base PATH] --out GLB   (golden glTF)
 //   kv3-dump --vpk PATH --entry NAME --block FOURCC --out JSON (M1 KV3 golden)
+//   validate --file PATH (strict VRF load of a loose resource file; the gate for
+//            the in-place KV3 edits, since morphic's own reader is lenient)
 
 using System.Globalization;
 using System.Security.Cryptography;
@@ -58,6 +60,7 @@ internal static class Program
                 "model-meta" => ModelMeta(args[1..]),
                 "anim-meta" => AnimMeta(args[1..]),
                 "material-meta" => MaterialMeta(args[1..]),
+                "validate" => Validate(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
             };
@@ -980,6 +983,58 @@ internal static class Program
         return 0;
     }
 
+    // ---------- validate (strict load of a LOOSE resource file) ----------
+    //
+    // Strict gate for the in-place KV3 edits: VRF parses the whole container and
+    // fully materializes the DATA block (for a material, every param), which forces
+    // it to read the binary-blob section using the per-frame size table. morphic's
+    // own reader is lenient about a stale blob frame table; VRF is not, so this is
+    // the load that catches a mis-framed blobbed `.vmat_c` (the failure mode that
+    // rendered the covered mesh as a red error material in-game). Reads a loose file
+    // path (not a VPK), so a patched fixture can be validated directly.
+    //   validate --file PATH
+    private static int Validate(string[] args)
+    {
+        string? file = null;
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--file": file = args[++i]; break;
+                default: return Fail($"validate: unknown flag {args[i]}");
+            }
+        }
+        if (file is null)
+        {
+            return Fail("validate: --file is required");
+        }
+
+        using var resource = new Resource { FileName = Path.GetFileName(file) };
+        resource.Read(file);
+        var db = resource.DataBlock;
+        if (db is Material mat)
+        {
+            // Touch every param collection so the KV3 (and its blob section) is
+            // fully parsed, not lazily deferred.
+            var count = mat.TextureParams.Count + mat.IntParams.Count
+                + mat.FloatParams.Count + mat.VectorParams.Count;
+            Console.WriteLine($"OK material '{mat.Name}' shader={mat.ShaderName} params={count}");
+            foreach (var kv in mat.VectorParams.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                Console.WriteLine($"  vec {kv.Key} = ({kv.Value.X}, {kv.Value.Y}, {kv.Value.Z}, {kv.Value.W})");
+            }
+            foreach (var kv in mat.TextureParams.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                Console.WriteLine($"  tex {kv.Key} = {kv.Value}");
+            }
+        }
+        else
+        {
+            Console.WriteLine($"OK resource, DATA block = {db?.GetType().Name ?? "none"}");
+        }
+        return 0;
+    }
+
     // ---------- helpers ----------
 
     // ---------- kv3dump (soundevents re-encode validation) ----------
@@ -1095,6 +1150,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle anim-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle material-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle validate --file PATH  (strict VRF load of a loose resource file)");
         return 0;
     }
 

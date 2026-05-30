@@ -19,7 +19,9 @@
 #![allow(clippy::cast_sign_loss)]
 
 use super::node;
-use super::rewrap::rewrap_uncompressed;
+use super::rewrap::{
+    decompress_v5_working, is_blobbed_lz4_v5, reassemble_blobbed_v5, rewrap_uncompressed,
+};
 use crate::error::DecodeError;
 
 const B1: usize = 0;
@@ -147,8 +149,23 @@ pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, D
 ///
 /// Errors if the block is not v4/v5, or if any path is missing / not a real double
 /// / ambiguous.
+///
+/// A v5 block carrying a binary-blob section (a blobbed `.vmat_c`, `countBlocks >
+/// 0`) cannot be shipped uncompressed without the engine misreading its blob
+/// framing, so it is **not** rewrapped to `compressionMethod = 0`. Instead it is
+/// decompressed to a walkable working copy, patched the same way, then re-emitted
+/// still LZ4-compressed (recompressing only the buffer that changed, splicing the
+/// blob frames through verbatim). The patch contract is identical either way.
 pub fn set_doubles(block: &[u8], edits: &[(Vec<Seg>, f64)]) -> Result<Vec<u8>, DecodeError> {
-    let mut out = rewrap_uncompressed(block)?;
+    // A blobbed LZ4 v5 block is decompressed (but stays logically compressed) so
+    // its tail blob framing is preserved on re-emit; everything else rewraps to
+    // an uncompressed block that is patched and shipped as-is.
+    let blobbed = is_blobbed_lz4_v5(block);
+    let mut out = if blobbed {
+        decompress_v5_working(block)?
+    } else {
+        rewrap_uncompressed(block)?
+    };
     let version = u32_at(&out, 0)? & 0xFF;
     let min_header = if version == 5 { 120 } else { 72 };
     if out.len() < min_header || (version != 4 && version != 5) {
@@ -185,7 +202,14 @@ pub fn set_doubles(block: &[u8], edits: &[(Vec<Seg>, f64)]) -> Result<Vec<u8>, D
             .ok_or(DecodeError::Kv3("double patch offset out of range"))?
             .copy_from_slice(&bytes);
     }
-    Ok(out)
+
+    if blobbed {
+        // Re-emit compressed, recompressing only the buffer the edit landed in and
+        // carrying the blob frames through byte-for-byte.
+        reassemble_blobbed_v5(block, &out)
+    } else {
+        Ok(out)
+    }
 }
 
 /// Sets boolean fields located by KV3 path, in place, on a byte-faithful
@@ -979,4 +1003,129 @@ fn read_cstr(buf: &[u8], pos: &mut usize) -> Result<String, DecodeError> {
     let s = String::from_utf8_lossy(&buf[start..*pos]).into_owned();
     *pos += 1;
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kv3::Value;
+    use crate::resource::Resource;
+
+    /// A real Deadlock material (Graves' wall-of-hands energy). Its green ability
+    /// color is a `g_vColorTint` / `g_vSelfIllumTint` constant, and its `DATA` block
+    /// is the hard shape: KV3 v5, LZ4-compressed, carrying a binary-blob section
+    /// (`countBlocks = 1`). `rewrap_uncompressed` refuses this (a `comp = 0` re-emit
+    /// misframes the blob and the engine renders the covered mesh as a red error
+    /// material), so `set_doubles` must patch it and re-emit STILL compressed.
+    const NECRO_HANDS: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/material/necro_hands.vmat_c"
+    ));
+
+    fn field(b: &[u8], o: usize) -> i32 {
+        i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    }
+
+    /// buf2 (main, compressed) and the binary-blob frame region of a v5 DATA block,
+    /// located the way the engine does: sequentially, from the buffer size fields.
+    fn buf2_and_frames(d: &[u8]) -> (&[u8], &[u8]) {
+        let comp1 = usize::try_from(field(d, 76)).unwrap();
+        let comp2 = usize::try_from(field(d, 84)).unwrap();
+        let b2 = 120 + comp1;
+        let frames = b2 + comp2;
+        (&d[b2..frames], &d[frames..])
+    }
+
+    #[test]
+    fn set_doubles_patches_a_blobbed_v5_material_keeping_it_compressed() {
+        let res = Resource::parse(NECRO_HANDS).expect("parse resource");
+        let data = res.data_block().expect("DATA block");
+
+        // Precondition: the committed fixture really is the hard case.
+        assert_eq!(u32_at(data, 0).unwrap() & 0xFF, 5, "v5");
+        assert_eq!(u32_at(data, 20).unwrap(), 1, "LZ4-compressed");
+        assert_eq!(field(data, 56), 1, "one binary blob");
+
+        // Locate a real-double tint channel (channel 0 of the first tint param; the
+        // tagless 1.0 alpha is not patchable, but RGB are stored f64s).
+        let tree = crate::kv3::decode(data).expect("decode tree");
+        let params = tree
+            .get("m_vectorParams")
+            .and_then(Value::as_array)
+            .expect("m_vectorParams");
+        let (pi, param) = params
+            .iter()
+            .enumerate()
+            .find(|(_, p)| {
+                p.get("m_name").and_then(Value::as_str).is_some_and(|n| {
+                    n.starts_with("g_vColorTint") || n.starts_with("g_vSelfIllumTint")
+                })
+            })
+            .expect("a tint param");
+        let chan0 = param
+            .get("m_value")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_f64)
+            .expect("channel 0");
+        // A real DOUBLE node, not the tagless 0.0/1.0 (compare bits to stay clear of
+        // clippy::float_cmp; the point is that it has stored bytes to patch).
+        assert!(
+            chan0.to_bits() != 0.0f64.to_bits() && chan0.to_bits() != 1.0f64.to_bits(),
+            "channel 0 must be a stored double, got {chan0}"
+        );
+
+        let path = vec![
+            Seg::Key("m_vectorParams".to_string()),
+            Seg::Index(pi),
+            Seg::Key("m_value".to_string()),
+            Seg::Index(0),
+        ];
+        let new0 = 0.123_456_f64;
+        let patched = set_doubles(data, &[(path, new0)]).expect("patch blobbed double");
+
+        // 1. Still the engine-loadable compressed + blobbed shape: it was NOT flipped
+        //    to the broken comp=0 form, and the blob framing fields are untouched.
+        assert_eq!(u32_at(&patched, 0).unwrap() & 0xFF, 5);
+        assert_eq!(u32_at(&patched, 20).unwrap(), 1, "stays LZ4-compressed");
+        assert_eq!(field(&patched, 56), 1, "blob section preserved");
+        assert_eq!(field(&patched, 60), field(data, 60), "sizeBlobs unchanged");
+        assert_eq!(
+            field(&patched, 68),
+            field(data, 68),
+            "sizeBlockCompressed unchanged"
+        );
+        assert_eq!(
+            field(&patched, 48),
+            field(data, 48),
+            "sizeUncTotal unchanged"
+        );
+        assert_eq!(field(&patched, 80), field(data, 80), "unc2 unchanged");
+        // size_comp_total (52) stays consistent with comp1 + comp2.
+        assert_eq!(
+            field(&patched, 52),
+            field(&patched, 76) + field(&patched, 84),
+            "size_comp_total == comp1 + comp2"
+        );
+
+        // 2. Only the patched channel changed: rebuild the expected tree by editing
+        //    that one channel and require FULL tree equality, which proves every other
+        //    field, including the binary blob (a Value::Binary node), is unchanged.
+        let new_tree = crate::kv3::decode(&patched).expect("decode patched");
+        let mut expect = tree.clone();
+        if let Some(Value::Array(ps)) = expect.get_mut("m_vectorParams") {
+            if let Some(Value::Array(ch)) = ps[pi].get_mut("m_value") {
+                ch[0] = Value::Double(new0);
+            }
+        }
+        assert_eq!(new_tree, expect, "only the targeted tint channel changed");
+
+        // 3. Raw faithfulness (the Approach-A guarantee): the tint doubles live in
+        //    buf1 (the aux buffer), so buf2 and the blob frames are byte-identical;
+        //    only buf1 was recompressed.
+        let (buf2_old, frames_old) = buf2_and_frames(data);
+        let (buf2_new, frames_new) = buf2_and_frames(&patched);
+        assert_eq!(buf2_new, buf2_old, "buf2 (main) byte-identical");
+        assert_eq!(frames_new, frames_old, "blob frames byte-identical");
+    }
 }

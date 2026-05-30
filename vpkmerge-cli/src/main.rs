@@ -1442,8 +1442,8 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
     if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
         eprintln!(
             "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \
-             place (non-v5 KV3 / binary-blob section) and were left vanilla; this hero's recolor \
-             is PARTIAL.",
+             place (a non-v5 KV3 block, or a ZSTD-compressed binary-blob section) and were left \
+             vanilla; this hero's recolor is PARTIAL.",
             report.particles_unpatchable, report.materials_unpatchable,
         );
     }

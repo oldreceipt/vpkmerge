@@ -353,15 +353,19 @@ fn decompress_blob_frames(
             break;
         }
         let comp = usize::from(u16::from_le_bytes([fs[0], fs[1]]));
-        let want = frame_size.min(size_blobs - done);
         let input = h.bytes(comp)?;
         let (dict, rest) = out.split_at_mut(done);
-        let n = lz4_flex::block::decompress_into_with_dict(input, &mut rest[..want], dict)
+        // A frame decompresses to AT MOST `frame_size` bytes, but may be shorter:
+        // when several blobs each fit in a frame they are framed one-per-blob, not
+        // concatenated into frame_size chunks (e.g. a 2-blob material is two 6-byte
+        // frames, not one 12-byte frame). So decode into the remaining buffer capped
+        // at frame_size and take however many bytes the frame actually yields,
+        // rather than assuming it fills the cap. The total is validated below.
+        let cap = frame_size.min(rest.len());
+        let n = lz4_flex::block::decompress_into_with_dict(input, &mut rest[..cap], dict)
             .map_err(|e| DecodeError::Kv3Lz4(e.to_string()))?;
-        if n != want {
-            return Err(DecodeError::Kv3Lz4(format!(
-                "blob frame: expected {want}, got {n}"
-            )));
+        if n == 0 {
+            return Err(DecodeError::Kv3("empty blob frame (no progress)"));
         }
         done += n;
     }

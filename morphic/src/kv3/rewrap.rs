@@ -125,6 +125,136 @@ fn rewrap_v5(block: &[u8], compression: u32) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
+/// True for a v5 block that is LZ4-compressed (`compressionMethod == 1`) and
+/// carries a binary-blob section (`countBlocks != 0`). This is the one shape that
+/// cannot be re-emitted `compressionMethod = 0` in an engine-loadable way (see the
+/// refusal in [`rewrap_uncompressed`]); the in-place double patch handles it
+/// instead via [`decompress_v5_working`] + [`reassemble_blobbed_v5`], keeping the
+/// block compressed and the blob frames byte-identical. ZSTD-compressed blobbed
+/// blocks are excluded (we have no ZSTD encoder) and still take the refusal path.
+pub(crate) fn is_blobbed_lz4_v5(block: &[u8]) -> bool {
+    block.len() >= 120
+        && (u32_at(block, 0) & 0xFF) == 5
+        && u32_at(block, 20) == 1 // LZ4
+        && i32_at(block, 56) != 0 // has a binary-blob section
+}
+
+/// Decompress a v5 block's two typed buffers into a flat, **walkable**
+/// uncompressed copy: `[original 120-byte header][raw buf1][raw buf2]`. The blob
+/// frames are deliberately omitted: a `BINARY_BLOB` node consumes no typed-lane
+/// bytes, and the in-place walkers never read past buf2's type stream, so they
+/// need only the two decompressed typed buffers. The header is copied verbatim
+/// (its `unc1` at offset 72 still locates buf2 at `120 + unc1`, exactly as
+/// [`super::patch::lanes_v5`] expects); the stale compression fields are unread by
+/// the walk. Pair with [`reassemble_blobbed_v5`] to re-emit after patching.
+pub(crate) fn decompress_v5_working(block: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    if block.len() < HEADER {
+        return Err(DecodeError::Truncated {
+            offset: 0,
+            needed: HEADER,
+            had: block.len(),
+        });
+    }
+    let compression = u32_at(block, 20);
+    let unc1 = usize_at(block, 72)?;
+    let comp1 = usize_at(block, 76)?;
+    let unc2 = usize_at(block, 80)?;
+    let comp2 = usize_at(block, 84)?;
+    let b2c = HEADER
+        .checked_add(comp1)
+        .ok_or(DecodeError::Kv3("buffer1 extent overflow"))?;
+    let raw1 = decompress(slice(block, HEADER, comp1)?, compression, unc1, comp1)?;
+    let raw2 = decompress(slice(block, b2c, comp2)?, compression, unc2, comp2)?;
+
+    let mut out = Vec::with_capacity(HEADER + raw1.len() + raw2.len());
+    out.extend_from_slice(&block[..HEADER]);
+    out.extend_from_slice(&raw1);
+    out.extend_from_slice(&raw2);
+    Ok(out)
+}
+
+/// Re-emit a compressed v5 blobbed block from a patched uncompressed working copy
+/// (the `[header][raw buf1][raw buf2]` produced by [`decompress_v5_working`] and
+/// then patched in place), keeping `compressionMethod = 1`.
+///
+/// Only the typed buffer whose raw bytes actually changed is recompressed (with
+/// `lz4_flex`); the other typed buffer and the entire binary-blob frame region are
+/// spliced through byte-for-byte. The blob frames are located by sequential,
+/// size-derived reads (no absolute offset is stored anywhere), so rewriting the
+/// buffer compressed-size fields relocates them correctly. The per-blob length
+/// table, the document trailer, and the LZ4 per-frame size table all live in
+/// buf2's tail and in the frame region, none of which a tint-double edit touches,
+/// so they stay valid.
+///
+/// This is the engine-loadable alternative to flipping a blobbed block to
+/// `compressionMethod = 0`: that leaves a stale per-frame size table the engine
+/// still consults, so it misreads the blob and the owning material renders broken.
+pub(crate) fn reassemble_blobbed_v5(orig: &[u8], working: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    let unc1 = usize_at(orig, 72)?;
+    let comp1 = usize_at(orig, 76)?;
+    let unc2 = usize_at(orig, 80)?;
+    let comp2 = usize_at(orig, 84)?;
+
+    let b2c = HEADER
+        .checked_add(comp1)
+        .ok_or(DecodeError::Kv3("buffer1 extent overflow"))?;
+    let frames_start = b2c
+        .checked_add(comp2)
+        .ok_or(DecodeError::Kv3("buffer2 extent overflow"))?;
+    let frames = slice(orig, frames_start, orig.len().saturating_sub(frames_start))?;
+
+    // Patched raw buffers, carved from the working copy by uncompressed size.
+    let raw1_start = HEADER;
+    let raw2_start = HEADER
+        .checked_add(unc1)
+        .ok_or(DecodeError::Kv3("buffer1 raw extent overflow"))?;
+    let new_raw1 = slice(working, raw1_start, unc1)?;
+    let new_raw2 = slice(working, raw2_start, unc2)?;
+
+    // Originals, so a buffer that did not change is re-emitted byte-identical.
+    let orig_comp1 = slice(orig, HEADER, comp1)?;
+    let orig_comp2 = slice(orig, b2c, comp2)?;
+    let orig_raw1 = decompress(orig_comp1, 1, unc1, comp1)?;
+    let orig_raw2 = decompress(orig_comp2, 1, unc2, comp2)?;
+
+    let (bytes1, ncomp1) = recompress_if_changed(new_raw1, &orig_raw1, orig_comp1);
+    let (bytes2, ncomp2) = recompress_if_changed(new_raw2, &orig_raw2, orig_comp2);
+    let total_comp = ncomp1
+        .checked_add(ncomp2)
+        .ok_or(DecodeError::Kv3("compressed size overflow"))?;
+
+    let mut out = orig[..HEADER].to_vec();
+    // size_comp_total (52) is comp1 + comp2 in these files (blob frames excluded);
+    // size_unc_total (48), countBlocks (56), sizeBlobs (60), sizeBlockCompressed
+    // (68), blob frame size (26), and compressionMethod (20) are all unchanged: the
+    // uncompressed sizes and the entire blob framing are untouched by the patch.
+    write_i32(&mut out, 52, fit_i32(total_comp)?);
+    write_i32(&mut out, 76, fit_i32(ncomp1)?);
+    write_i32(&mut out, 84, fit_i32(ncomp2)?);
+    out.extend_from_slice(&bytes1);
+    out.extend_from_slice(&bytes2);
+    out.extend_from_slice(frames);
+    Ok(out)
+}
+
+/// Keep a buffer byte-identical when its raw bytes did not change (so an unchanged
+/// buffer round-trips exactly), else LZ4-recompress the patched raw bytes.
+fn recompress_if_changed(new_raw: &[u8], orig_raw: &[u8], orig_comp: &[u8]) -> (Vec<u8>, usize) {
+    if new_raw == orig_raw {
+        (orig_comp.to_vec(), orig_comp.len())
+    } else {
+        let c = lz4_flex::block::compress(new_raw);
+        let n = c.len();
+        (c, n)
+    }
+}
+
+fn fit_i32(v: usize) -> Result<i32, DecodeError> {
+    i32::try_from(v).map_err(|_| DecodeError::Kv3("size field exceeds i32"))
+}
+
 fn decompress(
     input: &[u8],
     compression: u32,

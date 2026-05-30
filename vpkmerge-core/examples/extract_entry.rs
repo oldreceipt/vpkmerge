@@ -4,7 +4,11 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let vpk = valve_pak::open(&args[1]).expect("open vpk");
-    let bytes = vpk.read(&args[2]).expect("read entry");
+    let bytes = vpk
+        .get_file(&args[2])
+        .expect("entry")
+        .read_all()
+        .expect("read entry");
     std::fs::write(&args[3], &bytes).expect("write out");
     eprintln!("wrote {} bytes", bytes.len());
 }
