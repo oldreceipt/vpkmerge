@@ -64,6 +64,12 @@ enum Command {
     /// format. Built for the Deadlock ability-VFX recolor: pack the result at
     /// the base entry path and it overrides in place, no `.vmat_c` edit needed.
     Texture(TextureCmd),
+
+    /// Recolor a hero's full ability VFX (particles + color textures + baked
+    /// vertex colors) to one hue and pack it into a single addon VPK. The
+    /// one-call bridge for a mod manager: composes all three recolor mechanisms
+    /// over a built-in per-hero recipe (Paige / `bookworm` for now).
+    RecolorHero(RecolorHeroCmd),
 }
 
 #[derive(Args)]
@@ -119,6 +125,16 @@ struct TextureCmd {
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
     hue: f64,
 
+    /// Saturation scale (default 1.0 = keep source). > 1 lifts pale, washed-out
+    /// areas toward the picked color; < 1 mutes them toward a pastel.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    saturation: f64,
+
+    /// Brightness (HSV value) scale (default 1.0 = keep source). > 1 lightens
+    /// (e.g. a light/pastel color), < 1 darkens (a deep/ink color).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    brightness: f64,
+
     /// Write a PNG preview of the recolored top mip here (the design-intent
     /// color, before the lossy `BCn` re-encode) for an eyeball before committing.
     /// Single input only.
@@ -139,6 +155,53 @@ struct TextureCmd {
     /// reading with --from-vpk; required for a loose-file INPUT. Single input only.
     #[arg(long = "vpk-entry", value_name = "PATH")]
     vpk_entry: Option<String>,
+}
+
+#[derive(Args)]
+struct RecolorHeroCmd {
+    /// Hero model/particle codename to recolor (e.g. `bookworm` for Paige). Only
+    /// heroes with a pinned recipe are supported so far.
+    #[arg(long, value_name = "CODENAME")]
+    hero: String,
+
+    /// VPK to read the hero's VFX from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for any entry `--vpk` does not ship
+    /// (so a texture-only skin still recolors the base mesh/particles).
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Target hue in degrees (0..360). Every color is set to this hue while
+    /// keeping its saturation and value, so one value lands particles, textures,
+    /// and vertex colors on the same color.
+    #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
+    hue: f64,
+
+    /// Saturation scale (default 1.0 = keep source). > 1 lifts pale, washed-out
+    /// areas toward the picked color; < 1 mutes them toward a pastel. Applied to
+    /// particles, textures, and vertex colors alike.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    saturation: f64,
+
+    /// Brightness (HSV value) scale (default 1.0 = keep source). > 1 lightens
+    /// (e.g. a light/pastel color), < 1 darkens (a deep/ink color).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    brightness: f64,
+
+    /// Pack the whole recolored VFX set into this one addon VPK, each entry at
+    /// its base path so it overrides the base game in place. Required unless
+    /// `--preview-png` is given.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk", required_unless_present = "preview_png")]
+    encode_vpk: Option<PathBuf>,
+
+    /// Skip the (slow) full bake and instead write a fast PNG swatch of the
+    /// recipe's representative ability texture recolored to this target, for a
+    /// live UI preview. Mutually exclusive use with `--encode-vpk` is allowed
+    /// (preview wins and the bake is skipped).
+    #[arg(long = "preview-png", value_name = "PNG")]
+    preview_png: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -213,6 +276,15 @@ struct ModelRecolorArgs {
     /// Matches the particle/texture recolor: the same hue lands all three.
     #[arg(long, value_name = "DEG", allow_hyphen_values = true)]
     hue: f64,
+
+    /// Saturation scale (default 1.0 = keep source). > 1 boosts, < 1 mutes.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    saturation: f64,
+
+    /// Brightness (HSV value) scale (default 1.0 = keep source). > 1 lightens,
+    /// < 1 darkens.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    brightness: f64,
 
     /// List each model's color-bearing vertex buffers (mesh part, block, vertex
     /// count) and exit without recoloring.
@@ -464,6 +536,7 @@ fn main() -> Result<()> {
         Some(Command::Model(args)) => run_model(args),
         Some(Command::Soundevents(args)) => run_soundevents(args),
         Some(Command::Texture(args)) => run_texture(args),
+        Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
         None => run_merge(cli),
     }
 }
@@ -890,7 +963,8 @@ fn run_model_recolor(e: &ModelRecolorArgs) -> Result<()> {
          (or --list to inspect)",
     )?;
 
-    let report = vpkmerge_core::recolor_models_to_addon(&e.vpk, &e.entries, base, e.hue, out)?;
+    let recolor = vpkmerge_core::Recolor::new(e.hue, e.saturation, e.brightness);
+    let report = vpkmerge_core::recolor_models_to_addon(&e.vpk, &e.entries, base, recolor, out)?;
     let total_verts: usize = report.iter().map(|r| r.stats.vertices).sum();
     for r in &report {
         eprintln!(
@@ -1162,16 +1236,21 @@ fn run_soundevents(args: SoundeventsCmd) -> Result<()> {
     Ok(())
 }
 
-/// Recolor every entry in `inputs` (read from `vpk`) to `hue` and pack the
+/// Recolor every entry in `inputs` (read from `vpk`) to `recolor` and pack the
 /// whole set into one addon at `out`, each at its own VPK entry path.
-fn recolor_textures_to_addon(inputs: &[PathBuf], vpk: &Path, hue: f64, out: &Path) -> Result<()> {
+fn recolor_textures_to_addon(
+    inputs: &[PathBuf],
+    vpk: &Path,
+    recolor: vpkmerge_core::Recolor,
+    out: &Path,
+) -> Result<()> {
     let mut packed: Vec<(String, Vec<u8>)> = Vec::new();
     for input in inputs {
         let entry = input.to_string_lossy().into_owned();
         let bytes = vpkmerge_core::read_vpk_entry(vpk, &entry)?;
         let summary = vpkmerge_core::inspect_texture(&bytes)
             .with_context(|| format!("{entry} is not a readable .vtex_c"))?;
-        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, recolor)?;
         eprintln!(
             "  {} {}x{} {}mip -> {} bytes  {entry}",
             summary.format,
@@ -1188,9 +1267,10 @@ fn recolor_textures_to_addon(inputs: &[PathBuf], vpk: &Path, hue: f64, out: &Pat
         .collect();
     vpkmerge_core::pack(&refs, out)?;
     eprintln!(
-        "wrote {}: {} textures recolored to hue {hue} deg, each overriding its base entry in place",
+        "wrote {}: {} textures recolored to hue {} deg, each overriding its base entry in place",
         out.display(),
-        packed.len()
+        packed.len(),
+        recolor.hue,
     );
     Ok(())
 }
@@ -1200,11 +1280,15 @@ fn run_texture(args: TextureCmd) -> Result<()> {
         inputs,
         from_vpk,
         hue,
+        saturation,
+        brightness,
         preview,
         encode,
         encode_vpk,
         vpk_entry,
     } = args;
+
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
 
     // Batch: recolor several entries into one addon (each at its own path).
     if inputs.len() > 1 {
@@ -1221,7 +1305,7 @@ fn run_texture(args: TextureCmd) -> Result<()> {
             "multiple INPUTS must be VPK entry paths: pass --from-vpk <VPK> (each entry packs \
              back at its own path)",
         )?;
-        return recolor_textures_to_addon(&inputs, vpk, hue, out);
+        return recolor_textures_to_addon(&inputs, vpk, recolor, out);
     }
 
     let input = &inputs[0];
@@ -1248,7 +1332,7 @@ fn run_texture(args: TextureCmd) -> Result<()> {
 
     // Preview is the design-intent color (pre re-encode); cheap, so do it first.
     if let Some(out) = &preview {
-        let png = vpkmerge_core::recolor_texture_preview_png(&bytes, hue)?;
+        let png = vpkmerge_core::recolor_texture_preview_png(&bytes, recolor)?;
         std::fs::write(out, &png).with_context(|| format!("writing preview {}", out.display()))?;
         eprintln!("wrote preview {} ({} bytes PNG)", out.display(), png.len());
     }
@@ -1256,7 +1340,7 @@ fn run_texture(args: TextureCmd) -> Result<()> {
     // Outputs: a loose .vtex_c (--encode), a standalone addon VPK (--encode-vpk),
     // or (if neither, and no --preview) a dry run that just confirms it recolors.
     if encode.is_some() || encode_vpk.is_some() {
-        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        let recolored = vpkmerge_core::recolor_texture_hue(&bytes, recolor)?;
         if let Some(out) = &encode {
             std::fs::write(out, &recolored)
                 .with_context(|| format!("writing {}", out.display()))?;
@@ -1284,12 +1368,69 @@ fn run_texture(args: TextureCmd) -> Result<()> {
         }
     } else if preview.is_none() {
         // Dry run: prove the recolor path works end to end without writing.
-        vpkmerge_core::recolor_texture_hue(&bytes, hue)?;
+        vpkmerge_core::recolor_texture_hue(&bytes, recolor)?;
         eprintln!(
             "dry run OK (recolor succeeds); pass --encode <FILE>, --encode-vpk <OUT_dir.vpk>, \
              or --preview <PNG> to write output"
         );
     }
+    Ok(())
+}
+
+/// Recolor a hero's full ability VFX to one target and pack it into a single
+/// addon (or, with `--preview-png`, just render a fast swatch and exit).
+fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
+    let recolor = vpkmerge_core::Recolor::new(args.hue, args.saturation, args.brightness);
+
+    // Fast path: render the recipe's representative texture as a PNG swatch (no
+    // bake, no re-encode), for a live UI preview.
+    if let Some(png_out) = &args.preview_png {
+        let png =
+            vpkmerge_core::recolor_hero_preview_png(&args.vpk, args.base.as_deref(), &args.hero, recolor)
+                .with_context(|| format!("previewing hero {} recolor", args.hero))?;
+        std::fs::write(png_out, &png)
+            .with_context(|| format!("writing preview {}", png_out.display()))?;
+        eprintln!(
+            "wrote preview {} ({} bytes PNG) for hero {} at hue {} sat {} val {}",
+            png_out.display(),
+            png.len(),
+            args.hero,
+            args.hue,
+            args.saturation,
+            args.brightness,
+        );
+        return Ok(());
+    }
+
+    let out = args.encode_vpk.as_ref().context(
+        "recolor-hero: provide --encode-vpk <OUT_dir.vpk> to bake the addon (or --preview-png \
+         <PNG> for a fast swatch)",
+    )?;
+    let report = vpkmerge_core::recolor_hero_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &args.hero,
+        recolor,
+        out,
+    )
+    .with_context(|| format!("recoloring hero {} to hue {}", args.hero, args.hue))?;
+
+    eprintln!(
+        "{}: {} particle(s) recolored ({} color-free skipped), {} texture(s), {} model(s) ({} verts)",
+        report.codename,
+        report.particles_recolored,
+        report.particles_no_color,
+        report.textures_recolored,
+        report.models_recolored,
+        report.model_vertices,
+    );
+    println!(
+        "wrote {}: {} entries, hero {} recolored to hue {} deg (overrides the base in place)",
+        out.display(),
+        report.total_entries,
+        report.codename,
+        args.hue,
+    );
     Ok(())
 }
 

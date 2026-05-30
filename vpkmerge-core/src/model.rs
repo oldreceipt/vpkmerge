@@ -416,7 +416,7 @@ pub struct ModelRecolorEntry {
 }
 
 /// Recolor the baked per-vertex colors of one or more model entries (read from
-/// `vpk`, then `base`) to `hue_deg`, packing them all into one addon VPK at
+/// `vpk`, then `base`) to `recolor`, packing them all into one addon VPK at
 /// `out`, each at its own entry path so it overrides the base pak in place. The
 /// model analog of the multi-entry `vpkmerge texture` recolor (the third VFX
 /// recolor mechanism, alongside particle params and texture hue).
@@ -428,7 +428,7 @@ pub fn recolor_models_to_addon(
     vpk: impl AsRef<Path>,
     entries: &[String],
     base: Option<&Path>,
-    hue_deg: f64,
+    recolor: crate::recolor::Recolor,
     out: impl AsRef<Path>,
 ) -> Result<Vec<ModelRecolorEntry>> {
     let vpks = open_vpks(vpk.as_ref(), base)?;
@@ -437,7 +437,7 @@ pub fn recolor_models_to_addon(
     for entry in entries {
         let bytes =
             read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
-        let (recolored, stats) = crate::recolor::recolor_model_vertex_colors(&bytes, hue_deg)
+        let (recolored, stats) = crate::recolor::recolor_model_vertex_colors(&bytes, recolor)
             .with_context(|| format!("recoloring {entry}"))?;
         if stats.buffers_recolored == 0 {
             anyhow::bail!("{entry} has no color-bearing vertex buffer to recolor (wrong model?)");

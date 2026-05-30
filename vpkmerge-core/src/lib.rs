@@ -33,7 +33,13 @@ pub use soundevents::{EventSummary, SoundEvents};
 pub mod recolor;
 pub use recolor::{
     inspect_texture, recolor_model_vertex_colors, recolor_texture_hue, recolor_texture_image,
-    recolor_texture_preview_png, ModelRecolorStats, TextureSummary,
+    recolor_texture_preview_png, ModelRecolorStats, Recolor, TextureSummary,
+};
+
+pub mod hero_recolor;
+pub use hero_recolor::{
+    recipe_for, recolor_hero_preview_png, recolor_hero_to_addon, recolor_particle_bytes,
+    HeroRecolorRecipe, HeroRecolorReport,
 };
 
 #[derive(Debug, Clone)]
