@@ -16,23 +16,64 @@
 //! - BC6H: HDR; expects RGBA f16 input, four channels packed as 8 bytes per pixel
 
 use intel_tex_2::{bc1, bc3, bc4, bc5, bc6h, bc7, RSurface, RgSurface, RgbaSurface};
+use rayon::prelude::*;
 
 use crate::error::EncodeError;
 use crate::texture::format::TextureFormat;
 use crate::texture::{Image, ImageData};
 
+/// Pixel rows (and columns) per `BCn` block.
+const BLOCK_DIM: u32 = 4;
+
+/// Compress an already block-padded RGBA8 buffer into `BCn` output, parallelizing
+/// across block-row strips.
+///
+/// `intel_tex`'s `compress_blocks_into` is SIMD but single-threaded, and `BCn` 4x4
+/// blocks carry no cross-block state, so splitting the surface into horizontal
+/// block-row strips (4 pixel rows each) and compressing them concurrently is
+/// bit-identical to one whole-image call while using every core. This is the hot
+/// path in an ability recolor (the top mip of a 4096x4096 BC7 dominates the
+/// bake), so it is split here rather than left to a single thread.
+///
+/// `pw`/`ph` must be multiples of 4 (the buffer is pre-padded by [`pad_rgba8`]),
+/// and `out` sized to the format's `calc_output_size(pw, ph)`. `block_bytes` is
+/// the per-4x4-block output size (8 for BC1, 16 for BC3/BC7). `compress` encodes
+/// one strip given its surface and the matching output slice. Each strip is one
+/// block-row, so input and output chunk 1:1 with no remainder.
+fn compress_rgba8_parallel(
+    data: &[u8],
+    pw: u32,
+    ph: u32,
+    block_bytes: usize,
+    out: &mut [u8],
+    compress: impl Fn(&RgbaSurface, &mut [u8]) + Sync,
+) {
+    let stride = (pw * 4) as usize;
+    let blocks_per_row = (pw / 4) as usize;
+    let row_out_bytes = blocks_per_row * block_bytes; // output bytes per block-row
+    let row_in_bytes = stride * BLOCK_DIM as usize; // input bytes per block-row
+    debug_assert_eq!(ph % BLOCK_DIM, 0, "buffer must be block-padded");
+    out.par_chunks_mut(row_out_bytes)
+        .zip(data.par_chunks(row_in_bytes))
+        .for_each(|(out_strip, in_strip)| {
+            let surface = RgbaSurface {
+                width: pw,
+                height: BLOCK_DIM,
+                stride: pw * 4,
+                data: in_strip,
+            };
+            compress(&surface, out_strip);
+        });
+}
+
 pub fn encode_bc1(image: &Image) -> Result<Vec<u8>, EncodeError> {
     let buf = require_rgba8(image, TextureFormat::Dxt1)?;
     check_rgba8_len(buf, image, TextureFormat::Dxt1)?;
     let (data, pw, ph) = pad_rgba8(buf, image.width, image.height);
-    let surface = RgbaSurface {
-        width: pw,
-        height: ph,
-        stride: pw * 4,
-        data: &data,
-    };
     let mut out = vec![0u8; bc1::calc_output_size(pw, ph)];
-    bc1::compress_blocks_into(&surface, &mut out);
+    compress_rgba8_parallel(&data, pw, ph, 8, &mut out, |s, o| {
+        bc1::compress_blocks_into(s, o);
+    });
     Ok(out)
 }
 
@@ -40,14 +81,10 @@ pub fn encode_bc3(image: &Image) -> Result<Vec<u8>, EncodeError> {
     let buf = require_rgba8(image, TextureFormat::Dxt5)?;
     check_rgba8_len(buf, image, TextureFormat::Dxt5)?;
     let (data, pw, ph) = pad_rgba8(buf, image.width, image.height);
-    let surface = RgbaSurface {
-        width: pw,
-        height: ph,
-        stride: pw * 4,
-        data: &data,
-    };
     let mut out = vec![0u8; bc3::calc_output_size(pw, ph)];
-    bc3::compress_blocks_into(&surface, &mut out);
+    compress_rgba8_parallel(&data, pw, ph, 16, &mut out, |s, o| {
+        bc3::compress_blocks_into(s, o);
+    });
     Ok(out)
 }
 
@@ -98,18 +135,14 @@ pub fn encode_bc7(image: &Image) -> Result<Vec<u8>, EncodeError> {
     let buf = require_rgba8(image, TextureFormat::Bc7)?;
     check_rgba8_len(buf, image, TextureFormat::Bc7)?;
     let (data, pw, ph) = pad_rgba8(buf, image.width, image.height);
-    let surface = RgbaSurface {
-        width: pw,
-        height: ph,
-        stride: pw * 4,
-        data: &data,
-    };
     // alpha_basic_settings is a reasonable default: handles alpha correctly
     // for textures that have it and isn't catastrophically slow. Quality
     // knobs can be exposed later if needed.
     let settings = bc7::alpha_basic_settings();
     let mut out = vec![0u8; bc7::calc_output_size(pw, ph)];
-    bc7::compress_blocks_into(&settings, &surface, &mut out);
+    compress_rgba8_parallel(&data, pw, ph, 16, &mut out, |s, o| {
+        bc7::compress_blocks_into(&settings, s, o);
+    });
     Ok(out)
 }
 
@@ -224,4 +257,56 @@ fn pad_rgba16f(buf: &[half::f16], width: u32, height: u32) -> (Vec<half::f16>, u
         }
     }
     (out, padded_width, padded_height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each block-row of the parallel whole-image BC7 encode must equal encoding
+    /// that block-row in isolation. This pins the invariant the strip split relies
+    /// on: `BCn` 4x4 blocks carry no cross-block state, so per-strip output is
+    /// position-independent, and each strip must land at the right output offset.
+    /// A wrong zip pairing or offset would corrupt rows and fail here.
+    #[test]
+    fn bc7_parallel_strips_match_isolated_block_rows() {
+        // u8 dims widened to u32 keep the fixture cast-free (the CI clippy gate
+        // denies cast_possible_truncation; only widening casts are used).
+        let (w, h) = (8u8, 12u8); // 2 blocks wide x 3 block-rows
+        let (wf, hf) = (u32::from(w), u32::from(h));
+        let stride = usize::from(w) * 4;
+        let mut px = vec![0u8; usize::from(w) * usize::from(h) * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let i = usize::from(y) * stride + usize::from(x) * 4;
+                px[i] = x.wrapping_mul(31);
+                px[i + 1] = y.wrapping_mul(19);
+                px[i + 2] = x.wrapping_add(y).wrapping_mul(11);
+                px[i + 3] = 255;
+            }
+        }
+        let full = encode_bc7(&Image {
+            width: wf,
+            height: hf,
+            data: ImageData::Rgba8(px.clone()),
+        })
+        .expect("encode full");
+
+        let row_bytes = usize::from(w / 4) * 16; // BC7: 16 bytes per 4x4 block
+        for br in 0..usize::from(h / 4) {
+            let start = br * 4 * stride;
+            let strip = px[start..start + 4 * stride].to_vec();
+            let isolated = encode_bc7(&Image {
+                width: wf,
+                height: 4,
+                data: ImageData::Rgba8(strip),
+            })
+            .expect("encode strip");
+            assert_eq!(
+                &full[br * row_bytes..(br + 1) * row_bytes],
+                &isolated[..],
+                "block-row {br} differs from its isolated encode"
+            );
+        }
+    }
 }
