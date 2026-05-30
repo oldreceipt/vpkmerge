@@ -49,8 +49,10 @@ pub struct HeroRecolorRecipe {
     /// A representative color-bearing `.vtex_c` (one of `texture_entries`) to
     /// render as a fast, no-re-encode UI preview swatch (see
     /// [`recolor_hero_preview_png`]). Pick one that reads as the hero's main
-    /// ability glow, not a tiny swatch or a near-black map.
-    pub preview_texture: String,
+    /// ability glow, not a tiny swatch or a near-black map. `None` for a
+    /// particle-only hero (no color texture to swatch); the preview path then
+    /// errors rather than guessing one.
+    pub preview_texture: Option<String>,
 }
 
 /// The built-in recipe for a hero codename, or `None` if no recipe is pinned yet.
@@ -58,6 +60,7 @@ pub struct HeroRecolorRecipe {
 pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
     match codename.to_lowercase().as_str() {
         "bookworm" => Some(paige_recipe()),
+        "unicorn" => Some(celeste_recipe()),
         _ => None,
     }
 }
@@ -102,9 +105,30 @@ fn paige_recipe() -> HeroRecolorRecipe {
         .collect(),
         // The general ability effects color map: a large, clearly-chromatic
         // texture that reads as Paige's glow, so the UI swatch is representative.
-        preview_texture:
+        preview_texture: Some(
             "models/heroes_wip/bookworm/materials/bookworm_ui_effects_color_psd_a29be817.vtex_c"
                 .to_string(),
+        ),
+    }
+}
+
+/// Celeste (`unicorn`). Particle-only: her ability VFX carry color purely through
+/// `.vpcf_c` color params (no color-bearing textures or baked mesh vertex colors),
+/// so the recipe is the two `particles/{abilities,weapon_fx}/unicorn/` prefixes and
+/// nothing else. Pinned from her in-game pink recolor mod (`pak07`), which retints
+/// both namespaces (250 ability + 27 weapon particles); a base-vs-mod scan put the
+/// target hue at ~329 deg.
+fn celeste_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "unicorn".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/unicorn/".to_string(),
+            "particles/weapon_fx/unicorn/".to_string(),
+        ],
+        texture_entries: Vec::new(),
+        model_entries: Vec::new(),
+        // Particle-only: no color texture to render as a swatch.
+        preview_texture: None,
     }
 }
 
@@ -251,12 +275,15 @@ pub fn recolor_hero_preview_png(
              (only `bookworm` / Paige is pinned so far)"
         )
     })?;
-    let vpks = open_vpks(vpk.as_ref(), base)?;
-    let bytes = read_entry(&vpks, &recipe.preview_texture).with_context(|| {
+    let preview_texture = recipe.preview_texture.as_deref().with_context(|| {
         format!(
-            "preview texture {} not found in the given VPK(s)",
-            recipe.preview_texture
+            "hero {codename:?} is particle-only (no color texture), so there is no \
+             preview swatch to render; bake the addon with `recolor_hero_to_addon` instead"
         )
+    })?;
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes = read_entry(&vpks, preview_texture).with_context(|| {
+        format!("preview texture {preview_texture} not found in the given VPK(s)")
     })?;
     crate::recolor::recolor_texture_preview_png(&bytes, recolor)
         .context("rendering hero recolor preview")
@@ -418,10 +445,30 @@ mod tests {
         assert_eq!(r.texture_entries.len(), 9);
         assert_eq!(r.model_entries.len(), 2);
         // the preview swatch must be one of the recipe's real texture entries
-        assert!(r.texture_entries.contains(&r.preview_texture));
+        let preview = r.preview_texture.expect("paige has a preview texture");
+        assert!(r.texture_entries.contains(&preview));
         // codename lookup is case-insensitive
         assert!(recipe_for("BOOKWORM").is_some());
         assert!(recipe_for("hornet").is_none());
+    }
+
+    #[test]
+    fn celeste_recipe_is_particle_only() {
+        let r = recipe_for("unicorn").expect("celeste recipe");
+        assert_eq!(r.codename, "unicorn");
+        assert_eq!(
+            r.particle_prefixes,
+            [
+                "particles/abilities/unicorn/",
+                "particles/weapon_fx/unicorn/"
+            ]
+        );
+        // particle-only: no color textures, no vertex-color models, no swatch
+        assert!(r.texture_entries.is_empty());
+        assert!(r.model_entries.is_empty());
+        assert!(r.preview_texture.is_none());
+        // codename lookup is case-insensitive
+        assert!(recipe_for("UNICORN").is_some());
     }
 
     #[test]
