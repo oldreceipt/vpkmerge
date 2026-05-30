@@ -533,10 +533,13 @@ pub fn recolor_particle_bytes(vpcf_bytes: &[u8], recolor: Recolor) -> Result<Opt
 ///
 /// The third color carrier (after particle params and color textures): an ability
 /// effect's color is a flat tint constant (an RGBA `f64` vector). The reference
-/// recolor mods stamp ONE brand color on every effect tint, including neutral
-/// white ones (e.g. an additive glow's white `g_vColorTint`). A hue-only,
+/// recolor mods stamp ONE brand color on the effect tints, including neutral white
+/// ones (e.g. an additive glow's white `g_vColorTint`). A hue-only,
 /// saturation-preserving recolor can't colorize a white tint, so this stamps the
-/// absolute color instead.
+/// absolute color instead. Which tints are stamped is decided by [`should_stamp_tint`]:
+/// the emissive `g_vSelfIllumTint` always, but a neutral base `g_vColorTint` on a
+/// solid (non-additive) material is left alone so the prop body stays its own color
+/// and only its glow recolors.
 ///
 /// Two write paths, chosen so the result is engine-loadable:
 /// - When every stamped channel is a stored `DOUBLE`, the change is a byte-faithful
@@ -587,15 +590,17 @@ pub fn recolor_material_color_bytes(
 }
 
 /// The set of in-place double edits to stamp `target` (linear 0..1 RGB) onto every
-/// `g_vColorTint*` / `g_vSelfIllumTint*` RGB channel that differs from it. A channel
-/// already equal to the target is skipped (no-op); alpha (index 3) is never touched.
+/// stampable tint RGB channel that differs from it (see [`should_stamp_tint`]). A
+/// channel already equal to the target is skipped (no-op); alpha (index 3) is never
+/// touched.
 fn stamp_tint_edits(value: &Value, target: [f64; 3]) -> Vec<(Vec<Seg>, f64)> {
     let mut edits = Vec::new();
+    let additive = material_is_additive_or_unlit(value);
     let Some(params) = value.get("m_vectorParams").and_then(Value::as_array) else {
         return edits;
     };
     for (i, param) in params.iter().enumerate() {
-        if !is_tint_param(param) {
+        if !should_stamp_tint(param, additive) {
             continue;
         }
         let Some(rgba) = param.get("m_value").and_then(Value::as_array) else {
@@ -622,14 +627,16 @@ fn stamp_tint_edits(value: &Value, target: [f64; 3]) -> Vec<(Vec<Seg>, f64)> {
     edits
 }
 
-/// Set the RGB of every tint param's `m_value` to `target` directly in the decoded
-/// tree (the re-encode path, which can promote a tagless 0.0/1.0 to a real double).
+/// Set the RGB of every stampable tint param's `m_value` to `target` directly in the
+/// decoded tree (the re-encode path, which can promote a tagless 0.0/1.0 to a real
+/// double).
 fn stamp_tint_tree(value: &mut Value, target: [f64; 3]) {
+    let additive = material_is_additive_or_unlit(value);
     let Some(Value::Array(params)) = value.get_mut("m_vectorParams") else {
         return;
     };
     for param in params.iter_mut() {
-        if !is_tint_param(param) {
+        if !should_stamp_tint(param, additive) {
             continue;
         }
         if let Some(Value::Array(rgba)) = param.get_mut("m_value") {
@@ -642,13 +649,57 @@ fn stamp_tint_tree(value: &mut Value, target: [f64; 3]) {
     }
 }
 
-/// True for a `g_vColorTint*` / `g_vSelfIllumTint*` vector param (the flat effect
-/// tints that carry ability color).
-fn is_tint_param(param: &Value) -> bool {
-    param
-        .get("m_name")
-        .and_then(Value::as_str)
-        .is_some_and(|n| n.starts_with("g_vColorTint") || n.starts_with("g_vSelfIllumTint"))
+/// Whether a tint vector param should be stamped with the brand color.
+///
+/// `g_vSelfIllumTint*` (the emissive glow color) is always stamped. `g_vColorTint*`
+/// (the base/albedo tint) is stamped only when the material is additive/unlit (the
+/// base tint IS the visible effect color, e.g. an additive glow) or when it already
+/// carries a real color. A **neutral white/gray base on a solid material** is left
+/// alone, so a recolor tints the prop's GLOW (self-illum), not the whole prop: the
+/// gravestone stone keeps its vanilla color while its skull / R.I.P. / cracks glow
+/// recolors.
+fn should_stamp_tint(param: &Value, additive: bool) -> bool {
+    let Some(name) = param.get("m_name").and_then(Value::as_str) else {
+        return false;
+    };
+    if name.starts_with("g_vSelfIllumTint") {
+        return true;
+    }
+    if !name.starts_with("g_vColorTint") {
+        return false;
+    }
+    additive
+        || param
+            .get("m_value")
+            .and_then(Value::as_array)
+            .is_some_and(|rgba| !is_neutral_rgb(rgba))
+}
+
+/// A material flagged `F_ADDITIVE_BLEND` or `F_UNLIT` (an additive/unlit effect,
+/// where the base color tint is the visible color rather than a multiply over a
+/// solid albedo).
+fn material_is_additive_or_unlit(value: &Value) -> bool {
+    value
+        .get("m_intParams")
+        .and_then(Value::as_array)
+        .is_some_and(|ints| {
+            ints.iter().any(|p| {
+                matches!(
+                    p.get("m_name").and_then(Value::as_str),
+                    Some("F_ADDITIVE_BLEND" | "F_UNLIT")
+                ) && p.get("m_nValue").and_then(Value::as_int).unwrap_or(0) != 0
+            })
+        })
+}
+
+/// True when a tint's RGB is neutral (white/gray: r == g == b within a small
+/// tolerance), i.e. it carries no color of its own.
+fn is_neutral_rgb(rgba: &[Value]) -> bool {
+    let chan = |k: usize| rgba.get(k).and_then(Value::as_f64);
+    match (chan(0), chan(1), chan(2)) {
+        (Some(r), Some(g), Some(b)) => (r - g).abs() < 1e-6 && (g - b).abs() < 1e-6,
+        _ => false,
+    }
 }
 
 /// If `v` is a numeric array of length 3-4 in Color32 range, return its RGB ints.
@@ -1046,5 +1097,29 @@ mod tests {
                 .expect("held hand has a tint");
         assert!(close(tint_rgb(&held, "g_vColorTint1")));
         assert!(close(tint_rgb(&held, "g_vSelfIllumTint1")));
+    }
+
+    #[test]
+    fn keeps_a_solid_prop_base_neutral_and_stamps_only_its_glow() {
+        // The gravestone is a SOLID (non-additive) material: its base g_vColorTint is
+        // white (the stone) and its g_vSelfIllumTint is the necro yellow-green glow
+        // (skull / R.I.P. / cracks). Stamping must leave the stone base its own color
+        // and only recolor the glow, so a recolor doesn't paint the whole tombstone.
+        let recolor = Recolor::new(205.0, 0.6, 1.0); // sky blue
+        let stamped = recolor_material_color_bytes(&fixture("necro_gravestone.vmat_c"), recolor)
+            .expect("stamp gravestone")
+            .expect("gravestone has a tint");
+
+        let base = tint_rgb(&stamped, "g_vColorTint1");
+        assert!(
+            base.iter().all(|&c| (c - 1.0).abs() < 1e-6),
+            "stone base g_vColorTint stays white, got {base:?}"
+        );
+        let glow = tint_rgb(&stamped, "g_vSelfIllumTint1");
+        let target = [0.4, 0.75, 1.0]; // hsv(205, 0.6, 1.0)
+        assert!(
+            (0..3).all(|k| (glow[k] - target[k]).abs() < 1e-5),
+            "glow self-illum stamped to the brand color, got {glow:?}"
+        );
     }
 }

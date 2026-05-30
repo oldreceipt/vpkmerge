@@ -48,8 +48,11 @@ the in-place tint-double recolor that keeps a blob section compressed (see
 is a **two-blob** material (`countBlocks = 2`, its `m_dynamicParams` expressions)
 that regresses the blob-frame reader's one-frame-per-blob path.
 `material/picker_hand_glow.vmat_c` has a **neutral white** `g_vColorTint` stored as
-tagless `DOUBLE_ONE`s, exercising the recolor's re-encode promotion path. Neither
-has a `*.material.json` golden.
+tagless `DOUBLE_ONE`s, exercising the recolor's re-encode promotion path.
+`material/necro_gravestone.vmat_c` is a **solid (non-additive)** prop with a white
+base `g_vColorTint` and a colored `g_vSelfIllumTint` (the skull/RIP/cracks glow),
+exercising the selective stamp that leaves the stone base neutral and recolors only
+the glow. None of these has a `*.material.json` golden.
 
 `kv3/hornet_model_meta.json` is a higher-level golden (not a raw block): the
 compact model summary the M3 mesh/skeleton decoder is diffed against, produced
@@ -80,6 +83,7 @@ and both index buffers. Re-bless with `just mesh-buffers`.
 | `material/necro_hands.vmat_c`                 | `models/abilities/materials/necro_hands.vmat_c`                     |
 | `material/necro_picker_hand_effect.vmat_c`    | `models/heroes_wip/necro/materials/necro_picker_hand_effect.vmat_c` |
 | `material/picker_hand_glow.vmat_c`            | `models/heroes_wip/necro/materials/picker_hand_glow.vmat_c`         |
+| `material/necro_gravestone.vmat_c`            | `models/heroes_wip/necro/materials/necro_gravestone.vmat_c`         |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the
