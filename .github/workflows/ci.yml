@@ -38,10 +38,12 @@ jobs:
         run: cargo fmt --all --check
 
       - name: clippy (pedantic, deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        # --lib --bins --tests, not --all-targets: the `examples/` are dev-only
+        # scratch (ad-hoc analysis tools), exempt from the pedantic gate.
+        run: cargo clippy --workspace --lib --bins --tests -- -D warnings
 
       - name: test
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --lib --bins --tests
 
   cross-os:
     name: Cross-OS sanity (${{ matrix.os }})
@@ -59,7 +61,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: check core + cli
-        run: cargo check -p vpkmerge-core -p vpkmerge-cli --all-targets
+        # --lib --bins --tests, not --all-targets: skip dev-only `examples/`.
+        run: cargo check -p vpkmerge-core -p vpkmerge-cli --lib --bins --tests
 
       - name: test core + cli
         run: cargo test -p vpkmerge-core -p vpkmerge-cli
