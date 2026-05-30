@@ -84,3 +84,23 @@ pub fn encode_kv3_resource(original: &[u8], value: &kv3::Value) -> Result<Vec<u8
     let new_data = kv3::encode(value, &format);
     resource.rebuild_with_data(&new_data)
 }
+
+/// Patch integer scalar fields of a resource's KV3 `DATA` block in place by
+/// path, preserving every other byte: value flags, auxiliary-buffer typed-array
+/// tags, and the v5 framing the engine's particle/model loaders require.
+///
+/// This is the byte-faithful alternative to [`encode_kv3_resource`], which
+/// rebuilds the `DATA` from a [`kv3::Value`] tree and so drops flags and typed
+/// tags (fine for soundevents, fatal for particles/models). Use this to retint a
+/// particle's `m_ConstantColor` / gradient `m_Color` channels without
+/// invalidating its resource references. Edits and their path/width contract are
+/// exactly [`kv3::set_scalars`]'s. Returns a complete, loadable resource file.
+pub fn patch_kv3_resource_scalars(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, i64)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_scalars(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
