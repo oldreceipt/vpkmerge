@@ -376,7 +376,7 @@ fn lash_recipe() -> HeroRecolorRecipe {
     }
 }
 
-/// McGinnis (`mcginnis`): particles plus the hero-specific turret goo color
+/// `McGinnis` (`mcginnis`): particles plus the hero-specific turret goo color
 /// textures found in the local `.disabled` scan. Shared/default textures are
 /// deliberately excluded.
 fn mcginnis_recipe() -> HeroRecolorRecipe {
