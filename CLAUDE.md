@@ -207,9 +207,11 @@ hero's ability color (particle prefixes + chromatic textures + tint materials +
 vertex-color models), and one call recolors the whole set into a single addon VPK
 that overrides the base in place. Pinned codenames (`pinned_hero_codenames`):
 `bookworm` (Paige, full particles+textures+models), `necro` (Graves, +tint
-materials), `inferno` (Infernus), `yamato` (Yamato), plus particle-only `unicorn`
-(Celeste), `gigawatt` (Seven), `vampirebat` (Mina), `wraith`. An unknown codename
-lists the pinned set.
+materials), `inferno` (Infernus), `yamato` (Yamato), plus particle+texture heroes
+`abrams`, `fencer` (Apollo), `ghost` (Lady Geist), `nano` (Calico), `lash`,
+`mcginnis` (McGinnis), `magician` (Sinclair), `pocket`, and particle-only `astro`
+(Holliday), `unicorn` (Celeste), `gigawatt` (Seven), `vampirebat` (Mina),
+`wraith`. An unknown codename lists the pinned set.
 
 Three CLI commands share these recipes:
 

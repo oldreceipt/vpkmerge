@@ -68,10 +68,8 @@ enum Command {
     /// Recolor a hero's full ability VFX (particles + color textures + baked
     /// vertex colors) to one hue and pack it into a single addon VPK. The
     /// one-call bridge for a mod manager: composes all three recolor mechanisms
-    /// over a built-in per-hero recipe. Pinned: `bookworm` (Paige, full
-    /// particles+textures+models), plus particle-only `unicorn` (Celeste),
-    /// `gigawatt` (Seven), `vampirebat` (Mina), `necro` (Graves), `wraith`,
-    /// `inferno` (Infernus), `yamato` (Yamato).
+    /// over a built-in per-hero recipe. Run with an unknown codename to list the
+    /// pinned set.
     RecolorHero(RecolorHeroCmd),
 
     /// Recolor a hero's full ability VFX as a static prism/rainbow and pack it
@@ -274,6 +272,13 @@ struct PrismCmd {
     /// lightens, <1 darkens).
     #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
     brightness: f64,
+
+    /// Spread each effect across a custom gradient instead of the full rainbow.
+    /// Either a preset name (fire, ice, toxic, sunset, ocean, neon, gold, void) or
+    /// a stop list `pos:hue[:sat],...` (pos 0..1, hue degrees, sat 0..1). The
+    /// rotation / saturation / brightness above still apply on top.
+    #[arg(long, value_name = "SPEC")]
+    gradient: Option<String>,
 }
 
 #[derive(Args)]
@@ -1539,10 +1544,18 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
 }
 
 fn run_prism(args: &PrismCmd) -> Result<()> {
+    let gradient = match &args.gradient {
+        Some(spec) => Some(
+            vpkmerge_core::PrismGradient::from_spec(spec)
+                .map_err(|e| anyhow::anyhow!("--gradient: {e}"))?,
+        ),
+        None => None,
+    };
     let tuning = vpkmerge_core::PrismTuning {
         hue_offset: args.hue_offset,
         saturation: args.saturation,
         brightness: args.brightness,
+        gradient,
     };
     let report = vpkmerge_core::prism_recolor_hero_to_addon_tuned(
         &args.vpk,

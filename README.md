@@ -229,7 +229,7 @@ vpkmerge prism --hero <CODENAME> --vpk <VPK> [--base <VPK>] \
 vpkmerge rainbow-scan --vpk <VPK> [--base <VPK>] [--hero <CODENAME>...]
 ```
 
-Pinned codenames: `bookworm` (Paige, full particles + textures + models), `necro` (Graves), `inferno` (Infernus), `yamato` (Yamato), plus particle-only `unicorn` (Celeste), `gigawatt` (Seven), `vampirebat` (Mina), and `wraith`. An unknown codename lists the pinned set.
+Pinned codenames: `bookworm` (Paige, full particles + textures + models), `necro` (Graves), `inferno` (Infernus), `yamato` (Yamato), `abrams`, `fencer` (Apollo), `ghost` (Lady Geist), `nano` (Calico), `lash`, `mcginnis` (McGinnis), `magician` (Sinclair), `pocket`, plus particle-only `astro` (Holliday), `unicorn` (Celeste), `gigawatt` (Seven), `vampirebat` (Mina), and `wraith`. An unknown codename lists the pinned set.
 
 `prism --animated` adds a byte-faithful timing pass on high-visibility effects (glow / beam / trail / arc / slash): texture scroll repointed at particle age and gradient stops retimed so the spectrum sweeps over each particle's lifetime. Without it the prism is color-only (still reads as moving on heroes whose gradients already loop). `--hue-offset` rotates where the rainbow starts (the per-effect spread is unchanged, just shifted), and `--saturation` / `--brightness` scale the whole spectrum (e.g. a pastel rainbow); all three default to the canonical rainbow. `recolor-hero --preview-png` skips the (slow) full bake and writes a fast swatch of the recipe's representative texture for a live UI preview.
 

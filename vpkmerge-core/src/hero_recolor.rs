@@ -20,9 +20,9 @@
 //! standalone addon that overrides the base in place: the single-call bridge a
 //! mod manager drives.
 //!
-//! The recipe is currently a built-in per-hero table (Paige / `bookworm` only),
-//! pinned from the in-game-verified recolor work. Generalizing it to automatic
-//! discovery is a later step; the composition here does not change when it does.
+//! The recipe is currently a built-in per-hero table pinned from in-game-tested
+//! recolor mods and local asset audits. Generalizing it to automatic discovery
+//! is a later step; the composition here does not change when it does.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -102,7 +102,17 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // vanilla fire textures in place. See [`inferno_recipe`].
         "inferno" => Some(inferno_recipe()),
         "yamato" => Some(yamato_recipe()),
-        "unicorn" | "gigawatt" | "vampirebat" | "wraith" => Some(particle_only_recipe(&codename)),
+        "abrams" => Some(abrams_recipe()),
+        "fencer" => Some(fencer_recipe()),
+        "ghost" => Some(ghost_recipe()),
+        "nano" => Some(nano_recipe()),
+        "lash" => Some(lash_recipe()),
+        "mcginnis" => Some(mcginnis_recipe()),
+        "magician" => Some(magician_recipe()),
+        "pocket" => Some(pocket_recipe()),
+        "astro" | "unicorn" | "gigawatt" | "vampirebat" | "wraith" => {
+            Some(particle_only_recipe(&codename))
+        }
         _ => None,
     }
 }
@@ -115,6 +125,15 @@ pub const fn pinned_hero_codenames() -> &'static [&'static str] {
         "necro",
         "inferno",
         "yamato",
+        "abrams",
+        "astro",
+        "fencer",
+        "ghost",
+        "nano",
+        "lash",
+        "mcginnis",
+        "magician",
+        "pocket",
         "unicorn",
         "gigawatt",
         "vampirebat",
@@ -216,6 +235,215 @@ fn inferno_recipe() -> HeroRecolorRecipe {
         model_entries: Vec::new(),
         // No representative color texture, so no preview swatch.
         preview_texture: None,
+    }
+}
+
+/// Abrams (`abrams`): particles plus two hero-specific projected self-illum
+/// textures found by `examples/recolor_assets.rs`. The rest of the referenced
+/// ability textures are masks, normals, AO, or shared defaults.
+fn abrams_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "abrams".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/abrams/".to_string(),
+            "particles/weapon_fx/abrams/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/abilities/abrams/abrams_leap_ground_impact_hot_symbol_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/abrams_siphon_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/abrams/abrams_leap_ground_impact_hot_symbol_projected_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Apollo (`fencer`): particles plus hero-specific projected sigils, the ult
+/// gradient color map, and the sword dissolve color map. These were isolated by
+/// the texture audit; shared defaults and data maps are deliberately excluded.
+fn fencer_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "fencer".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/fencer/".to_string(),
+            "particles/weapon_fx/fencer/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/projected/fencer_preview_line_projected_decal_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/fencer_sigil_pentagram_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/fencer/fencer_ult_gradient_color_psd_51322651.vtex_c",
+            "models/heroes_wip/fencer/materials/fencer_sword_color_tga_52ec8bfe.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/fencer/fencer_ult_gradient_color_psd_51322651.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Lady Geist (`ghost`): particles plus the two hero-specific chromatic clothes
+/// FX maps used by ability particles. The audit also found a shared Shiv ability
+/// detail texture; it is intentionally left alone to avoid cross-hero bleed.
+fn ghost_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "ghost".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/ghost/".to_string(),
+            "particles/weapon_fx/ghost/".to_string(),
+        ],
+        texture_entries: [
+            "models/heroes_staging/ghost/materials/ghost2_clothes_fx_prop_color_psd_b398de35.vtex_c",
+            "models/heroes_staging/ghost/materials/ghost2_clothes_color_png_fc80b39a.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "models/heroes_staging/ghost/materials/ghost2_clothes_fx_prop_color_psd_b398de35.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Calico (`nano`): particles plus the hero-specific ult ground projection and
+/// cat statue color map. Shared Operative/noise textures are excluded even though
+/// they are chromatic.
+fn nano_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "nano".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/nano/".to_string(),
+            "particles/weapon_fx/nano/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/abilities/nano/nano_ult_ground_dark_proj_vmat_g_tselfillum_670d93d.vtex_c",
+            "models/heroes_staging/nano/cat_statue/materials/cat_statue_color_png_8892a790.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/nano/nano_ult_ground_dark_proj_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Lash (`lash`): particles plus the hero-specific cable material color texture.
+/// The shatter/crack ground texture referenced by some particles is shared and is
+/// intentionally not recolored in place.
+fn lash_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "lash".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/lash/".to_string(),
+            "particles/weapon_fx/lash/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/cables/lash_cable_material_vmat_g_tcolor_8ca8af3e.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/cables/lash_cable_material_vmat_g_tcolor_8ca8af3e.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// McGinnis (`mcginnis`): particles plus the hero-specific turret goo color
+/// textures found in the local `.disabled` scan. Shared/default textures are
+/// deliberately excluded.
+fn mcginnis_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "mcginnis".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/mcginnis/".to_string(),
+            "particles/weapon_fx/mcginnis/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/abilities/mcginnis/mcginnis_turret_ambient_goo_vmat_g_tcolor_974c5f09.vtex_c",
+            "materials/particle/abilities/mcginnis/mcginnis_turret_ambient_goo_vmat_g_tsheen_7edd324d.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/mcginnis/mcginnis_turret_ambient_goo_vmat_g_tcolor_974c5f09.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Sinclair (`magician`): particles plus two hero-specific chromatic ability
+/// textures from the local `.disabled` scan and texture audit.
+fn magician_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "magician".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/magician/".to_string(),
+            "particles/weapon_fx/magician/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/projected/magician_hex_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/magician/magician_bolt_vmat_g_tcolor_978bc798.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/projected/magician_hex_ground_projected_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Pocket (`pocket`): particles plus hero-specific satchel, body, and magic
+/// missile color textures. The audit also found shared noise/default/Viscous
+/// textures; those stay untouched to avoid cross-hero bleed.
+fn pocket_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "pocket".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/pocket/".to_string(),
+            "particles/weapon_fx/pocket/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/projected/pocket_satchel_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "models/heroes_staging/synth/materials/pocket_body_color_png_eb808d8a.vtex_c",
+            "materials/particle/abilities/pocket/pocket_magic_missile_illum_vmat_g_tcolor_754e94bd.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/projected/pocket_satchel_projected_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
     }
 }
 
@@ -533,8 +761,8 @@ pub fn recolor_hero_to_addon(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, yamato/Yamato, \
-             plus particle-only unicorn, gigawatt, vampirebat, wraith)"
+             (pinned: {})",
+            pinned_hero_codenames().join(", ")
         )
     })?;
 
@@ -677,6 +905,11 @@ pub struct PrismTuning {
     pub saturation: f64,
     /// Brightness (HSV value) scale on the spectrum (1.0 = engine default).
     pub brightness: f64,
+    /// When set, the prism samples this custom gradient instead of the full
+    /// rainbow wheel (the effect's spectral position maps onto these stops). The
+    /// rotation / saturation / brightness above still apply on top. `None` = the
+    /// canonical rainbow.
+    pub gradient: Option<PrismGradient>,
 }
 
 impl Default for PrismTuning {
@@ -685,7 +918,161 @@ impl Default for PrismTuning {
             hue_offset: 0.0,
             saturation: 1.0,
             brightness: 1.0,
+            gradient: None,
         }
+    }
+}
+
+/// One stop of a [`PrismGradient`]: a hue (degrees) and saturation (0..1) at a
+/// normalized position (0..1) along the effect's spectral spread.
+#[derive(Debug, Clone, Copy)]
+pub struct GradientStop {
+    pub position: f64,
+    pub hue: f64,
+    pub saturation: f64,
+}
+
+/// Max stops a [`PrismGradient`] holds. Fixed-capacity so the gradient stays
+/// `Copy` and can ride inside [`PrismTuning`] without cloning at every spectrum site.
+pub const MAX_GRADIENT_STOPS: usize = 8;
+
+/// Built-in gradient preset names (see [`PrismGradient::preset`]).
+pub const PRISM_PRESET_NAMES: &[&str] = &[
+    "fire", "ice", "toxic", "sunset", "ocean", "neon", "gold", "void",
+];
+
+/// A custom color ramp the prism samples instead of the full rainbow: an effect's
+/// spectral position `t` (0..1) maps onto these stops (hue + saturation
+/// interpolated), so e.g. `fire` reads red -> orange -> yellow rather than a full
+/// spectrum. Brightness still comes from the source effect.
+#[derive(Debug, Clone, Copy)]
+pub struct PrismGradient {
+    stops: [GradientStop; MAX_GRADIENT_STOPS],
+    len: usize,
+}
+
+impl PrismGradient {
+    /// Build from 2..=[`MAX_GRADIENT_STOPS`] stops (sorted by position here).
+    /// Returns `None` if the count is out of range.
+    #[must_use]
+    pub fn from_stops(input: &[GradientStop]) -> Option<Self> {
+        if input.len() < 2 || input.len() > MAX_GRADIENT_STOPS {
+            return None;
+        }
+        let mut stops = [GradientStop {
+            position: 0.0,
+            hue: 0.0,
+            saturation: 1.0,
+        }; MAX_GRADIENT_STOPS];
+        stops[..input.len()].copy_from_slice(input);
+        stops[..input.len()].sort_by(|a, b| a.position.total_cmp(&b.position));
+        Some(Self {
+            stops,
+            len: input.len(),
+        })
+    }
+
+    fn from_triples(triples: &[(f64, f64, f64)]) -> Option<Self> {
+        let stops: Vec<GradientStop> = triples
+            .iter()
+            .map(|&(position, hue, saturation)| GradientStop {
+                position,
+                hue,
+                saturation,
+            })
+            .collect();
+        Self::from_stops(&stops)
+    }
+
+    /// A built-in preset by name (case-insensitive), or `None` if unknown.
+    #[must_use]
+    pub fn preset(name: &str) -> Option<Self> {
+        let stops: &[(f64, f64, f64)] = match name.to_ascii_lowercase().as_str() {
+            "fire" => &[(0.0, 0.0, 1.0), (0.5, 25.0, 1.0), (1.0, 50.0, 1.0)],
+            "ice" => &[(0.0, 190.0, 1.0), (0.5, 215.0, 0.9), (1.0, 205.0, 0.25)],
+            "toxic" => &[(0.0, 110.0, 1.0), (0.5, 90.0, 1.0), (1.0, 72.0, 1.0)],
+            "sunset" => &[(0.0, 280.0, 1.0), (0.5, 325.0, 0.95), (1.0, 30.0, 1.0)],
+            "ocean" => &[(0.0, 175.0, 1.0), (0.5, 205.0, 1.0), (1.0, 235.0, 1.0)],
+            "neon" => &[(0.0, 300.0, 1.0), (0.5, 240.0, 1.0), (1.0, 180.0, 1.0)],
+            "gold" => &[(0.0, 25.0, 1.0), (0.5, 45.0, 1.0), (1.0, 55.0, 0.55)],
+            "void" => &[(0.0, 270.0, 1.0), (0.5, 305.0, 1.0), (1.0, 240.0, 1.0)],
+            _ => return None,
+        };
+        Self::from_triples(stops)
+    }
+
+    /// Parse a `--gradient` spec: a preset name, or a stop list
+    /// `pos:hue[:sat],pos:hue[:sat],...` (pos 0..1, hue degrees, sat 0..1 default 1).
+    pub fn from_spec(spec: &str) -> Result<Self, String> {
+        let spec = spec.trim();
+        if let Some(g) = Self::preset(spec) {
+            return Ok(g);
+        }
+        let mut stops = Vec::new();
+        for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let mut it = part.split(':');
+            let pos: f64 = it
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .ok_or_else(|| format!("bad gradient stop position in {part:?}"))?;
+            let hue: f64 = it
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .ok_or_else(|| format!("bad gradient stop hue in {part:?}"))?;
+            let saturation: f64 = match it.next() {
+                Some(s) => s
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("bad gradient stop saturation in {part:?}"))?,
+                None => 1.0,
+            };
+            stops.push(GradientStop {
+                position: pos.clamp(0.0, 1.0),
+                hue,
+                saturation: saturation.clamp(0.0, 1.0),
+            });
+        }
+        Self::from_stops(&stops).ok_or_else(|| {
+            format!(
+                "gradient needs 2..={MAX_GRADIENT_STOPS} stops or a preset name ({})",
+                PRISM_PRESET_NAMES.join(", ")
+            )
+        })
+    }
+
+    /// (hue degrees, saturation 0..1) at spectral position `t`, linearly
+    /// interpolating between the bracketing stops.
+    fn sample(&self, t: f64) -> (f64, f64) {
+        let t = t.clamp(0.0, 1.0);
+        let stops = &self.stops[..self.len];
+        let last = stops[self.len - 1];
+        if t <= stops[0].position {
+            return (stops[0].hue, stops[0].saturation);
+        }
+        if t >= last.position {
+            return (last.hue, last.saturation);
+        }
+        for pair in stops.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if t >= a.position && t <= b.position {
+                let span = (b.position - a.position).max(1e-9);
+                let f = (t - a.position) / span;
+                // Interpolate hue along the SHORTEST arc, so a gradient crossing the
+                // 360/0 boundary (e.g. pink 325 -> orange 30) travels through red, not
+                // the long way through cyan. hsv_to_rgb wraps the result via rem_euclid.
+                let mut dh = b.hue - a.hue;
+                if dh > 180.0 {
+                    dh -= 360.0;
+                } else if dh < -180.0 {
+                    dh += 360.0;
+                }
+                return (
+                    a.hue + dh * f,
+                    a.saturation + (b.saturation - a.saturation) * f,
+                );
+            }
+        }
+        (last.hue, last.saturation)
     }
 }
 
@@ -875,8 +1262,8 @@ pub fn recolor_hero_preview_png(
     let recipe = recipe_for(codename).with_context(|| {
         format!(
             "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
-             (pinned: bookworm/Paige, necro/Graves, inferno/Infernus, yamato/Yamato, \
-             plus particle-only unicorn, gigawatt, vampirebat, wraith)"
+             (pinned: {})",
+            pinned_hero_codenames().join(", ")
         )
     })?;
     let preview_texture = recipe.preview_texture.as_deref().with_context(|| {
@@ -1170,9 +1557,18 @@ fn prism_theme_for(codename: &str, entry: &str) -> PrismTheme {
 }
 
 fn spectrum_recolor_for(codename: &str, entry: &str, offset: f64, tuning: PrismTuning) -> Recolor {
-    let hue = (hash01(&format!("{codename}:{entry}")) + offset + tuning.hue_offset / 360.0).fract()
-        * 360.0;
-    Recolor::new(hue, tuning.saturation, tuning.brightness)
+    let t = (hash01(&format!("{codename}:{entry}")) + offset).fract();
+    if let Some(g) = tuning.gradient {
+        let (hue, sat) = g.sample(t);
+        Recolor::new(
+            (hue + tuning.hue_offset).rem_euclid(360.0),
+            sat * tuning.saturation,
+            tuning.brightness,
+        )
+    } else {
+        let hue = (t + tuning.hue_offset / 360.0).fract() * 360.0;
+        Recolor::new(hue, tuning.saturation, tuning.brightness)
+    }
 }
 
 fn prism_texture_recolor_for(
@@ -1181,11 +1577,15 @@ fn prism_texture_recolor_for(
     offset: f64,
     tuning: PrismTuning,
 ) -> Recolor {
-    if codename == "yamato" && entry == YAMATO_SHADOW_SHAPE_COLOR_TEXTURE {
+    if tuning.gradient.is_none()
+        && codename == "yamato"
+        && entry == YAMATO_SHADOW_SHAPE_COLOR_TEXTURE
+    {
         // This full-body shadow-form albedo sits under status-effect color warp and
         // cloak lighting. A saturated spectrum hue turns the ult body into a loud
         // static sheet, so keep it cool and subdued while still removing the red.
         // The tuning still rotates / scales it so it tracks the rest of the rainbow.
+        // A custom gradient overrides this and samples like everything else.
         Recolor::new(
             (190.0 + tuning.hue_offset).rem_euclid(360.0),
             0.45 * tuning.saturation,
@@ -1394,6 +1794,27 @@ fn hue_at(theme: PrismTheme, entry: &str, label: &str, t: f64) -> f64 {
     theme.base + theme.span * t + jitter
 }
 
+/// (hue degrees, saturation 0..1) for a color at spectral position `t`, honoring a
+/// custom gradient when set, else the per-effect themed rainbow. Rotation and the
+/// saturation scale are applied here; the caller applies brightness.
+fn prism_hue_sat(
+    theme: PrismTheme,
+    entry: &str,
+    label: &str,
+    effect_label: &str,
+    t: f64,
+    tuning: PrismTuning,
+) -> (f64, f64) {
+    let (hue, sat) = match tuning.gradient {
+        Some(g) => g.sample(t),
+        None => (hue_at(theme, entry, label, t), saturation_for(effect_label)),
+    };
+    (
+        hue + tuning.hue_offset,
+        (sat * tuning.saturation).clamp(0.0, 1.0),
+    )
+}
+
 fn value_floor(source_v: f64, label: &str, gradient: bool) -> (f64, bool, bool) {
     if source_v < 0.02 {
         return if gradient && spectral_path(label) {
@@ -1452,7 +1873,7 @@ fn prism_gradient_stop(
     } else {
         index as f64 / (count - 1) as f64
     };
-    let hue = hue_at(theme, entry, &path_label, t) + tuning.hue_offset;
+    let (hue, sat) = prism_hue_sat(theme, entry, &path_label, &effect_label, t, tuning);
     let (val, boosted, lifted_black) = value_floor(v, &effect_label, true);
     if boosted {
         stats.boosted_fields += 1;
@@ -1460,11 +1881,7 @@ fn prism_gradient_stop(
     if lifted_black {
         stats.lifted_black_gradient_fields += 1;
     }
-    hsv_to_rgb_i64(
-        hue,
-        (saturation_for(&effect_label) * tuning.saturation).clamp(0.0, 1.0),
-        (val * tuning.brightness).clamp(0.0, 1.0),
-    )
+    hsv_to_rgb_i64(hue, sat, (val * tuning.brightness).clamp(0.0, 1.0))
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1502,16 +1919,12 @@ fn prism_color_field(
     } else {
         base_t
     };
-    let hue = hue_at(theme, entry, &path_label, t) + tuning.hue_offset;
+    let (hue, sat) = prism_hue_sat(theme, entry, &path_label, &effect_label, t, tuning);
     let (val, boosted, _) = value_floor(v, &effect_label, false);
     if boosted {
         stats.boosted_fields += 1;
     }
-    hsv_to_rgb_i64(
-        hue,
-        (saturation_for(&effect_label) * tuning.saturation).clamp(0.0, 1.0),
-        (val * tuning.brightness).clamp(0.0, 1.0),
-    )
+    hsv_to_rgb_i64(hue, sat, (val * tuning.brightness).clamp(0.0, 1.0))
 }
 
 fn prism_path_is_stops(path: &[Seg]) -> bool {
@@ -2370,11 +2783,12 @@ mod tests {
 
     #[test]
     fn particle_only_heroes_are_pinned() {
-        // Seven/Mina/Wraith: all particle-only, same shape as Celeste, prefixes
+        // Holliday/Seven/Mina/Wraith: all particle-only, same shape as Celeste, prefixes
         // derived from the codename. Hue is supplied at recolor time, so the recipe
         // itself carries no color. (Graves/necro, Infernus, and Yamato are NOT here:
-        // they have their own recipes.)
-        for code in ["gigawatt", "vampirebat", "wraith"] {
+        // they have their own recipes; audited disabled-mod heroes with chromatic
+        // texture add-ons are covered below.)
+        for code in ["astro", "gigawatt", "vampirebat", "wraith"] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
             assert_eq!(
@@ -2398,6 +2812,46 @@ mod tests {
         // case-insensitive, and a hero with no pinned recipe still returns None
         assert!(recipe_for("GIGAWATT").is_some());
         assert!(recipe_for("hornet").is_none());
+    }
+
+    #[test]
+    fn disabled_audited_texture_recipes_are_pinned() {
+        // These heroes were added from the local disabled-mod particle scan plus
+        // `examples/recolor_assets.rs`. Each has the standard particle roots and
+        // at least one hero-specific chromatic texture; shared/default textures
+        // from the audit are deliberately excluded.
+        for (code, texture_count, required_marker) in [
+            ("abrams", 2, "abrams_leap_ground_impact"),
+            ("fencer", 4, "fencer_ult_gradient_color"),
+            ("ghost", 2, "ghost2_clothes_fx_prop_color"),
+            ("nano", 2, "nano_ult_ground_dark_proj"),
+            ("lash", 1, "lash_cable_material"),
+            ("mcginnis", 2, "mcginnis_turret_ambient_goo"),
+            ("magician", 2, "magician_hex_ground_projected"),
+            ("pocket", 3, "pocket_satchel_projected"),
+        ] {
+            let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
+            assert_eq!(r.codename, code);
+            assert_eq!(
+                r.particle_prefixes,
+                [
+                    format!("particles/abilities/{code}/"),
+                    format!("particles/weapon_fx/{code}/"),
+                ]
+            );
+            assert_eq!(r.texture_entries.len(), texture_count, "{code} textures");
+            assert!(r
+                .texture_entries
+                .iter()
+                .any(|t| t.contains(required_marker)));
+            let preview = r
+                .preview_texture
+                .unwrap_or_else(|| panic!("{code} has a preview texture"));
+            assert!(r.texture_entries.contains(&preview));
+            assert!(r.material_entries.is_empty());
+            assert!(r.model_entries.is_empty());
+            assert!(recipe_for(&code.to_uppercase()).is_some());
+        }
     }
 
     #[test]

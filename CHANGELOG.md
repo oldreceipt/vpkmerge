@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.0
+
+Expands the ability-VFX recolor roster and adds custom color ramps to the `prism` rainbow. Nine more heroes are pinned with recolor recipes, and `prism` can now spread each effect across a named preset or a hand-written gradient instead of the full spectrum. This release also re-aligns the GUI bundle version, which had lagged since v0.6.0.
+
+### CLI (`vpkmerge` 0.10)
+
+- `recolor-hero`, `prism`, and `rainbow-scan` gain nine new pinned heroes: `abrams` (Abrams), `astro` (Holliday), `fencer` (Apollo), `ghost` (Lady Geist), `nano` (Calico), `lash` (Lash), `mcginnis` (McGinnis), `magician` (Sinclair), and `pocket` (Pocket). `astro` is particle-only; the other eight pair the standard particle roots with the hero-specific chromatic textures isolated by the texture audit (shared masks, normals, AO, and cross-hero defaults are deliberately excluded). The `recolor-hero` help and the not-found error now list the pinned set dynamically instead of a hard-coded subset.
+- `prism` gains `--gradient <SPEC>`: spread each effect across a custom color ramp instead of the full rainbow. `SPEC` is either a built-in preset (`fire`, `ice`, `toxic`, `sunset`, `ocean`, `neon`, `gold`, `void`) or a stop list `pos:hue[:sat],...` (position 0..1, hue in degrees, optional saturation 0..1). `--hue-offset` / `--saturation` / `--brightness` still apply on top of the sampled gradient.
+
+### Library (`vpkmerge-core` 0.10)
+
+- New public API for custom prism ramps: `PrismGradient` (with `from_spec` / `preset` / `from_stops`), `GradientStop`, `MAX_GRADIENT_STOPS`, and `PRISM_PRESET_NAMES`. `PrismTuning` gains a `gradient: Option<PrismGradient>` field; `None` reproduces the canonical rainbow byte for byte, so existing callers (e.g. the GUI Prism tab) are unchanged. Hue interpolates along the shortest arc so a ramp crossing the 360/0 boundary travels the short way.
+- Nine new `recipe_for` arms / `pinned_hero_codenames` entries (see above). The recolor entry points (`recolor_hero_to_addon`, `recolor_hero_preview_png`) build their "no recipe for codename" error from `pinned_hero_codenames()` rather than a stale literal.
+
+### GUI (`vpkmerge` 0.10)
+
+- The GUI bundle version (`tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`) is bumped to 0.10.0. These had lagged at 0.6.0 since v0.6.0, so the deb / AppImage / dmg / msi bundles were mislabeled; they now read the real version. The new heroes are wired into the GUI's hero-label map.
+
 ## v0.9.0
 
 Adds spectrum tuning to the `prism` rainbow recolor. The canonical rainbow can now be rotated to a different start hue and scaled in saturation and brightness, so a UI can offer "rotate / desaturate the rainbow" without losing the per-effect spread. Defaults reproduce the v0.8 prism byte for byte. Also wires Yamato into the prism path's chromatic-texture set.

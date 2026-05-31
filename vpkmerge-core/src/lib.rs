@@ -41,8 +41,9 @@ pub use hero_recolor::{
     insert_color_cycle_operator, is_tiling_particle_texture, loop_animate_particle_bytes,
     non_tiling_texture_inputs, pinned_hero_codenames, prism_recolor_hero_to_addon,
     prism_recolor_hero_to_addon_tuned, recipe_for, recolor_hero_preview_png, recolor_hero_to_addon,
-    recolor_particle_bytes, scan_hero_rainbow_support, HeroPrismRecolorReport,
-    HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport, PrismTuning,
+    recolor_particle_bytes, scan_hero_rainbow_support, GradientStop, HeroPrismRecolorReport,
+    HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport, PrismGradient, PrismTuning,
+    MAX_GRADIENT_STOPS, PRISM_PRESET_NAMES,
 };
 
 #[derive(Debug, Clone)]
