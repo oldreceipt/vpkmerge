@@ -1,4 +1,4 @@
-// Yamato Prism V3 particle pass.
+// Yamato Prism V3.1 particle pass.
 //
 // This is still an in-place scalar patcher: it only changes existing Color32
 // numeric fields in compiled .vpcf_c files. The goal is a cleaner spectral look
@@ -6,6 +6,8 @@
 //   - ability-family hue bands, so the kit reads coherently
 //   - stronger value floors on glow/light/beam/core fields
 //   - wider min/max/fade offsets for existing random/interpolated color fields
+//   - dark spectral endpoints for glow/beam/core/trail gradients instead of
+//     pure black gaps
 //
 // usage:
 //   cargo run -p vpkmerge-core --example yamato_prism_v3_particles -- \
@@ -24,6 +26,7 @@ struct PatchStats {
     gradient_fields: usize,
     color_fields: usize,
     boosted_fields: usize,
+    lifted_black_gradient_fields: usize,
     random_range_fields: usize,
 }
 
@@ -104,6 +107,14 @@ fn path_label(path: &[Seg]) -> String {
         }
     }
     out
+}
+
+fn effect_label(entry: &str, path: &[Seg]) -> String {
+    format!(
+        "{}{}",
+        entry.to_ascii_lowercase(),
+        path_label(path).to_ascii_lowercase()
+    )
 }
 
 fn theme_for(entry: &str) -> Theme {
@@ -207,23 +218,23 @@ fn hue_at(theme: Theme, entry: &str, label: &str, t: f64) -> f64 {
     theme.base + theme.span * t + jitter
 }
 
-fn value_floor(source_v: f64, label: &str, gradient: bool) -> (f64, bool) {
+fn value_floor(source_v: f64, label: &str, gradient: bool) -> (f64, bool, bool) {
     if source_v < 0.02 {
         return if gradient && spectral_path(label) {
-            (0.30, true)
+            (0.30, true, true)
         } else {
-            (source_v, false)
+            (source_v, false, false)
         };
     }
 
     if subdued_path(label) {
-        (source_v.max(0.48), false)
+        (source_v.max(0.48), false, false)
     } else if spectral_path(label) {
-        (source_v.max(0.96), source_v < 0.96)
+        (source_v.max(0.96), source_v < 0.96, false)
     } else if gradient {
-        (source_v.max(0.86), source_v < 0.86)
+        (source_v.max(0.86), source_v < 0.86, false)
     } else {
-        (source_v.max(0.78), source_v < 0.78)
+        (source_v.max(0.78), source_v < 0.78, false)
     }
 }
 
@@ -250,10 +261,11 @@ fn prism_gradient_stop(
         rgb[1] as f64 / 255.0,
         rgb[2] as f64 / 255.0,
     );
-    let label = path_label(path).to_ascii_lowercase();
+    let path_label = path_label(path).to_ascii_lowercase();
+    let effect_label = effect_label(entry, path);
     let theme = theme_for(entry);
     let t = if count <= 1 {
-        hash01(&format!("{entry}{label}"))
+        hash01(&format!("{entry}{path_label}"))
     } else if count == 2 {
         [0.10, 0.82][index.min(1)]
     } else if let Some(position) = position {
@@ -261,12 +273,15 @@ fn prism_gradient_stop(
     } else {
         index as f64 / (count - 1) as f64
     };
-    let hue = hue_at(theme, entry, &label, t);
-    let (val, boosted) = value_floor(v, &label, true);
+    let hue = hue_at(theme, entry, &path_label, t);
+    let (val, boosted, lifted_black) = value_floor(v, &effect_label, true);
     if boosted {
         stats.boosted_fields += 1;
     }
-    hsv_to_rgb(hue, saturation_for(&label), val)
+    if lifted_black {
+        stats.lifted_black_gradient_fields += 1;
+    }
+    hsv_to_rgb(hue, saturation_for(&effect_label), val)
 }
 
 fn prism_color_field(rgb: [i64; 3], entry: &str, path: &[Seg], stats: &mut PatchStats) -> [i64; 3] {
@@ -280,27 +295,28 @@ fn prism_color_field(rgb: [i64; 3], entry: &str, path: &[Seg], stats: &mut Patch
         return rgb;
     }
 
-    let label = path_label(path).to_ascii_lowercase();
+    let path_label = path_label(path).to_ascii_lowercase();
+    let effect_label = effect_label(entry, path);
     let theme = theme_for(entry);
-    let base_t = hash01(&format!("{entry}{label}"));
-    let t = if label.ends_with("/m_colormin") {
+    let base_t = hash01(&format!("{entry}{path_label}"));
+    let t = if path_label.ends_with("/m_colormin") {
         stats.random_range_fields += 1;
         0.02 + base_t * 0.18
-    } else if label.ends_with("/m_colormax") {
+    } else if path_label.ends_with("/m_colormax") {
         stats.random_range_fields += 1;
         0.70 + base_t * 0.28
-    } else if label.ends_with("/m_colorfade") {
+    } else if path_label.ends_with("/m_colorfade") {
         stats.random_range_fields += 1;
         0.40 + base_t * 0.35
     } else {
         base_t
     };
-    let hue = hue_at(theme, entry, &label, t);
-    let (val, boosted) = value_floor(v, &label, false);
+    let hue = hue_at(theme, entry, &path_label, t);
+    let (val, boosted, _) = value_floor(v, &effect_label, false);
     if boosted {
         stats.boosted_fields += 1;
     }
-    hsv_to_rgb(hue, saturation_for(&label), val)
+    hsv_to_rgb(hue, saturation_for(&effect_label), val)
 }
 
 fn path_is_stops(path: &[Seg]) -> bool {
@@ -406,6 +422,7 @@ fn main() -> anyhow::Result<()> {
                 stats.gradient_fields += file_stats.gradient_fields;
                 stats.color_fields += file_stats.color_fields;
                 stats.boosted_fields += file_stats.boosted_fields;
+                stats.lifted_black_gradient_fields += file_stats.lifted_black_gradient_fields;
                 stats.random_range_fields += file_stats.random_range_fields;
                 packed.push((entry.clone(), new_bytes));
                 patched += 1;
@@ -423,8 +440,12 @@ fn main() -> anyhow::Result<()> {
         .collect();
     vpkmerge_core::pack(&refs, &out)?;
     println!(
-        "wrote {out}: {patched} patched, {no_color} no-color, {patch_err} patch-error, {} gradient fields, {} other color fields, {} boosted, {} random/fade range fields",
-        stats.gradient_fields, stats.color_fields, stats.boosted_fields, stats.random_range_fields
+        "wrote {out}: {patched} patched, {no_color} no-color, {patch_err} patch-error, {} gradient fields, {} other color fields, {} boosted, {} black-gradient endpoints lifted, {} random/fade range fields",
+        stats.gradient_fields,
+        stats.color_fields,
+        stats.boosted_fields,
+        stats.lifted_black_gradient_fields,
+        stats.random_range_fields
     );
     Ok(())
 }
