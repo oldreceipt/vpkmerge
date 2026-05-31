@@ -245,6 +245,14 @@ struct PrismCmd {
     /// at its base path so it overrides the base game in place.
     #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
     encode_vpk: PathBuf,
+
+    /// Also animate high-visibility effects (glow/beam/trail/arc/slash/...):
+    /// repoint their texture scroll at particle age, boost the scroll, and retime
+    /// gradient stops so the spectrum sweeps over each particle's lifetime. Without
+    /// this the prism is color-only (still reads as moving on heroes whose
+    /// gradients already loop). Byte-faithful and best-effort per file.
+    #[arg(long)]
+    animated: bool,
 }
 
 #[derive(Args)]
@@ -1514,6 +1522,7 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
         &args.vpk,
         args.base.as_deref(),
         &args.hero,
+        args.animated,
         &args.encode_vpk,
     )
     .with_context(|| format!("prism-recoloring hero {}", args.hero))?;
@@ -1536,6 +1545,15 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
         report.models_recolored,
         report.model_vertices,
     );
+    if args.animated {
+        eprintln!(
+            "  animated: {} high-visibility particle(s) retimed ({} texture-age input(s), {} scroll multiplier(s), {} gradient timing edit(s))",
+            report.particles_animated,
+            report.texture_age_inputs,
+            report.texture_offset_multipliers,
+            report.gradient_timing_edits,
+        );
+    }
     if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
         eprintln!(
             "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \

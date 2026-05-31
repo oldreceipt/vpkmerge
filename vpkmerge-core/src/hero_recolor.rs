@@ -379,6 +379,17 @@ pub struct HeroPrismRecolorReport {
     /// Explicit recipe vertex-color models recolored to deterministic spectrum hues.
     pub models_recolored: usize,
     pub model_vertices: usize,
+    /// High-visibility particles that got at least one animation timing edit
+    /// (`--animated` only; 0 for a static prism). A particle can be counted here
+    /// and in `particles_recolored` both: animation is layered on the colored bytes.
+    pub particles_animated: usize,
+    /// Texture-scroll inputs repointed at particle age (the spectrum sweeps over
+    /// each particle's lifetime).
+    pub texture_age_inputs: usize,
+    /// Texture-offset scroll multipliers boosted (wider spectral travel).
+    pub texture_offset_multipliers: usize,
+    /// Gradient stop positions retimed so spectral changes read earlier/evener.
+    pub gradient_timing_edits: usize,
     /// Total entries packed into the addon.
     pub total_entries: usize,
 }
@@ -626,18 +637,29 @@ pub fn recolor_hero_to_addon(
     Ok(report)
 }
 
-/// Recolor a hero's ability-VFX set as a static prism/rainbow addon.
+/// Recolor a hero's ability-VFX set as a prism/rainbow addon.
 ///
 /// This is the app-facing version of the in-game-proven prism particle probes:
 /// it only patches existing particle color/tint scalars in place, so compiled
 /// particle resource framing is preserved. Explicit recipe textures/materials/
 /// vertex-color models are included too, but they receive deterministic
 /// per-entry spectrum hues rather than true texture animation.
+///
+/// With `animated`, high-visibility effects (glow/beam/trail/arc/slash/... per
+/// [`is_prism_animation_target`]) get an extra byte-faithful timing pass on top
+/// of the color spread: texture-scroll inputs are repointed at particle age, the
+/// scroll multiplier is boosted, and gradient stop positions are retimed, so the
+/// spectrum sweeps over each particle's lifetime instead of sitting static. The
+/// timing edits are best-effort per file (skipped where the fields aren't present)
+/// and never touch color, so `animated = false` reproduces the static prism byte
+/// for byte. Promoted from `examples/yamato_anim_prism_micro.rs`, generalized off
+/// Yamato to run on any pinned hero's particle prefixes.
 #[allow(clippy::too_many_lines)]
 pub fn prism_recolor_hero_to_addon(
     vpk: impl AsRef<Path>,
     base: Option<&Path>,
     codename: &str,
+    animated: bool,
     out: impl AsRef<Path>,
 ) -> Result<HeroPrismRecolorReport> {
     let recipe = recipe_for(codename).with_context(|| {
@@ -661,21 +683,55 @@ pub fn prism_recolor_hero_to_addon(
     for entry in &particle_entries {
         let bytes = read_entry(&vpks, entry)
             .with_context(|| format!("reading particle {entry} (listed but unreadable)"))?;
-        match prism_recolor_particle_bytes(&bytes, &recipe.codename, entry) {
-            Ok(Some((new_bytes, stats))) => {
-                packed.push((entry.clone(), new_bytes));
-                report.particles_recolored += 1;
-                report.gradient_fields += stats.gradient_fields;
-                report.color_fields += stats.color_fields;
-                report.boosted_fields += stats.boosted_fields;
-                report.lifted_black_gradient_fields += stats.lifted_black_gradient_fields;
-                report.random_range_fields += stats.random_range_fields;
+
+        // 1. Color spread: retint every color-bearing particle to its spectrum.
+        let (mut working, had_color) =
+            match prism_recolor_particle_bytes(&bytes, &recipe.codename, entry) {
+                Ok(Some((new_bytes, stats))) => {
+                    report.gradient_fields += stats.gradient_fields;
+                    report.color_fields += stats.color_fields;
+                    report.boosted_fields += stats.boosted_fields;
+                    report.lifted_black_gradient_fields += stats.lifted_black_gradient_fields;
+                    report.random_range_fields += stats.random_range_fields;
+                    (new_bytes, true)
+                }
+                Ok(None) => (bytes, false),
+                // A color-bearing particle the scalar patcher rejects is left vanilla,
+                // not fatal; it also gets no animation pass (the bytes are unchanged).
+                Err(e) => {
+                    report.particles_unpatchable += 1;
+                    eprintln!("  note: skipping {entry} (left vanilla): {e:#}");
+                    continue;
+                }
+            };
+
+        // 2. Optional animation pass on high-visibility effects, layered on the
+        //    colored bytes. Best-effort: a file missing the timing fields is left as
+        //    the color-only result.
+        let mut animated_this = false;
+        if animated && is_prism_animation_target(entry) {
+            match apply_prism_animation(&working, entry) {
+                Ok((new_bytes, stats)) if stats.total() > 0 => {
+                    working = new_bytes;
+                    report.texture_age_inputs += stats.age_inputs;
+                    report.texture_offset_multipliers += stats.multipliers;
+                    report.gradient_timing_edits += stats.gradient_timing;
+                    report.particles_animated += 1;
+                    animated_this = true;
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("  note: animation skipped for {entry}: {e:#}"),
             }
-            Ok(None) => report.particles_no_color += 1,
-            Err(e) => {
-                report.particles_unpatchable += 1;
-                eprintln!("  note: skipping {entry} (left vanilla): {e:#}");
-            }
+        }
+
+        if had_color {
+            report.particles_recolored += 1;
+            packed.push((entry.clone(), working));
+        } else if animated_this {
+            // Color-free but animated: still a real override worth packing.
+            packed.push((entry.clone(), working));
+        } else {
+            report.particles_no_color += 1;
         }
     }
 
@@ -810,6 +866,197 @@ fn prism_recolor_particle_bytes(
     let new_bytes = morphic::patch_kv3_resource_scalars(vpcf_bytes, &edits)
         .map_err(|e| anyhow::anyhow!("patching particle prism scalars: {e}"))?;
     Ok(Some((new_bytes, stats)))
+}
+
+/// The particle-flow enum that drives an input from a particle's normalized age.
+const PRISM_ANIM_AGE_TYPE: &str = "PF_TYPE_PARTICLE_AGE_NORMALIZED";
+
+/// Effect-name keywords that mark a high-visibility particle worth animating (its
+/// spectrum should sweep over the particle's life, not sit static).
+const PRISM_ANIM_TARGET_KEYWORDS: &[&str] = &[
+    "arc", "beam", "charge", "core", "dash", "endcap", "energy", "flash", "glow", "light", "magic",
+    "pulse", "ring", "rope", "slash", "streak", "sweep", "tracer", "trail",
+];
+
+/// Effect-name keywords whose particles should stay static even if they also match
+/// a target keyword (smoke/dust/etc. read worse cycling; `power_slash` was excluded
+/// after an in-game pass on Yamato and is harmless elsewhere, no other hero has it).
+const PRISM_ANIM_SKIP_KEYWORDS: &[&str] = &[
+    "blood",
+    "darkness",
+    "debris",
+    "dust",
+    "fog",
+    "gas",
+    "pnt",
+    "power_slash",
+    "shake",
+    "sleep",
+    "smoke",
+];
+
+/// Whether a `.vpcf_c` entry is a high-visibility effect the animation pass should
+/// retime. The caller has already restricted to the hero's particle prefixes, so
+/// this is the effect-keyword filter only: a target keyword present, no skip keyword.
+#[must_use]
+pub fn is_prism_animation_target(entry: &str) -> bool {
+    let name = entry.to_ascii_lowercase();
+    PRISM_ANIM_TARGET_KEYWORDS
+        .iter()
+        .any(|kw| name.contains(kw))
+        && !PRISM_ANIM_SKIP_KEYWORDS.iter().any(|kw| name.contains(kw))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PrismAnimStats {
+    age_inputs: usize,
+    multipliers: usize,
+    gradient_timing: usize,
+}
+
+impl PrismAnimStats {
+    fn total(self) -> usize {
+        self.age_inputs + self.multipliers + self.gradient_timing
+    }
+}
+
+#[derive(Default)]
+#[allow(clippy::struct_field_names)]
+struct PrismAnimPlan {
+    string_paths: Vec<Vec<Seg>>,
+    mult_paths: Vec<Vec<Seg>>,
+    gradient_paths: Vec<(Vec<Seg>, f64)>,
+}
+
+/// True if `needle` appears as a string literal anywhere in the tree (so it is in
+/// the file's string table and can be referenced by an in-place string patch).
+fn has_value_string(v: &Value, needle: &str) -> bool {
+    match v {
+        Value::String(s) => s == needle,
+        Value::Array(items) => items.iter().any(|v| has_value_string(v, needle)),
+        Value::Object(pairs) => pairs.iter().any(|(_, v)| has_value_string(v, needle)),
+        _ => false,
+    }
+}
+
+/// Retimed position for an early gradient stop (tighten the spectral ramp toward
+/// the particle's start). Only the first few stops are nudged; later stops keep
+/// their authored timing.
+fn prism_anim_stop_target(label: &str) -> Option<f64> {
+    if label.contains("/m_Stops[1]/m_flPosition") {
+        Some(0.18)
+    } else if label.contains("/m_Stops[2]/m_flPosition") {
+        Some(0.45)
+    } else if label.contains("/m_Stops[3]/m_flPosition") {
+        Some(0.72)
+    } else {
+        None
+    }
+}
+
+/// Walk the KV3 tree collecting the three animation edit sites: texture-offset
+/// input-type strings, texture-offset multipliers, and early gradient stop times.
+fn collect_prism_anim_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut PrismAnimPlan) {
+    let label = path_label(path);
+    let lower = label.to_ascii_lowercase();
+
+    if matches!(v, Value::String(s) if s != PRISM_ANIM_AGE_TYPE)
+        && lower.contains("/m_texturecontrols/")
+        && lower.contains("/m_flfinaltextureoffset")
+        && lower.ends_with("/m_ntype")
+    {
+        plan.string_paths.push(path.clone());
+    }
+
+    if lower.contains("/m_texturecontrols/")
+        && lower.contains("/m_flfinaltextureoffset")
+        && lower.ends_with("/m_flmultfactor")
+    {
+        plan.mult_paths.push(path.clone());
+    }
+
+    if lower.contains("/m_gradient/m_stops") && lower.ends_with("/m_flposition") {
+        if let Some(target) = prism_anim_stop_target(&label) {
+            plan.gradient_paths.push((path.clone(), target));
+        }
+    }
+
+    match v {
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                path.push(Seg::Index(i));
+                collect_prism_anim_plan(item, path, plan);
+                path.pop();
+            }
+        }
+        Value::Object(pairs) => {
+            for (key, child) in pairs {
+                path.push(Seg::Key(key.clone()));
+                collect_prism_anim_plan(child, path, plan);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Patch one numeric leaf, trying the stored-double encoding first, then float.
+/// Returns the (possibly unchanged) bytes and whether the patch landed.
+#[allow(clippy::cast_possible_truncation)]
+fn patch_one_number(bytes: Vec<u8>, path: Vec<Seg>, value: f64) -> (Vec<u8>, bool) {
+    if let Ok(patched) = morphic::patch_kv3_resource_doubles(&bytes, &[(path.clone(), value)]) {
+        return (patched, true);
+    }
+    if let Ok(patched) = morphic::patch_kv3_resource_floats(&bytes, &[(path, value as f32)]) {
+        return (patched, true);
+    }
+    (bytes, false)
+}
+
+/// Layer the animation timing pass onto one (already prism-colored) particle's
+/// bytes. All three edits are byte-faithful in-place patches, so the compiled
+/// particle framing is preserved; each is best-effort and skipped where its fields
+/// aren't present. Color is never touched. Promoted from the Yamato micro-pass.
+fn apply_prism_animation(vpcf_bytes: &[u8], _entry: &str) -> Result<(Vec<u8>, PrismAnimStats)> {
+    let tree = morphic::decode_kv3_resource(vpcf_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding particle KV3 for animation: {e}"))?;
+    let mut plan = PrismAnimPlan::default();
+    collect_prism_anim_plan(&tree, &mut Vec::new(), &mut plan);
+
+    let mut out = vpcf_bytes.to_vec();
+    let mut stats = PrismAnimStats::default();
+
+    // Texture-scroll input -> particle age, only when that enum already exists in
+    // the string table (so the in-place string patch can reference it).
+    if has_value_string(&tree, PRISM_ANIM_AGE_TYPE) {
+        for path in plan.string_paths {
+            if let Ok(patched) = morphic::patch_kv3_resource_strings(
+                &out,
+                &[(path, PRISM_ANIM_AGE_TYPE.to_string())],
+            ) {
+                out = patched;
+                stats.age_inputs += 1;
+            }
+        }
+    }
+
+    for path in plan.mult_paths {
+        let (patched, ok) = patch_one_number(out, path, 2.5);
+        out = patched;
+        if ok {
+            stats.multipliers += 1;
+        }
+    }
+
+    for (path, value) in plan.gradient_paths {
+        let (patched, ok) = patch_one_number(out, path, value);
+        out = patched;
+        if ok {
+            stats.gradient_timing += 1;
+        }
+    }
+
+    Ok((out, stats))
 }
 
 #[derive(Debug, Clone, Copy)]

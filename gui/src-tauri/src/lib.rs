@@ -88,6 +88,10 @@ struct HeroPrismReport {
     materials_unpatchable: usize,
     models_recolored: usize,
     model_vertices: usize,
+    particles_animated: usize,
+    texture_age_inputs: usize,
+    texture_offset_multipliers: usize,
+    gradient_timing_edits: usize,
     total_entries: usize,
     output_path: String,
 }
@@ -110,6 +114,10 @@ impl HeroPrismReport {
             materials_unpatchable: report.materials_unpatchable,
             models_recolored: report.models_recolored,
             model_vertices: report.model_vertices,
+            particles_animated: report.particles_animated,
+            texture_age_inputs: report.texture_age_inputs,
+            texture_offset_multipliers: report.texture_offset_multipliers,
+            gradient_timing_edits: report.gradient_timing_edits,
             total_entries: report.total_entries,
             output_path,
         }
@@ -287,15 +295,21 @@ async fn build_hero_prism_vpk(
     vpk_path: String,
     base_path: Option<String>,
     hero: String,
+    animated: bool,
     output_path: String,
 ) -> Result<HeroPrismReport, String> {
     let base = base_path
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(std::path::PathBuf::from);
-    let report =
-        vpkmerge_core::prism_recolor_hero_to_addon(&vpk_path, base.as_deref(), &hero, &output_path)
-            .map_err(|e| format!("{e:#}"))?;
+    let report = vpkmerge_core::prism_recolor_hero_to_addon(
+        &vpk_path,
+        base.as_deref(),
+        &hero,
+        animated,
+        &output_path,
+    )
+    .map_err(|e| format!("{e:#}"))?;
     Ok(HeroPrismReport::from_core(report, output_path))
 }
 

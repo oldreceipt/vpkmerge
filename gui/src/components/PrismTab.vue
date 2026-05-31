@@ -6,6 +6,7 @@ const heroes = ref([]);
 const selectedHero = ref('');
 const vpkPath = ref('');
 const outputPath = ref('');
+const animated = ref(false);
 const busy = ref(false);
 const status = ref({ text: '', kind: '' });
 const report = ref(null);
@@ -86,6 +87,7 @@ async function buildPrism() {
       vpkPath: vpkPath.value,
       basePath: null,
       hero: selectedHero.value,
+      animated: animated.value,
       outputPath: outputPath.value,
     });
     report.value = result;
@@ -225,6 +227,20 @@ onMounted(() => {
             </button>
           </div>
 
+          <label class="flex items-start gap-2 mb-3 cursor-pointer select-none">
+            <input
+              v-model="animated"
+              type="checkbox"
+              class="mt-0.5 accent-accent-600"
+            />
+            <span class="text-xs text-ink-700 dark:text-ink-200">
+              Animated
+              <span class="block text-[11px] font-serif italic text-ink-500 dark:text-ink-300">
+                Sweep the spectrum over each particle's lifetime (glow / beam / trail / slash). Color-only when off.
+              </span>
+            </span>
+          </label>
+
           <button
             type="button"
             :disabled="!canBuild"
@@ -274,6 +290,10 @@ onMounted(() => {
             <div>
               <dt class="text-ink-500 dark:text-ink-300 font-serif italic">Unpatchable</dt>
               <dd class="font-mono text-ink-800 dark:text-ink-100">{{ report.particles_unpatchable + report.materials_unpatchable }}</dd>
+            </div>
+            <div v-if="report.particles_animated">
+              <dt class="text-ink-500 dark:text-ink-300 font-serif italic">Animated</dt>
+              <dd class="font-mono text-ink-800 dark:text-ink-100">{{ report.particles_animated }}</dd>
             </div>
           </dl>
           <p class="mt-3 text-[11px] font-mono text-ink-500 dark:text-ink-300 break-all">
