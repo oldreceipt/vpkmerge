@@ -212,6 +212,120 @@ pub fn set_doubles(block: &[u8], edits: &[(Vec<Seg>, f64)]) -> Result<Vec<u8>, D
     }
 }
 
+/// Sets `FLOAT` (f32) fields located by KV3 path, in place, on a byte-faithful
+/// uncompressed re-wrap of `block`. This is the particle-friendly scalar patcher
+/// for existing brightness/radius/lifetime-style params that are stored as real
+/// f32 values. Tagless numeric constants and doubles are not patched here.
+///
+/// Errors if the block is not v4/v5, or if any path is missing / not a real float
+/// / ambiguous.
+pub fn set_floats(block: &[u8], edits: &[(Vec<Seg>, f32)]) -> Result<Vec<u8>, DecodeError> {
+    let mut out = rewrap_uncompressed(block)?;
+    let version = u32_at(&out, 0)? & 0xFF;
+    let min_header = if version == 5 { 120 } else { 72 };
+    if out.len() < min_header || (version != 4 && version != 5) {
+        return Err(DecodeError::Kv3("float patch requires KV3 v4 or v5"));
+    }
+
+    let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
+    let hits = {
+        let mut w = PathWalk::new(&out, &targets)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        w.float_hits
+    };
+
+    for i in 0..edits.len() {
+        match hits.iter().filter(|h| h.edit == i).count() {
+            1 => {}
+            0 => {
+                return Err(DecodeError::Kv3(
+                    "float patch path not found or not a float",
+                ))
+            }
+            _ => {
+                return Err(DecodeError::Kv3(
+                    "float patch path is ambiguous (matched more than one field)",
+                ))
+            }
+        }
+    }
+
+    for h in &hits {
+        let bytes = edits[h.edit].1.to_le_bytes();
+        out.get_mut(h.offset..h.offset + 4)
+            .ok_or(DecodeError::Kv3("float patch offset out of range"))?
+            .copy_from_slice(&bytes);
+    }
+    Ok(out)
+}
+
+/// Sets `STRING` fields located by KV3 path by redirecting the field's string id
+/// to another string already present in the same KV3 string table.
+///
+/// This deliberately does **not** add new strings or rewrite the string table:
+/// changing table length would be a structural edit. The safe first use is enum
+/// probing, e.g. changing an existing `m_nInputMode` to a different
+/// `PF_INPUT_MODE_*` value that already appears somewhere in the particle.
+/// Passing an empty string writes Source 2's `-1` string id.
+///
+/// Errors if the block is not v4/v5, if any path is missing / not a string /
+/// ambiguous, or if a requested target string is not already interned in the
+/// block.
+pub fn set_strings(block: &[u8], edits: &[(Vec<Seg>, String)]) -> Result<Vec<u8>, DecodeError> {
+    let mut out = rewrap_uncompressed(block)?;
+    let version = u32_at(&out, 0)? & 0xFF;
+    let min_header = if version == 5 { 120 } else { 72 };
+    if out.len() < min_header || (version != 4 && version != 5) {
+        return Err(DecodeError::Kv3("string patch requires KV3 v4 or v5"));
+    }
+
+    let targets: Vec<&[Seg]> = edits.iter().map(|(p, _)| p.as_slice()).collect();
+    let (hits, strings) = {
+        let mut w = PathWalk::new(&out, &targets)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        (w.string_hits, w.strings)
+    };
+
+    for i in 0..edits.len() {
+        match hits.iter().filter(|h| h.edit == i).count() {
+            1 => {}
+            0 => {
+                return Err(DecodeError::Kv3(
+                    "string patch path not found or not a string",
+                ))
+            }
+            _ => {
+                return Err(DecodeError::Kv3(
+                    "string patch path is ambiguous (matched more than one field)",
+                ))
+            }
+        }
+    }
+
+    for h in &hits {
+        let target = &edits[h.edit].1;
+        let id = if target.is_empty() {
+            u32::MAX
+        } else {
+            u32::try_from(
+                strings
+                    .iter()
+                    .position(|s| s == target)
+                    .ok_or(DecodeError::Kv3(
+                        "string patch target is not present in the KV3 string table",
+                    ))?,
+            )
+            .map_err(|_| DecodeError::Kv3("string table id does not fit u32"))?
+        };
+        out.get_mut(h.offset..h.offset + 4)
+            .ok_or(DecodeError::Kv3("string patch offset out of range"))?
+            .copy_from_slice(&id.to_le_bytes());
+    }
+    Ok(out)
+}
+
 /// Sets boolean fields located by KV3 path, in place, on a byte-faithful
 /// uncompressed re-wrap of `block` (preserving structure, as the engine's model
 /// loader requires). Each edit is a `(path, value)` resolving to exactly one bool.
@@ -353,6 +467,8 @@ struct PathWalk<'a> {
     hits: Vec<Hit>,
     bool_hits: Vec<BoolHit>,
     double_hits: Vec<Hit>,
+    float_hits: Vec<Hit>,
+    string_hits: Vec<Hit>,
 }
 
 impl<'a> PathWalk<'a> {
@@ -372,6 +488,8 @@ impl<'a> PathWalk<'a> {
             hits: Vec::new(),
             bool_hits: Vec::new(),
             double_hits: Vec::new(),
+            float_hits: Vec::new(),
+            string_hits: Vec::new(),
         })
     }
 
@@ -458,6 +576,32 @@ impl<'a> PathWalk<'a> {
         }
     }
 
+    /// Records the current real `FLOAT` (b4, 4 bytes) as a hit if its path
+    /// matches a target.
+    fn record_float(&mut self) {
+        let offset = self.main[B4].at();
+        if let Some(edit) = self.targets.iter().position(|t| self.path.as_slice() == *t) {
+            self.float_hits.push(Hit {
+                edit,
+                offset,
+                datatype: node::FLOAT,
+            });
+        }
+    }
+
+    /// Records the current `STRING` id (b4, 4 bytes) as a hit if its path matches
+    /// a target.
+    fn record_string(&mut self) {
+        let offset = self.main[B4].at();
+        if let Some(edit) = self.targets.iter().position(|t| self.path.as_slice() == *t) {
+            self.string_hits.push(Hit {
+                edit,
+                offset,
+                datatype: node::STRING,
+            });
+        }
+    }
+
     /// Records the current scalar as a hit if its path matches a target.
     fn record(&mut self, lane: usize, datatype: u8) {
         let offset = self.main[lane].at();
@@ -481,9 +625,14 @@ impl<'a> PathWalk<'a> {
                 self.record(B4, datatype);
                 self.main[B4].pos += 4;
             }
-            // FLOAT (a b4 value) and STRING (a b4 string id) advance b4 but are
-            // never settable integer targets, so neither records.
-            FLOAT | STRING => self.main[B4].pos += 4,
+            FLOAT => {
+                self.record_float();
+                self.main[B4].pos += 4;
+            }
+            STRING => {
+                self.record_string();
+                self.main[B4].pos += 4;
+            }
             INT64 | UINT64 => {
                 self.record(B8, datatype);
                 self.main[B8].pos += 8;

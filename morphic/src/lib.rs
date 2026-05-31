@@ -132,3 +132,31 @@ pub fn patch_kv3_resource_doubles(
     let new_data = kv3::set_doubles(data, edits)?;
     resource.rebuild_with_data(&new_data)
 }
+
+/// Patch `FLOAT` (f32) fields of a resource's KV3 `DATA` block in place by path,
+/// preserving every other byte. This is the particle-safe path for probing
+/// existing brightness/radius/lifetime-style controls without a lossy full
+/// particle re-encode.
+pub fn patch_kv3_resource_floats(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, f32)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_floats(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
+
+/// Patch `STRING` fields of a resource's KV3 `DATA` block in place by path by
+/// redirecting the field to an already-interned string table value. This does not
+/// add strings or change the KV3 structure, so it is suitable for conservative
+/// enum probes such as existing particle input modes/types.
+pub fn patch_kv3_resource_strings(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, String)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_strings(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
