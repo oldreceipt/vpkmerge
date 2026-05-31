@@ -214,6 +214,162 @@ async function pickVpkManually() {
 const fileCount = computed(() =>
   state.value.kind === 'ready' ? state.value.fileCount : 0,
 );
+
+// --- Contextual recolor of the selected entry ---------------------------
+// A .vtex_c gets a hue/sat/brightness recolor with a live thumbnail; a
+// .vmdl_c gets its color-buffer list + a recolor-to-addon action. Both pack a
+// standalone addon VPK that overrides the entry in place.
+const addonOut = ref('');
+const buildBusy = ref(false);
+const buildStatus = ref({ text: '', kind: '' });
+const addonResult = ref(null);
+
+const hue = ref(0);
+const saturation = ref(1.0);
+const brightness = ref(1.0);
+
+const texPreview = ref({ state: 'idle' }); // idle | loading | ok | error
+const modelBuffers = ref(null);            // null | [] | [...] | { error }
+
+function isModelPath(path) {
+  return typeof path === 'string' && path.toLowerCase().endsWith('.vmdl_c');
+}
+const isRecolorableTexture = computed(() => isPreviewable(selected.value));
+const isRecolorableModel = computed(() => isModelPath(selected.value));
+
+function setBuildStatus(text, kind = '') {
+  buildStatus.value = { text, kind };
+}
+
+async function ensureAddonOut() {
+  if (addonOut.value) return;
+  try { addonOut.value = (await invoke('default_addon_output_path')) || ''; }
+  catch { /* noop */ }
+}
+async function pickAddonOut() {
+  try { const p = await invoke('pick_output_path'); if (p) addonOut.value = p; }
+  catch (e) { setBuildStatus(`Picker failed: ${e}`, 'error'); }
+}
+async function nextPak() {
+  try { const p = await invoke('default_addon_output_path'); if (p) addonOut.value = p; }
+  catch (e) { setBuildStatus(`Could not resolve addon path: ${e}`, 'error'); }
+}
+
+let texTimer = null;
+function scheduleTexPreview() {
+  if (texTimer) clearTimeout(texTimer);
+  if (!isRecolorableTexture.value || state.value.kind !== 'ready') {
+    texPreview.value = { state: 'idle' };
+    return;
+  }
+  texPreview.value = { state: 'loading' };
+  const path = selected.value;
+  const vpkPath = state.value.vpkPath;
+  texTimer = setTimeout(async () => {
+    try {
+      const url = await invoke('preview_texture_recolor', {
+        vpkPath,
+        entry: path,
+        hue: Number(hue.value),
+        saturation: Number(saturation.value),
+        brightness: Number(brightness.value),
+        maxDim: 256,
+      });
+      if (selected.value !== path) return;
+      texPreview.value = { state: 'ok', url };
+    } catch (e) {
+      if (selected.value !== path) return;
+      texPreview.value = { state: 'error', message: String(e) };
+    }
+  }, 250);
+}
+
+async function loadModelBuffers(path) {
+  modelBuffers.value = null;
+  if (state.value.kind !== 'ready') return;
+  try {
+    const list = await invoke('list_model_colors', {
+      vpkPath: state.value.vpkPath,
+      entry: path,
+      basePath: null,
+    });
+    if (selected.value !== path) return;
+    modelBuffers.value = list;
+  } catch (e) {
+    if (selected.value !== path) return;
+    modelBuffers.value = { error: String(e) };
+  }
+}
+
+async function saveTextureAddon() {
+  if (state.value.kind !== 'ready') return;
+  await ensureAddonOut();
+  if (!addonOut.value) { setBuildStatus('Set an output path', 'error'); return; }
+  buildBusy.value = true;
+  addonResult.value = null;
+  setBuildStatus('Baking addon...');
+  try {
+    const r = await invoke('recolor_texture_to_addon', {
+      vpkPath: state.value.vpkPath,
+      entry: selected.value,
+      hue: Number(hue.value),
+      saturation: Number(saturation.value),
+      brightness: Number(brightness.value),
+      outputPath: addonOut.value,
+    });
+    addonResult.value = r;
+    setBuildStatus(r.summary, 'success');
+  } catch (e) {
+    setBuildStatus(`Build failed: ${e}`, 'error');
+  } finally {
+    buildBusy.value = false;
+  }
+}
+
+async function saveModelAddon() {
+  if (state.value.kind !== 'ready') return;
+  await ensureAddonOut();
+  if (!addonOut.value) { setBuildStatus('Set an output path', 'error'); return; }
+  buildBusy.value = true;
+  addonResult.value = null;
+  setBuildStatus('Baking addon...');
+  try {
+    const r = await invoke('recolor_model_to_addon', {
+      vpkPath: state.value.vpkPath,
+      entry: selected.value,
+      basePath: null,
+      hue: Number(hue.value),
+      saturation: Number(saturation.value),
+      brightness: Number(brightness.value),
+      outputPath: addonOut.value,
+    });
+    addonResult.value = r;
+    setBuildStatus(r.summary, 'success');
+  } catch (e) {
+    setBuildStatus(`Build failed: ${e}`, 'error');
+  } finally {
+    buildBusy.value = false;
+  }
+}
+
+async function revealAddon() {
+  if (!addonResult.value?.output_path) return;
+  try { await invoke('reveal_in_folder', { path: addonResult.value.output_path }); }
+  catch { /* noop */ }
+}
+
+// Reset recolor state on selection change; preload model color buffers and the
+// live texture thumbnail. (The original preview watcher above is untouched.)
+watch(selected, (path) => {
+  addonResult.value = null;
+  setBuildStatus('');
+  modelBuffers.value = null;
+  texPreview.value = { state: 'idle' };
+  if (isModelPath(path)) loadModelBuffers(path);
+  scheduleTexPreview();
+});
+watch([hue, saturation, brightness], scheduleTexPreview);
+onMounted(ensureAddonOut);
 </script>
 
 <template>
@@ -366,6 +522,77 @@ const fileCount = computed(() =>
                 class="max-w-full max-h-full object-contain"
                 style="image-rendering: pixelated;"
               />
+            </div>
+
+            <!-- Contextual recolor panel: .vtex_c or .vmdl_c -->
+            <div
+              v-if="isRecolorableTexture || isRecolorableModel"
+              class="border-t border-surface-200 dark:border-surface-800 p-4 space-y-2.5 shrink-0"
+            >
+              <div class="flex items-baseline justify-between">
+                <h4 class="text-[10px] uppercase tracking-[0.18em] text-ink-500 dark:text-ink-300 font-medium">Recolor</h4>
+                <span
+                  v-if="isRecolorableModel && Array.isArray(modelBuffers)"
+                  class="text-[10px] italic font-serif text-ink-500 dark:text-ink-300"
+                >{{ modelBuffers.length }} color buffer{{ modelBuffers.length === 1 ? '' : 's' }}</span>
+              </div>
+
+              <p
+                v-if="isRecolorableModel && Array.isArray(modelBuffers) && modelBuffers.length === 0"
+                class="text-[11px] font-serif italic text-ink-500 dark:text-ink-300"
+              >No baked vertex colors in this model (nothing to recolor).</p>
+              <p
+                v-else-if="isRecolorableModel && modelBuffers === null"
+                class="text-[11px] font-serif italic text-ink-500 dark:text-ink-300"
+              >Reading model...</p>
+              <p
+                v-else-if="isRecolorableModel && modelBuffers && modelBuffers.error"
+                class="text-[11px] font-mono text-red-700 dark:text-red-400 break-all"
+              >{{ modelBuffers.error }}</p>
+
+              <template v-else>
+                <div class="flex items-center gap-3">
+                  <input v-model.number="hue" type="range" min="0" max="360" step="1" class="flex-1 accent-accent-600" aria-label="Hue" />
+                  <span class="font-mono text-[11px] text-ink-800 dark:text-ink-100 w-10 text-right">{{ Math.round(hue) }}&deg;</span>
+                  <span
+                    v-if="isRecolorableTexture"
+                    class="w-12 h-12 shrink-0 rounded border border-surface-200 dark:border-surface-800 bg-surface-100/60 dark:bg-surface-900/60 overflow-hidden flex items-center justify-center text-[9px] text-ink-500 dark:text-ink-300"
+                    title="recolored preview"
+                  >
+                    <img v-if="texPreview.state === 'ok'" :src="texPreview.url" class="w-full h-full object-contain" style="image-rendering: pixelated;" alt="recolored preview" />
+                    <span v-else-if="texPreview.state === 'loading'" class="animate-pulse">...</span>
+                    <span v-else-if="texPreview.state === 'error'">?</span>
+                  </span>
+                </div>
+                <div class="flex items-center gap-2 text-[11px]">
+                  <label class="font-serif italic text-ink-500 dark:text-ink-300">sat</label>
+                  <input v-model.number="saturation" type="number" min="0" max="4" step="0.05" class="w-16 bg-transparent border border-surface-300 dark:border-surface-700 rounded px-1.5 py-0.5 font-mono text-ink-800 dark:text-ink-100 focus:outline-none focus:border-accent-500" />
+                  <label class="font-serif italic text-ink-500 dark:text-ink-300">bright</label>
+                  <input v-model.number="brightness" type="number" min="0" max="4" step="0.05" class="w-16 bg-transparent border border-surface-300 dark:border-surface-700 rounded px-1.5 py-0.5 font-mono text-ink-800 dark:text-ink-100 focus:outline-none focus:border-accent-500" />
+                </div>
+                <div class="flex gap-2 items-center">
+                  <input v-model="addonOut" type="text" spellcheck="false" placeholder="addon output path" class="flex-1 min-w-0 bg-transparent border border-surface-300 dark:border-surface-700 rounded-md px-2.5 py-1.5 text-[11px] font-mono text-ink-800 dark:text-ink-100 placeholder:italic placeholder:font-serif placeholder:text-ink-500 dark:placeholder:text-ink-300 focus:outline-none focus:border-accent-500" />
+                  <button class="btn" type="button" @click="pickAddonOut">Browse</button>
+                  <button class="btn" type="button" @click="nextPak">Next pak</button>
+                </div>
+                <div class="flex items-center gap-2 min-h-[1.1rem]" aria-live="polite">
+                  <span
+                    class="text-[11px] font-serif italic truncate flex-1"
+                    :class="{
+                      'text-ink-500 dark:text-ink-300': !buildStatus.kind,
+                      'text-green-700 dark:text-green-400 not-italic font-sans': buildStatus.kind === 'success',
+                      'text-red-700 dark:text-red-400 not-italic font-sans': buildStatus.kind === 'error',
+                    }"
+                  >{{ buildStatus.text }}</span>
+                  <button v-if="addonResult" type="button" class="text-[11px] italic font-serif text-accent-700 dark:text-accent-300 hover:underline focus-visible:outline-none focus-visible:underline rounded" @click="revealAddon">reveal</button>
+                </div>
+                <button
+                  type="button"
+                  :disabled="buildBusy"
+                  class="btn w-full bg-accent-600 hover:!bg-accent-700 text-surface-0 font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                  @click="isRecolorableTexture ? saveTextureAddon() : saveModelAddon()"
+                >Save as addon VPK</button>
+              </template>
             </div>
           </div>
         </div>

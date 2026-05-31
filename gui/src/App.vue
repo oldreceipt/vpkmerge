@@ -6,7 +6,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSettings } from './composables/useSettings.js';
 import { useLogs } from './composables/useLogs.js';
 import BrowseTab from './components/BrowseTab.vue';
-import PrismTab from './components/PrismTab.vue';
+import RecolorTab from './components/RecolorTab.vue';
+import SoundsTab from './components/SoundsTab.vue';
 
 const { settings, setTheme, setDoodleTheme, setCandleEnabled, THEMES, DOODLE_THEMES } = useSettings();
 const { log: logInfo, warn: logWarn, error: logError, formatExport: formatLogsExport } = useLogs();
@@ -44,8 +45,9 @@ const overrides = ref(new Map());
 const activeTab = ref('merge');
 const TABS = [
   { key: 'merge', label: 'Merge' },
-  { key: 'prism', label: 'Prism' },
+  { key: 'recolor', label: 'Recolor' },
   { key: 'browse', label: 'Browse' },
+  { key: 'sounds', label: 'Sounds' },
 ];
 
 // Texture preview cache. Keyed by `${vpkPath}::${entry}`. Values are one of:
@@ -423,7 +425,7 @@ watch([showConflictsModal, showMergedModal, showSettingsModal], async ([cv, mv, 
 let unlistenResize = null;
 let unlistenDragDrop = null;
 onMounted(async () => {
-  logInfo(`vpkmerge 0.2.0 session start; theme=${settings.theme}, doodle=${settings.doodleTheme}, candle=${settings.candleEnabled}`);
+  logInfo(`vpkmerge 0.6.0 session start; theme=${settings.theme}, doodle=${settings.doodleTheme}, candle=${settings.candleEnabled}`);
   await refreshMaximized();
   unlistenResize = await getCurrentWindow().onResized(() => refreshMaximized());
   unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
@@ -739,8 +741,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+      <RecolorTab v-else-if="activeTab === 'recolor'" class="flex-1 min-h-0" />
       <BrowseTab v-else-if="activeTab === 'browse'" class="flex-1 min-h-0" />
-      <PrismTab v-else-if="activeTab === 'prism'" class="flex-1 min-h-0" />
+      <SoundsTab v-else-if="activeTab === 'sounds'" class="flex-1 min-h-0" />
       </div>
 
       <!-- Warm vignette: a soft candle-light glow. Toggled by html[data-candle="on"]. -->

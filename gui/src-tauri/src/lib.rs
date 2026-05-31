@@ -290,27 +290,190 @@ fn hero_label(codename: &str) -> &str {
     }
 }
 
+/// Trims an optional `--base`-style path: blank/whitespace-only -> `None`.
+fn opt_path(s: Option<String>) -> Option<std::path::PathBuf> {
+    s.filter(|p| !p.trim().is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command: one arg per UI control.
 async fn build_hero_prism_vpk(
     vpk_path: String,
     base_path: Option<String>,
     hero: String,
     animated: bool,
+    hue_offset: f64,
+    saturation: f64,
+    brightness: f64,
     output_path: String,
 ) -> Result<HeroPrismReport, String> {
-    let base = base_path
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(std::path::PathBuf::from);
-    let report = vpkmerge_core::prism_recolor_hero_to_addon(
+    let base = opt_path(base_path);
+    let tuning = vpkmerge_core::PrismTuning {
+        hue_offset,
+        saturation,
+        brightness,
+    };
+    let report = vpkmerge_core::prism_recolor_hero_to_addon_tuned(
         &vpk_path,
         base.as_deref(),
         &hero,
         animated,
+        tuning,
         &output_path,
     )
     .map_err(|e| format!("{e:#}"))?;
     Ok(HeroPrismReport::from_core(report, output_path))
+}
+
+#[derive(Serialize)]
+struct HeroRecolorReport {
+    codename: String,
+    hue: f64,
+    saturation: f64,
+    value: f64,
+    particles_recolored: usize,
+    particles_no_color: usize,
+    particles_unpatchable: usize,
+    textures_recolored: usize,
+    materials_recolored: usize,
+    materials_unpatchable: usize,
+    models_recolored: usize,
+    model_vertices: usize,
+    total_entries: usize,
+    output_path: String,
+}
+
+impl HeroRecolorReport {
+    fn from_core(r: vpkmerge_core::HeroRecolorReport, output_path: String) -> Self {
+        Self {
+            codename: r.codename,
+            hue: r.hue,
+            saturation: r.saturation,
+            value: r.value,
+            particles_recolored: r.particles_recolored,
+            particles_no_color: r.particles_no_color,
+            particles_unpatchable: r.particles_unpatchable,
+            textures_recolored: r.textures_recolored,
+            materials_recolored: r.materials_recolored,
+            materials_unpatchable: r.materials_unpatchable,
+            models_recolored: r.models_recolored,
+            model_vertices: r.model_vertices,
+            total_entries: r.total_entries,
+            output_path,
+        }
+    }
+}
+
+/// Recolor a hero's whole ability-VFX set to one absolute hue (the solid-color
+/// sibling of the prism). `brightness` maps to HSV value.
+#[tauri::command]
+async fn recolor_hero_vpk(
+    vpk_path: String,
+    base_path: Option<String>,
+    hero: String,
+    hue: f64,
+    saturation: f64,
+    brightness: f64,
+    output_path: String,
+) -> Result<HeroRecolorReport, String> {
+    let base = opt_path(base_path);
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
+    let report =
+        vpkmerge_core::recolor_hero_to_addon(&vpk_path, base.as_deref(), &hero, recolor, &output_path)
+            .map_err(|e| format!("{e:#}"))?;
+    Ok(HeroRecolorReport::from_core(report, output_path))
+}
+
+/// Fast solid-hue swatch of the hero recipe's representative texture (no bake).
+/// Errors for particle-only heroes (no preview texture); the caller hides the
+/// swatch up front using `HeroOption.has_preview`.
+#[tauri::command]
+async fn recolor_hero_preview(
+    vpk_path: String,
+    base_path: Option<String>,
+    hero: String,
+    hue: f64,
+    saturation: f64,
+    brightness: f64,
+) -> Result<String, String> {
+    let base = opt_path(base_path);
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
+    let png = vpkmerge_core::recolor_hero_preview_png(&vpk_path, base.as_deref(), &hero, recolor)
+        .map_err(|e| format!("{e:#}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    Ok(format!("data:image/png;base64,{b64}"))
+}
+
+#[derive(Serialize)]
+struct HeroRainbowReport {
+    codename: String,
+    particles_total: usize,
+    particles_patchable: usize,
+    particles_color_free: usize,
+    particles_unpatchable: usize,
+    visible_color_fields: usize,
+    gradient_fields: usize,
+    multi_stop_gradient_fields: usize,
+    age_gradient_fields: usize,
+    looped_gradient_fields: usize,
+    random_color_initializers: usize,
+    color_interpolate_ops: usize,
+    texture_entries: usize,
+    material_entries: usize,
+    model_entries: usize,
+    /// Suitability tier, matching the CLI `rainbow-scan` (`looped` > `animated`
+    /// > `strong` > `gradient` > `static`, or `none`).
+    mode: String,
+}
+
+/// Mirrors the CLI's `rainbow_scan_mode` so the GUI shows the same verdict.
+fn rainbow_mode(r: &vpkmerge_core::HeroRainbowSupportReport) -> &'static str {
+    if r.particles_patchable == 0 {
+        "none"
+    } else if r.looped_gradient_fields > 0 {
+        "looped"
+    } else if r.collection_age_gradient_fields + r.particle_age_gradient_fields > 0 {
+        "animated"
+    } else if r.multi_stop_gradient_fields >= 12 {
+        "strong"
+    } else if r.gradient_fields > 0 {
+        "gradient"
+    } else {
+        "static"
+    }
+}
+
+/// Scan one hero recipe for rainbow/animated-rainbow suitability (the GUI's
+/// equivalent of `vpkmerge rainbow-scan --hero <CODENAME>`).
+#[tauri::command]
+async fn scan_hero_rainbow(
+    vpk_path: String,
+    base_path: Option<String>,
+    hero: String,
+) -> Result<HeroRainbowReport, String> {
+    let base = opt_path(base_path);
+    let r = vpkmerge_core::scan_hero_rainbow_support(&vpk_path, base.as_deref(), &hero)
+        .map_err(|e| format!("{e:#}"))?;
+    let mode = rainbow_mode(&r).to_string();
+    Ok(HeroRainbowReport {
+        codename: r.codename,
+        particles_total: r.particles_total,
+        particles_patchable: r.particles_patchable,
+        particles_color_free: r.particles_color_free,
+        particles_unpatchable: r.particles_unpatchable + r.particles_decode_failed,
+        visible_color_fields: r.visible_color_fields,
+        gradient_fields: r.gradient_fields,
+        multi_stop_gradient_fields: r.multi_stop_gradient_fields,
+        age_gradient_fields: r.collection_age_gradient_fields + r.particle_age_gradient_fields,
+        looped_gradient_fields: r.looped_gradient_fields,
+        random_color_initializers: r.random_color_initializers,
+        color_interpolate_ops: r.color_interpolate_ops,
+        texture_entries: r.texture_entries,
+        material_entries: r.material_entries,
+        model_entries: r.model_entries,
+        mode,
+    })
 }
 
 #[derive(Serialize)]
@@ -332,6 +495,37 @@ struct TexturePreview {
     /// Number of mip levels the source texture has. Callers may pass `mip`
     /// in `0..mip_count` to see lower-detail versions.
     mip_count: u8,
+}
+
+/// A decoded `morphic::Image` -> a (downscaled) PNG data URL plus its displayed
+/// and original dimensions. Shared by `preview_texture` and the live
+/// `preview_texture_recolor`. HDR (f16) is tone-mapped via
+/// [`tonemap_rgba_f16_to_u8`]; LDR passes straight through.
+fn image_to_png_data_url(
+    img: morphic::Image,
+    cap: u32,
+) -> Result<(String, u32, u32, u32, u32), String> {
+    let (orig_w, orig_h) = (img.width, img.height);
+    let raw_rgba = match img.data {
+        morphic::ImageData::Rgba8(buf) => buf,
+        morphic::ImageData::Rgba16F(buf) => tonemap_rgba_f16_to_u8(&buf),
+    };
+    let buffer: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+        image::ImageBuffer::from_raw(orig_w, orig_h, raw_rgba)
+            .ok_or_else(|| "decoded buffer size mismatch".to_string())?;
+    let dyn_img = image::DynamicImage::ImageRgba8(buffer);
+    let downscaled = if orig_w > cap || orig_h > cap {
+        dyn_img.resize(cap, cap, image::imageops::FilterType::Triangle)
+    } else {
+        dyn_img
+    };
+    let (w, h) = (downscaled.width(), downscaled.height());
+    let mut png_bytes: Vec<u8> = Vec::new();
+    downscaled
+        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("png encode: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok((format!("data:image/png;base64,{b64}"), w, h, orig_w, orig_h))
 }
 
 #[tauri::command]
@@ -369,31 +563,9 @@ async fn preview_texture(
         Err(e) => return Err(format!("decode: {e}")),
     };
 
-    let raw_rgba = match img.data {
-        morphic::ImageData::Rgba8(buf) => buf,
-        morphic::ImageData::Rgba16F(buf) => tonemap_rgba_f16_to_u8(&buf),
-    };
-    let buffer: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
-        image::ImageBuffer::from_raw(img.width, img.height, raw_rgba)
-            .ok_or_else(|| "decoded buffer size mismatch".to_string())?;
-
-    let dyn_img = image::DynamicImage::ImageRgba8(buffer);
-    let (orig_w, orig_h) = (img.width, img.height);
-    let downscaled = if orig_w > cap || orig_h > cap {
-        dyn_img.resize(cap, cap, image::imageops::FilterType::Triangle)
-    } else {
-        dyn_img
-    };
-
-    let (w, h) = (downscaled.width(), downscaled.height());
-    let mut png_bytes: Vec<u8> = Vec::new();
-    downscaled
-        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-        .map_err(|e| format!("png encode: {e}"))?;
-
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let (data_url, w, h, orig_w, orig_h) = image_to_png_data_url(img, cap)?;
     Ok(TexturePreview {
-        data_url: format!("data:image/png;base64,{b64}"),
+        data_url,
         width: w,
         height: h,
         orig_width: orig_w,
@@ -489,6 +661,207 @@ mod tests {
     }
 }
 
+/// Generic result for the single-asset addon bakes (texture / model /
+/// soundevents): where it was written and a one-line human summary.
+#[derive(Serialize)]
+struct AddonResult {
+    output_path: String,
+    entries: usize,
+    summary: String,
+}
+
+/// Live preview of a `.vtex_c` recolor (the design-intent color, before the
+/// lossy re-encode). Reads the entry, recolors the top mip in memory, returns a
+/// downscaled PNG data URL. `brightness` maps to HSV value.
+#[tauri::command]
+async fn preview_texture_recolor(
+    vpk_path: String,
+    entry: String,
+    hue: f64,
+    saturation: f64,
+    brightness: f64,
+    max_dim: Option<u32>,
+) -> Result<String, String> {
+    let cap = max_dim.unwrap_or(256).max(16);
+    let bytes = vpkmerge_core::read_vpk_entry(&vpk_path, &entry).map_err(|e| format!("{e:#}"))?;
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
+    let img =
+        vpkmerge_core::recolor_texture_image(&bytes, recolor).map_err(|e| format!("{e:#}"))?;
+    let (data_url, ..) = image_to_png_data_url(img, cap)?;
+    Ok(data_url)
+}
+
+/// Recolor a single `.vtex_c` and pack it into an addon VPK at its own entry
+/// path, overriding the base texture in place.
+#[tauri::command]
+async fn recolor_texture_to_addon(
+    vpk_path: String,
+    entry: String,
+    hue: f64,
+    saturation: f64,
+    brightness: f64,
+    output_path: String,
+) -> Result<AddonResult, String> {
+    let bytes = vpkmerge_core::read_vpk_entry(&vpk_path, &entry).map_err(|e| format!("{e:#}"))?;
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
+    let recolored =
+        vpkmerge_core::recolor_texture_hue(&bytes, recolor).map_err(|e| format!("{e:#}"))?;
+    vpkmerge_core::pack(&[(entry.as_str(), recolored.as_slice())], &output_path)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(AddonResult {
+        output_path,
+        entries: 1,
+        summary: format!("Recolored {entry} (overrides the base texture in place)"),
+    })
+}
+
+#[derive(Serialize)]
+struct ModelColorBuffer {
+    mesh_name: String,
+    block_index: usize,
+    vertex_count: usize,
+}
+
+/// List a model's color-bearing vertex buffers (the recolor candidates).
+#[tauri::command]
+async fn list_model_colors(
+    vpk_path: String,
+    entry: String,
+    base_path: Option<String>,
+) -> Result<Vec<ModelColorBuffer>, String> {
+    let base = opt_path(base_path);
+    let targets = vpkmerge_core::model_vertex_targets(&vpk_path, &entry, base.as_deref())
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(targets
+        .into_iter()
+        .filter(|t| t.has_color)
+        .map(|t| ModelColorBuffer {
+            mesh_name: t.mesh_name,
+            block_index: t.block_index,
+            vertex_count: t.vertex_count,
+        })
+        .collect())
+}
+
+/// Recolor one model's baked per-vertex colors and pack it into an addon VPK.
+#[tauri::command]
+async fn recolor_model_to_addon(
+    vpk_path: String,
+    entry: String,
+    base_path: Option<String>,
+    hue: f64,
+    saturation: f64,
+    brightness: f64,
+    output_path: String,
+) -> Result<AddonResult, String> {
+    let base = opt_path(base_path);
+    let recolor = vpkmerge_core::Recolor::new(hue, saturation, brightness);
+    let entries = vec![entry];
+    let report =
+        vpkmerge_core::recolor_models_to_addon(&vpk_path, &entries, base.as_deref(), recolor, &output_path)
+            .map_err(|e| format!("{e:#}"))?;
+    let total_verts: usize = report.iter().map(|r| r.stats.vertices).sum();
+    Ok(AddonResult {
+        output_path,
+        entries: report.len(),
+        summary: format!("{} model(s) recolored, {total_verts} vertices", report.len()),
+    })
+}
+
+#[derive(Serialize)]
+struct EventSummaryDto {
+    name: String,
+    base: Option<String>,
+    vsnd_count: usize,
+    volume: Option<f64>,
+}
+
+/// Load a `.vsndevts_c` (loose file or VPK entry) and return its event summaries.
+#[tauri::command]
+async fn load_soundevents(
+    input: String,
+    from_vpk: Option<String>,
+) -> Result<Vec<EventSummaryDto>, String> {
+    let from_vpk = from_vpk.filter(|s| !s.trim().is_empty());
+    let se = match &from_vpk {
+        Some(vpk) => vpkmerge_core::SoundEvents::from_vpk(vpk, &input),
+        None => vpkmerge_core::SoundEvents::from_file(&input),
+    }
+    .map_err(|e| format!("{e:#}"))?;
+    Ok(se
+        .summaries()
+        .into_iter()
+        .map(|s| EventSummaryDto {
+            name: s.name,
+            base: s.base,
+            vsnd_count: s.vsnd_count,
+            volume: s.volume,
+        })
+        .collect())
+}
+
+#[derive(serde::Deserialize)]
+struct SoundFieldEdit {
+    event: String,
+    field: String,
+    value: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct SoundSwapEdit {
+    from: String,
+    to: String,
+}
+
+/// Apply the full edit batch (clip swaps + numeric field sets) to a
+/// soundevents file, re-encode it uncompressed, and pack it into an addon VPK.
+/// Stateless: the whole edit set arrives in one call.
+#[tauri::command]
+async fn build_soundevents_vpk(
+    input: String,
+    from_vpk: Option<String>,
+    vpk_entry: Option<String>,
+    sets: Vec<SoundFieldEdit>,
+    swaps: Vec<SoundSwapEdit>,
+    output_path: String,
+) -> Result<AddonResult, String> {
+    let from_vpk = from_vpk.filter(|s| !s.trim().is_empty());
+    let mut se = match &from_vpk {
+        Some(vpk) => vpkmerge_core::SoundEvents::from_vpk(vpk, &input),
+        None => vpkmerge_core::SoundEvents::from_file(&input),
+    }
+    .map_err(|e| format!("{e:#}"))?;
+
+    for swap in &swaps {
+        se.swap_vsnd(&swap.from, &swap.to);
+    }
+    for set in &sets {
+        if !se.set_event_field(&set.event, &set.field, set.value) {
+            return Err(format!("no event named {:?}", set.event));
+        }
+    }
+
+    let entry = match (vpk_entry.filter(|s| !s.trim().is_empty()), &from_vpk) {
+        (Some(e), _) => e,
+        (None, Some(_)) => input.clone(),
+        (None, None) => {
+            return Err("provide an entry path for a loose-file input".into());
+        }
+    };
+    let bytes = se.encode().map_err(|e| format!("{e:#}"))?;
+    vpkmerge_core::pack(&[(entry.as_str(), bytes.as_slice())], &output_path)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(AddonResult {
+        output_path,
+        entries: 1,
+        summary: format!(
+            "{entry}: {} field edit(s), {} swap(s)",
+            sets.len(),
+            swaps.len()
+        ),
+    })
+}
+
 #[tauri::command]
 async fn save_text_file(
     app: AppHandle,
@@ -549,7 +922,16 @@ pub fn run() {
             default_deadlock_vpk_path,
             default_addon_output_path,
             supported_hero_options,
-            build_hero_prism_vpk
+            build_hero_prism_vpk,
+            recolor_hero_vpk,
+            recolor_hero_preview,
+            scan_hero_rainbow,
+            preview_texture_recolor,
+            recolor_texture_to_addon,
+            list_model_colors,
+            recolor_model_to_addon,
+            load_soundevents,
+            build_soundevents_vpk
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
