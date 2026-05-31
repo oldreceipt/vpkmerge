@@ -39,10 +39,10 @@ pub use recolor::{
 pub mod hero_recolor;
 pub use hero_recolor::{
     insert_color_cycle_operator, is_tiling_particle_texture, loop_animate_particle_bytes,
-    non_tiling_texture_inputs, pinned_hero_codenames, prism_recolor_hero_to_addon, recipe_for,
-    recolor_hero_preview_png, recolor_hero_to_addon, recolor_particle_bytes,
-    scan_hero_rainbow_support, HeroPrismRecolorReport, HeroRainbowSupportReport, HeroRecolorRecipe,
-    HeroRecolorReport,
+    non_tiling_texture_inputs, pinned_hero_codenames, prism_recolor_hero_to_addon,
+    prism_recolor_hero_to_addon_tuned, recipe_for, recolor_hero_preview_png, recolor_hero_to_addon,
+    recolor_particle_bytes, scan_hero_rainbow_support, HeroPrismRecolorReport,
+    HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport, PrismTuning,
 };
 
 #[derive(Debug, Clone)]

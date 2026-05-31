@@ -253,6 +253,27 @@ struct PrismCmd {
     /// gradients already loop). Byte-faithful and best-effort per file.
     #[arg(long)]
     animated: bool,
+
+    /// Rotate the whole rainbow's start hue by this many degrees. The per-effect
+    /// spectrum spread is unchanged; this just shifts where it begins, so the same
+    /// effect reads (say) blue->violet instead of red->orange. Default 0 (no shift).
+    #[arg(
+        long = "hue-offset",
+        value_name = "DEG",
+        default_value_t = 0.0,
+        allow_hyphen_values = true
+    )]
+    hue_offset: f64,
+
+    /// Saturation scale on the spectrum (1.0 = engine default; <1 pastels it, >1 is
+    /// capped at full saturation).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    saturation: f64,
+
+    /// Brightness (HSV value) scale on the spectrum (1.0 = engine default; >1
+    /// lightens, <1 darkens).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    brightness: f64,
 }
 
 #[derive(Args)]
@@ -1518,11 +1539,17 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
 }
 
 fn run_prism(args: &PrismCmd) -> Result<()> {
-    let report = vpkmerge_core::prism_recolor_hero_to_addon(
+    let tuning = vpkmerge_core::PrismTuning {
+        hue_offset: args.hue_offset,
+        saturation: args.saturation,
+        brightness: args.brightness,
+    };
+    let report = vpkmerge_core::prism_recolor_hero_to_addon_tuned(
         &args.vpk,
         args.base.as_deref(),
         &args.hero,
         args.animated,
+        tuning,
         &args.encode_vpk,
     )
     .with_context(|| format!("prism-recoloring hero {}", args.hero))?;
