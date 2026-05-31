@@ -32,6 +32,13 @@ use morphic::kv3::{Seg, Value};
 
 use crate::recolor::{set_color, Recolor};
 
+const YAMATO_SHADOW_SHAPE_COLOR_TEXTURE: &str =
+    "models/heroes_staging/yamato_v2/materials/yamoto_shadow_shape_color_psd_fe3c64a6.vtex_c";
+const YAMATO_SHADOW_STATUS_TEXTURES: &[&str] = &[
+    "materials/particle/abilities/yamato/yamato_shadow_redemption_complete_status.vtex_c",
+    "materials/particle/abilities/yamato/yamato_shadow_redemption_nokill_status.vtex_c",
+];
+
 /// The fixed set of base-game entries that carry one hero's ability-VFX color,
 /// grouped by the recolor mechanism each needs.
 #[derive(Debug, Clone)]
@@ -215,10 +222,12 @@ fn inferno_recipe() -> HeroRecolorRecipe {
 /// Yamato: most ability/weapon VFX color lives in particle color params. Unlike
 /// the generic particle-only heroes, three status particles live under
 /// `particles/status_fx/`, and a few hero-specific textures are chromatic:
-/// a green projected blade-dash self-illum swatch plus the two shadow-redemption
-/// status maps. The other Yamato ability textures audited from `pak01` are white
-/// alpha masks or grayscale ramps, so they are left particle-tinted. The `pak01`
-/// audit patched 234 `.vpcf_c` files cleanly, with 66 color-free helpers skipped.
+/// a green projected blade-dash self-illum swatch, the two shadow-redemption
+/// status maps, plus the red shadow-form body albedo used by the model's
+/// `shadow` material group. The other Yamato ability textures audited from
+/// `pak01` are white alpha masks or grayscale ramps, so they are left
+/// particle-tinted. The `pak01` audit patched 234 `.vpcf_c` files cleanly, with
+/// 66 color-free helpers skipped.
 fn yamato_recipe() -> HeroRecolorRecipe {
     HeroRecolorRecipe {
         codename: "yamato".to_string(),
@@ -231,6 +240,7 @@ fn yamato_recipe() -> HeroRecolorRecipe {
             "materials/particle/projected/yamato_blade_dash_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
             "materials/particle/abilities/yamato/yamato_shadow_redemption_complete_status.vtex_c",
             "materials/particle/abilities/yamato/yamato_shadow_redemption_nokill_status.vtex_c",
+            YAMATO_SHADOW_SHAPE_COLOR_TEXTURE,
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -371,7 +381,8 @@ pub struct HeroPrismRecolorReport {
     pub lifted_black_gradient_fields: usize,
     /// Random min/max/fade fields spread across wider hue offsets.
     pub random_range_fields: usize,
-    /// Explicit recipe color textures recolored to deterministic spectrum hues.
+    /// Explicit recipe color textures recolored to deterministic spectrum hues
+    /// or, for animated Yamato Shadow Form, scrollable rainbow band maps.
     pub textures_recolored: usize,
     /// Explicit recipe material tint constants recolored to deterministic spectrum hues.
     pub materials_recolored: usize,
@@ -738,9 +749,9 @@ pub fn prism_recolor_hero_to_addon(
     for entry in &recipe.texture_entries {
         match read_entry(&vpks, entry) {
             Some(bytes) => {
-                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.0);
-                let new_bytes = crate::recolor::recolor_texture_hue(&bytes, recolor)
-                    .with_context(|| format!("prism-recoloring texture {entry}"))?;
+                let new_bytes =
+                    prism_recolor_texture_bytes(&recipe.codename, entry, &bytes, animated)
+                        .with_context(|| format!("prism-recoloring texture {entry}"))?;
                 packed.push((entry.clone(), new_bytes));
                 report.textures_recolored += 1;
             }
@@ -1118,6 +1129,84 @@ fn spectrum_recolor_for(codename: &str, entry: &str, offset: f64) -> Recolor {
     Recolor::new(hue, 1.0, 1.0)
 }
 
+fn prism_texture_recolor_for(codename: &str, entry: &str, offset: f64) -> Recolor {
+    if codename == "yamato" && entry == YAMATO_SHADOW_SHAPE_COLOR_TEXTURE {
+        // This full-body shadow-form albedo sits under status-effect color warp and
+        // cloak lighting. A saturated spectrum hue turns the ult body into a loud
+        // static sheet, so keep it cool and subdued while still removing the red.
+        Recolor::new(190.0, 0.45, 0.72)
+    } else {
+        spectrum_recolor_for(codename, entry, offset)
+    }
+}
+
+fn prism_recolor_texture_bytes(
+    codename: &str,
+    entry: &str,
+    bytes: &[u8],
+    animated: bool,
+) -> Result<Vec<u8>> {
+    if animated && codename == "yamato" && is_yamato_shadow_status_texture(entry) {
+        return rainbowize_yamato_shadow_status_texture(bytes);
+    }
+
+    let recolor = prism_texture_recolor_for(codename, entry, 0.0);
+    crate::recolor::recolor_texture_hue(bytes, recolor)
+}
+
+fn is_yamato_shadow_status_texture(entry: &str) -> bool {
+    YAMATO_SHADOW_STATUS_TEXTURES.contains(&entry)
+}
+
+/// Yamato Shadow Form's body overlay ignores the particle color-cycle operator in
+/// practice, but its authored status-effect detail maps visibly scroll over the
+/// model. Replacing those maps with repeated hue bands lets the existing scroll
+/// carry an animated rainbow while preserving the original texture's luminance and
+/// alpha mask.
+#[allow(clippy::cast_precision_loss)]
+fn rainbowize_yamato_shadow_status_texture(vtex_bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut image =
+        morphic::decode(vtex_bytes).context("decoding Yamato Shadow Form status texture")?;
+    let w = image.width as usize;
+    let h = image.height as usize;
+    let morphic::ImageData::Rgba8(px) = &mut image.data else {
+        anyhow::bail!("Yamato Shadow Form status rainbow supports LDR (8-bit) textures only");
+    };
+
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 4;
+            let rgb = rainbow_status_band_rgb(
+                [px[i], px[i + 1], px[i + 2]],
+                x as f64 / w as f64,
+                y as f64 / h as f64,
+            );
+            px[i] = rgb[0];
+            px[i + 1] = rgb[1];
+            px[i + 2] = rgb[2];
+            // Alpha is the status-effect mask and must stay authored.
+        }
+    }
+
+    morphic::replace_mip_chain(vtex_bytes, &image)
+        .context("re-encoding Yamato Shadow Form rainbow status texture")
+}
+
+fn rainbow_status_band_rgb(rgb: [u8; 3], u: f64, v: f64) -> [u8; 3] {
+    let value = (f64::from(rgb[0].max(rgb[1]).max(rgb[2])) / 255.0)
+        .powf(0.85)
+        .clamp(0.0, 1.0);
+    // Eight diagonal hue repeats across the top mip. The status effect's authored
+    // UV scroll moves these bands over the model surface in-game.
+    let band = (u * 8.0 + v * 3.0).fract();
+    let out = hsv_to_rgb_i64(band * 360.0, 1.0, value);
+    [
+        clamp_channel(out[0]),
+        clamp_channel(out[1]),
+        clamp_channel(out[2]),
+    ]
+}
+
 // Exact float comparisons are intentional: `max` is built from `r`/`g`/`b` by
 // `.max()`, so `max == r` etc. are exact-by-construction channel selects.
 #[allow(clippy::float_cmp, clippy::many_single_char_names)]
@@ -1419,6 +1508,315 @@ fn collect_prism_edits(
         }
         _ => {}
     }
+}
+
+/// Make a particle's prism-recolored color gradients *cycle* over time, returning
+/// the new bytes or `None` if the particle has no loopable color gradient.
+///
+/// A Source 2 color gradient (`m_Gradient/m_Stops`, which the prism pass rewrote into
+/// a spectrum) is sampled by a float driver (`m_FloatInterp`). When that driver reads
+/// `PF_TYPE_COLLECTION_AGE` (the whole effect's age) in `PF_INPUT_MODE_LOOPED`, the
+/// gradient lookup wraps over the driver's input range every cycle, so the spectrum
+/// scrolls continuously: a true animated rainbow, not the one-shot sweep that a
+/// clamped driver gives. This finds every gradient driven by an age input and flips
+/// its driver to looped collection-age (see [`collect_loop_edits`]).
+///
+/// Done with [`morphic::patch_kv3_resource_strings_adding`], which *adds* the
+/// `PF_INPUT_MODE_LOOPED` / `PF_TYPE_COLLECTION_AGE` enum strings to the KV3 string
+/// table when a particle lacks them (only ~5 of 300 Yamato particles already carry
+/// `LOOPED`), so coverage is broad rather than limited to particles that happened to
+/// intern the string. Every other byte is preserved, so the compiled particle stays
+/// engine-loadable (unlike a full re-encode, which red-errors).
+pub fn loop_animate_particle_bytes(vpcf_bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    let value = morphic::decode_kv3_resource(vpcf_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
+    let mut edits = Vec::new();
+    collect_loop_edits(&value, &mut Vec::new(), &mut edits);
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    let new_bytes = morphic::patch_kv3_resource_strings_adding(vpcf_bytes, &edits)
+        .map_err(|e| anyhow::anyhow!("looping particle color gradients: {e}"))?;
+    Ok(Some(new_bytes))
+}
+
+/// Insert a runtime color-cycle operator into a particle whose visible color is a
+/// static top-level `m_ConstantColor`.
+///
+/// This is phase #2 for animated prism particles: phase #1 can only loop existing
+/// age-driven color gradients. Many particles instead carry one constant RGB color
+/// and no color-gradient driver to flip. For those, append a sparse
+/// `C_OP_SetVec` operator to `m_Operators` that writes the tint RGB attribute from
+/// a rainbow `PVEC_TYPE_FLOAT_INTERP_GRADIENT`, driven by looped collection age
+/// over `0..1` seconds. The structural edit goes through morphic's byte-faithful
+/// KV3 array insertion, not a full particle re-encode.
+pub fn insert_color_cycle_operator(vpcf_bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    let value = morphic::decode_kv3_resource(vpcf_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
+    let Some(operators) = value.get("m_Operators").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Some(rgb) = visible_constant_color(&value) else {
+        return Ok(None);
+    };
+    if has_age_driven_color_gradient(&value) {
+        return Ok(None);
+    }
+
+    let op = color_cycle_setvec_operator(rgb);
+    let path = vec![Seg::Key("m_Operators".to_string())];
+    let new_bytes =
+        morphic::patch_kv3_resource_array_insert(vpcf_bytes, &path, operators.len(), &op)
+            .map_err(|e| anyhow::anyhow!("inserting particle color-cycle operator: {e}"))?;
+    Ok(Some(new_bytes))
+}
+
+fn visible_constant_color(value: &Value) -> Option<[i64; 3]> {
+    let color = value.get("m_ConstantColor")?;
+    let rgb = as_color(color)?;
+    if rgb.iter().copied().max().unwrap_or(0) <= 1 {
+        return None;
+    }
+    if let Value::Array(ch) = color {
+        if ch.get(3).and_then(Value::as_int).is_some_and(|a| a <= 0) {
+            return None;
+        }
+    }
+    Some(rgb)
+}
+
+fn has_age_driven_color_gradient(v: &Value) -> bool {
+    match v {
+        Value::Object(pairs) => {
+            let has_gradient = v
+                .get("m_Gradient")
+                .and_then(|g| g.get("m_Stops"))
+                .and_then(Value::as_array)
+                .is_some_and(|stops| !stops.is_empty());
+            if has_gradient {
+                let kind = v
+                    .get("m_FloatInterp")
+                    .and_then(|interp| interp.get("m_nType"))
+                    .and_then(Value::as_str);
+                if matches!(
+                    kind,
+                    Some("PF_TYPE_COLLECTION_AGE" | "PF_TYPE_PARTICLE_AGE_NORMALIZED")
+                ) {
+                    return true;
+                }
+            }
+            pairs
+                .iter()
+                .any(|(_, child)| has_age_driven_color_gradient(child))
+        }
+        Value::Array(items) => items.iter().any(has_age_driven_color_gradient),
+        _ => false,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn color_cycle_setvec_operator(rgb: [i64; 3]) -> Value {
+    let (base_hue, _, source_v) = rgb_to_hsv(
+        rgb[0] as f64 / 255.0,
+        rgb[1] as f64 / 255.0,
+        rgb[2] as f64 / 255.0,
+    );
+    let value = source_v.max(0.95);
+    let stops = [
+        (0.0_f32, 0.0_f64),
+        (0.166_666_67_f32, 60.0),
+        (0.333_333_34_f32, 120.0),
+        (0.5_f32, 180.0),
+        (0.666_666_7_f32, 240.0),
+        (0.833_333_3_f32, 300.0),
+        (1.0_f32, 360.0),
+    ]
+    .into_iter()
+    .map(|(t, hue_offset)| gradient_stop(t, base_hue + hue_offset, value))
+    .collect();
+
+    Value::Object(vec![
+        (
+            "_class".to_string(),
+            Value::String("C_OP_SetVec".to_string()),
+        ),
+        (
+            "m_InputValue".to_string(),
+            Value::Object(vec![
+                (
+                    "m_nType".to_string(),
+                    Value::String("PVEC_TYPE_FLOAT_INTERP_GRADIENT".to_string()),
+                ),
+                ("m_nVectorAttribute".to_string(), Value::Int(6)),
+                (
+                    "m_FloatInterp".to_string(),
+                    Value::Object(vec![
+                        (
+                            "m_nType".to_string(),
+                            Value::String("PF_TYPE_COLLECTION_AGE".to_string()),
+                        ),
+                        (
+                            "m_nMapType".to_string(),
+                            Value::String("PF_MAP_TYPE_DIRECT".to_string()),
+                        ),
+                        (
+                            "m_nInputMode".to_string(),
+                            Value::String("PF_INPUT_MODE_LOOPED".to_string()),
+                        ),
+                        ("m_flInput0".to_string(), Value::Double(0.0)),
+                        ("m_flInput1".to_string(), Value::Double(1.0)),
+                        ("m_flOutput0".to_string(), Value::Double(0.0)),
+                        ("m_flOutput1".to_string(), Value::Double(1.0)),
+                    ]),
+                ),
+                (
+                    "m_Gradient".to_string(),
+                    Value::Object(vec![("m_Stops".to_string(), Value::Array(stops))]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn gradient_stop(position: f32, hue: f64, value: f64) -> Value {
+    let rgb = hsv_to_rgb_i64(hue, 1.0, value);
+    Value::Object(vec![
+        (
+            "m_flPosition".to_string(),
+            Value::Double(f64::from(position)),
+        ),
+        (
+            "m_Color".to_string(),
+            Value::Array(rgb.into_iter().map(Value::Int).collect()),
+        ),
+    ])
+}
+
+/// Collect the string edits that loop a particle's age-driven color gradients. For
+/// every object carrying both a non-empty `m_Gradient/m_Stops` and an `m_FloatInterp`
+/// driver whose `m_nType` is an age input, set the driver's `m_nInputMode` to
+/// `PF_INPUT_MODE_LOOPED` (unless already looped) and, when it reads per-particle age,
+/// retarget it to `PF_TYPE_COLLECTION_AGE` so the whole effect cycles together rather
+/// than each particle flickering over its short life.
+fn collect_loop_edits(v: &Value, path: &mut Vec<Seg>, edits: &mut Vec<(Vec<Seg>, String)>) {
+    match v {
+        Value::Object(pairs) => {
+            let has_gradient = v
+                .get("m_Gradient")
+                .and_then(|g| g.get("m_Stops"))
+                .and_then(Value::as_array)
+                .is_some_and(|s| !s.is_empty());
+            if has_gradient {
+                if let Some(interp) = v.get("m_FloatInterp") {
+                    let kind = interp.get("m_nType").and_then(Value::as_str);
+                    let is_age = matches!(
+                        kind,
+                        Some("PF_TYPE_COLLECTION_AGE" | "PF_TYPE_PARTICLE_AGE_NORMALIZED")
+                    );
+                    if is_age {
+                        let already_looped = interp.get("m_nInputMode").and_then(Value::as_str)
+                            == Some("PF_INPUT_MODE_LOOPED");
+                        if !already_looped {
+                            let mut p = path.clone();
+                            p.push(Seg::Key("m_FloatInterp".to_string()));
+                            p.push(Seg::Key("m_nInputMode".to_string()));
+                            edits.push((p, "PF_INPUT_MODE_LOOPED".to_string()));
+                        }
+                        if kind == Some("PF_TYPE_PARTICLE_AGE_NORMALIZED") {
+                            let mut p = path.clone();
+                            p.push(Seg::Key("m_FloatInterp".to_string()));
+                            p.push(Seg::Key("m_nType".to_string()));
+                            edits.push((p, "PF_TYPE_COLLECTION_AGE".to_string()));
+                        }
+                    }
+                }
+            }
+            for (k, child) in pairs {
+                path.push(Seg::Key(k.clone()));
+                collect_loop_edits(child, path, edits);
+                path.pop();
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                path.push(Seg::Index(i));
+                collect_loop_edits(item, path, edits);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A particle texture input's UV offset can be safely driven by particle age only
+/// when the sampled texture is a *tiling / continuous* type (a beam, a noise field,
+/// a caustic, a gradient ramp): scrolling its UV wraps seamlessly. A *sprite-sheet /
+/// flipbook / flare* texture is laid out as discrete cells, so scrolling its UV
+/// crosses into the neighbouring cell and reveals a hard square edge: the artifact
+/// that broke Yamato's Power Slash when the animated-prism pass drove every offset.
+///
+/// Given a decoded `.vpcf_c` tree, this returns the
+/// `m_Renderers[i]/m_vecTexturesInput[j]` path prefixes whose offset controls an
+/// animation pass must leave alone. It is deliberately *conservative* (default-deny):
+/// an input whose `m_hTexture` is missing, non-string, or not on the tiling allowlist
+/// is treated as non-tiling, so the pass never produces a square. Gradient-stop
+/// retiming is independent of this (it changes color timing, not UV) and stays
+/// unconstrained.
+///
+/// The allowlist ([`is_tiling_particle_texture`]) is name-based against the canonical
+/// `materials/particle/` tiling families seen in the Deadlock pak: every
+/// offset-animated Yamato input resolved to a `beam_*` or `noise_*` texture, and the
+/// lone `particle_flare_*` sprite is exactly what this skips. The authoritative
+/// successor is a `morphic` sprite-sheet (SHTS) reader that resolves
+/// `m_hTexture -> .vtex_c` and checks the real sequence count; this is the tree-only
+/// approximation until that lands.
+#[must_use]
+pub fn non_tiling_texture_inputs(tree: &Value) -> Vec<Vec<Seg>> {
+    let mut out = Vec::new();
+    let Some(renderers) = tree.get("m_Renderers").and_then(Value::as_array) else {
+        return out;
+    };
+    for (ri, renderer) in renderers.iter().enumerate() {
+        let Some(inputs) = renderer.get("m_vecTexturesInput").and_then(Value::as_array) else {
+            continue;
+        };
+        for (ii, input) in inputs.iter().enumerate() {
+            let tiling = input
+                .get("m_hTexture")
+                .and_then(Value::as_str)
+                .is_some_and(is_tiling_particle_texture);
+            if !tiling {
+                out.push(vec![
+                    Seg::Key("m_Renderers".to_string()),
+                    Seg::Index(ri),
+                    Seg::Key("m_vecTexturesInput".to_string()),
+                    Seg::Index(ii),
+                ]);
+            }
+        }
+    }
+    out
+}
+
+/// Whether a particle `m_hTexture` path names a tiling / continuous texture whose UV
+/// offset can be animated without revealing a sprite-sheet cell edge. Matched on the
+/// basename against the canonical Source 2 tiling families (beams, noise, caustics,
+/// scrolls, gradients). See [`non_tiling_texture_inputs`] for why this is an allowlist.
+#[must_use]
+pub fn is_tiling_particle_texture(h_texture: &str) -> bool {
+    // These roots name particle textures authored to tile / scroll seamlessly; a
+    // sprite sheet, flipbook, or flare (which reveal a cell edge when scrolled) match
+    // none of them and so are treated as non-tiling.
+    const TILING: &[&str] = &[
+        "beam", "noise", "caustic", "voronoi", "scroll", "streak", "flow", "tiled", "warp",
+        "perlin", "ramp", "gradient",
+    ];
+    let name = h_texture
+        .rsplit('/')
+        .next()
+        .unwrap_or(h_texture)
+        .to_ascii_lowercase();
+    TILING.iter().any(|root| name.contains(root))
 }
 
 /// Recolor one `.vpcf_c`'s color params to `hue_deg` in place, returning the new
@@ -1927,7 +2325,7 @@ mod tests {
                 "particles/status_fx/status_fx_yamato",
             ]
         );
-        assert_eq!(r.texture_entries.len(), 3);
+        assert_eq!(r.texture_entries.len(), 4);
         assert!(r
             .texture_entries
             .iter()
@@ -1940,11 +2338,47 @@ mod tests {
             .texture_entries
             .iter()
             .any(|t| t.contains("shadow_redemption_nokill_status")));
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("yamoto_shadow_shape_color")));
         assert!(r.material_entries.is_empty());
         assert!(r.model_entries.is_empty());
         let preview = r.preview_texture.expect("yamato has a preview texture");
         assert!(r.texture_entries.contains(&preview));
         assert!(recipe_for("YAMATO").is_some());
+    }
+
+    #[test]
+    fn yamato_shadow_form_prism_texture_is_muted() {
+        let r = prism_texture_recolor_for("yamato", YAMATO_SHADOW_SHAPE_COLOR_TEXTURE, 0.0);
+        assert!((r.hue - 190.0).abs() < 1e-9);
+        assert!((r.saturation - 0.45).abs() < 1e-9);
+        assert!((r.value - 0.72).abs() < 1e-9);
+
+        let generic = prism_texture_recolor_for("yamato", "materials/example.vtex_c", 0.0);
+        assert!((generic.saturation - 1.0).abs() < 1e-9);
+        assert!((generic.value - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn yamato_shadow_status_textures_use_rainbow_bands() {
+        for entry in YAMATO_SHADOW_STATUS_TEXTURES {
+            assert!(is_yamato_shadow_status_texture(entry));
+        }
+        assert!(!is_yamato_shadow_status_texture(
+            YAMATO_SHADOW_SHAPE_COLOR_TEXTURE
+        ));
+
+        assert_eq!(
+            rainbow_status_band_rgb([255, 255, 255], 0.0, 0.0),
+            [255, 0, 0]
+        );
+        assert_eq!(
+            rainbow_status_band_rgb([255, 255, 255], 1.0 / 48.0, 0.0),
+            [255, 255, 0]
+        );
+        assert_eq!(rainbow_status_band_rgb([0, 0, 0], 0.5, 0.5), [0, 0, 0]);
     }
 
     #[test]
@@ -2027,6 +2461,71 @@ mod tests {
         // produced, identical to the texture/model `set_hue`. A hue-only recolor
         // (unit saturation + value) reproduces the original behavior.
         assert_eq!(recolored([0, 255, 148], Recolor::hue(280.0)), [170, 0, 255]);
+    }
+
+    #[test]
+    fn tiling_textures_are_animatable_sprites_are_not() {
+        // The real `m_hTexture` names of the inputs the Yamato animation pass would
+        // drive: every beam / noise resolves tiling (safe to scroll); the lone flare
+        // sprite (and any unknown) does not.
+        for tiling in [
+            "materials/particle/beam_hotwhite.vtex",
+            "materials/particle/beam_jagged_01.vtex",
+            "materials/particle/beams/beam_ethereal.vtex",
+            "materials/particle/beam_liquid_viscous.vtex",
+            "materials/particle/noise_gaussian.vtex",
+            "materials/particle/noise/noise_voronoi_tiled/noise_voronoi_tiled_trans.vtex",
+            "materials/particle/noise/noise_caustic/noise_caustic_c.vtex",
+        ] {
+            assert!(is_tiling_particle_texture(tiling), "{tiling} should tile");
+        }
+        for sprite in [
+            "materials/particle/particle_flare_010.vtex",
+            "materials/particle/yamato/yamato_power_slash_sheet.vtex",
+            "materials/particle/symbols/rune_01.vtex",
+        ] {
+            assert!(
+                !is_tiling_particle_texture(sprite),
+                "{sprite} should be treated as a sprite (non-tiling)"
+            );
+        }
+    }
+
+    #[test]
+    fn non_tiling_inputs_flags_sprite_and_unknown_only() {
+        // One renderer with three texture inputs: a tiling beam (animatable), a flare
+        // sprite (must be skipped), and an input with no m_hTexture (default-deny).
+        let input = |tex: Option<&str>| {
+            let mut pairs = Vec::new();
+            if let Some(t) = tex {
+                pairs.push(("m_hTexture".to_string(), Value::String(t.to_string())));
+            }
+            Value::Object(pairs)
+        };
+        let tree = Value::Object(vec![(
+            "m_Renderers".to_string(),
+            Value::Array(vec![Value::Object(vec![(
+                "m_vecTexturesInput".to_string(),
+                Value::Array(vec![
+                    input(Some("materials/particle/beam_hotwhite.vtex")),
+                    input(Some("materials/particle/particle_flare_010.vtex")),
+                    input(None),
+                ]),
+            )])]),
+        )]);
+
+        let skip = non_tiling_texture_inputs(&tree);
+        let input_path = |j: usize| {
+            vec![
+                Seg::Key("m_Renderers".to_string()),
+                Seg::Index(0),
+                Seg::Key("m_vecTexturesInput".to_string()),
+                Seg::Index(j),
+            ]
+        };
+        // The beam (index 0) is animatable; the flare (1) and the textureless input
+        // (2) are skipped.
+        assert_eq!(skip, vec![input_path(1), input_path(2)]);
     }
 
     fn fixture(name: &str) -> Vec<u8> {

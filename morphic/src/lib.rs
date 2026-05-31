@@ -160,3 +160,47 @@ pub fn patch_kv3_resource_strings(
     let new_data = kv3::set_strings(data, edits)?;
     resource.rebuild_with_data(&new_data)
 }
+
+/// Patch `STRING` fields of a resource's KV3 `DATA` block by path, **adding** any
+/// target string not already in the string table (unlike
+/// [`patch_kv3_resource_strings`], which can only redirect to an interned value).
+///
+/// This is the structural-edit primitive that unlocks animated VFX: it lets a
+/// gradient's `m_FloatInterp/m_nType` be set to `PF_TYPE_COLLECTION_AGE` and
+/// `m_nInputMode` to `PF_INPUT_MODE_LOOPED` even on particles whose string table
+/// lacks those enums, so the recolored spectrum cycles over time. The string table
+/// is grown byte-faithfully ([`kv3::set_strings_adding`]); every other byte is
+/// preserved, so the engine's particle loader accepts the result. Returns a
+/// complete, loadable resource file. v5 only for the append; a v4 block succeeds
+/// only when every target is already interned.
+pub fn patch_kv3_resource_strings_adding(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, String)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_strings_adding(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
+
+/// Insert one element into a KV3 array inside a resource's `DATA` block,
+/// byte-faithfully preserving the existing typed lanes and adding any strings the
+/// inserted subtree needs.
+///
+/// This is the structural primitive used for particle operator insertion: it
+/// appends missing key/value strings to the KV3 string table, serializes only the
+/// new element, splices those bytes into the existing b1/b2/b4/b8/type/object
+/// streams at the walked array cursor, bumps the array length/header counts, and
+/// rebuilds the resource with the resized `DATA` block. It deliberately avoids a
+/// full KV3 re-encode, which is lossy for compiled particles.
+pub fn patch_kv3_resource_array_insert(
+    original: &[u8],
+    array_path: &[kv3::Seg],
+    index: usize,
+    value: &kv3::Value,
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::insert_array_element_adding(data, array_path, index, value)?;
+    resource.rebuild_with_data(&new_data)
+}

@@ -15,6 +15,11 @@ gui/dist/
 *.vpk
 dist/
 
+# Scratch space: preview renders, working images, ad-hoc mod dirs
+.scratch/
+.scratch_*.png
+mods/
+
 # morphic: gitignored extended corpus (committed canonical corpus lives next to it)
 morphic/fixtures/_local/
 
