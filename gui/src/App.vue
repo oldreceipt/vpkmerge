@@ -6,6 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useSettings } from './composables/useSettings.js';
 import { useLogs } from './composables/useLogs.js';
 import BrowseTab from './components/BrowseTab.vue';
+import PrismTab from './components/PrismTab.vue';
 
 const { settings, setTheme, setDoodleTheme, setCandleEnabled, THEMES, DOODLE_THEMES } = useSettings();
 const { log: logInfo, warn: logWarn, error: logError, formatExport: formatLogsExport } = useLogs();
@@ -43,6 +44,7 @@ const overrides = ref(new Map());
 const activeTab = ref('merge');
 const TABS = [
   { key: 'merge', label: 'Merge' },
+  { key: 'prism', label: 'Prism' },
   { key: 'browse', label: 'Browse' },
 ];
 
@@ -738,6 +740,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <BrowseTab v-else-if="activeTab === 'browse'" class="flex-1 min-h-0" />
+      <PrismTab v-else-if="activeTab === 'prism'" class="flex-1 min-h-0" />
       </div>
 
       <!-- Warm vignette: a soft candle-light glow. Toggled by html[data-candle="on"]. -->

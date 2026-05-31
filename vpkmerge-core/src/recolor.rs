@@ -261,6 +261,24 @@ pub(crate) fn set_color(rgb: [u8; 3], hue_deg: f64, sat_scale: f64, val_scale: f
     [channel(r), channel(g), channel(b)]
 }
 
+/// The absolute brand color to **stamp** onto a material tint, as linear 0..1
+/// RGB: the picked hue at `recolor`'s saturation and value, here read as
+/// **absolutes** (clamped to 0..1), not the per-pixel scales [`set_color`] uses.
+///
+/// A material's `g_vColorTint` / `g_vSelfIllumTint` is a single flat effect color,
+/// and the reference recolor mods stamp one brand color on every tint, including
+/// neutral white ones. A saturation-preserving recolor can't colorize a white
+/// tint (zero chroma scales to zero), so the material path stamps an absolute hue
+/// instead. The default `Recolor::hue(h)` (saturation = value = 1.0) stamps a
+/// vivid, fully-saturated hue; dial saturation/value down for a paler stamp.
+#[allow(clippy::many_single_char_names)]
+pub(crate) fn stamp_rgb(recolor: Recolor) -> [f64; 3] {
+    let s = recolor.saturation.clamp(0.0, 1.0);
+    let v = recolor.value.clamp(0.0, 1.0);
+    let (r, g, b) = hsv_to_rgb(recolor.hue.rem_euclid(360.0), s, v);
+    [r, g, b]
+}
+
 /// One pixel: set its hue to `hue_deg`, keeping saturation and value. Equivalent
 /// to [`set_color`] with saturation and value scales of `1.0`. Kept as the
 /// hue-only convenience the recolor work was first proven against (the tests that

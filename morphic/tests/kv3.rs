@@ -96,3 +96,192 @@ fn modify_then_round_trip() {
     );
     assert_eq!(fire.get("volume").and_then(Value::as_f64), Some(0.25));
 }
+
+#[test]
+fn set_scalars_patches_a_v4_block_in_place() {
+    use morphic::kv3::Seg;
+
+    // `encode_kv3_resource` emits an uncompressed **v4** DATA block, so this builds
+    // a real v4 block to exercise the v4 single-buffer scalar patch (OBJECT member
+    // counts from the b4 lane, INT64 from b8, inline strings/types) end to end. The
+    // base-game particles that need this are also v4; this is the committed
+    // regression for that path (their in-game recolor is the live proof).
+    let template = fixture(); // reused only for a valid resource envelope / RED2
+    let tree = Value::Object(vec![
+        ("m_nFirst".to_string(), Value::Int(100)),
+        (
+            "m_sKeep".to_string(),
+            Value::String("unchanged".to_string()),
+        ),
+        ("m_nSecond".to_string(), Value::Int(7)),
+    ]);
+    let v4 = morphic::encode_kv3_resource(&template, &tree).expect("encode v4 resource");
+
+    // Patch one scalar in place; the block stays v4, everything else byte-faithful.
+    let patched = morphic::patch_kv3_resource_scalars(
+        &v4,
+        &[(vec![Seg::Key("m_nSecond".to_string())], 4242)],
+    )
+    .expect("v4 scalar patch");
+
+    let root = morphic::decode_kv3_resource(&patched).expect("decode patched v4");
+    assert_eq!(root.get("m_nSecond").and_then(Value::as_int), Some(4242));
+    // Siblings are untouched (the patch is surgical, not a re-encode).
+    assert_eq!(root.get("m_nFirst").and_then(Value::as_int), Some(100));
+    assert_eq!(
+        root.get("m_sKeep").and_then(Value::as_str),
+        Some("unchanged")
+    );
+
+    // A path that resolves to no integer scalar is an error, not a silent no-op.
+    assert!(morphic::patch_kv3_resource_scalars(
+        &v4,
+        &[(vec![Seg::Key("m_sKeep".to_string())], 1)],
+    )
+    .is_err());
+}
+
+#[test]
+fn set_doubles_patches_a_tint_vector_in_place() {
+    use morphic::kv3::Seg;
+
+    // The material g_vColorTint shape: an RGBA f64 vector. Patch two channels in
+    // place (the double sibling of the scalar patch); the third is untouched and the
+    // tagless 1.0 alpha is not patchable.
+    let template = fixture();
+    let tree = Value::Object(vec![(
+        "m_value".to_string(),
+        Value::Array(vec![
+            Value::Double(0.9),
+            Value::Double(0.5),
+            Value::Double(0.2),
+            Value::Double(1.0),
+        ]),
+    )]);
+    let v = morphic::encode_kv3_resource(&template, &tree).expect("encode");
+
+    let key = |i: usize| vec![Seg::Key("m_value".to_string()), Seg::Index(i)];
+    let patched = morphic::patch_kv3_resource_doubles(&v, &[(key(0), 0.123), (key(2), 0.456)])
+        .expect("patch");
+    let root = morphic::decode_kv3_resource(&patched).expect("decode patched");
+    let arr = root
+        .get("m_value")
+        .and_then(Value::as_array)
+        .expect("m_value");
+    assert!((arr[0].as_f64().unwrap() - 0.123).abs() < 1e-9);
+    assert!(
+        (arr[1].as_f64().unwrap() - 0.5).abs() < 1e-9,
+        "untouched channel preserved"
+    );
+    assert!((arr[2].as_f64().unwrap() - 0.456).abs() < 1e-9);
+
+    // The 1.0 alpha is a tagless DOUBLE_ONE (no stored bytes), so it is not a
+    // patchable target.
+    assert!(morphic::patch_kv3_resource_doubles(&v, &[(key(3), 0.5)]).is_err());
+}
+
+#[test]
+fn patch_doubles_retints_a_real_blobbed_material() {
+    use morphic::kv3::Seg;
+
+    // `necro_hands.vmat_c` is a real Deadlock material whose DATA block is KV3 v5,
+    // LZ4-compressed, AND carries a binary-blob section (countBlocks = 1). This is
+    // the shape that cannot be re-emitted uncompressed without the engine misreading
+    // its blob framing, so `patch_kv3_resource_doubles` must retint it while keeping
+    // it compressed. End-to-end (full resource envelope) exercise of the path the
+    // hero ability-VFX recolor drives. The in-game gate (the hand reads recolored,
+    // not red/wireframe) is documented in docs/spike-blobbed-vmat-recolor.md.
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/material/necro_hands.vmat_c"
+    ))
+    .expect("read necro_hands fixture");
+
+    let tree = morphic::decode_kv3_resource(&bytes).expect("decode material");
+    let params = tree
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .expect("m_vectorParams");
+    // Find the first color/self-illum tint param.
+    let pi = params
+        .iter()
+        .position(|p| {
+            p.get("m_name").and_then(Value::as_str).is_some_and(|name| {
+                name.starts_with("g_vColorTint") || name.starts_with("g_vSelfIllumTint")
+            })
+        })
+        .expect("a tint param");
+
+    let path = vec![
+        Seg::Key("m_vectorParams".to_string()),
+        Seg::Index(pi),
+        Seg::Key("m_value".to_string()),
+        Seg::Index(0),
+    ];
+    let patched = morphic::patch_kv3_resource_doubles(&bytes, &[(path, 0.321)]).expect("retint");
+
+    // The whole file still parses, and the channel reads back the new value.
+    let back = morphic::decode_kv3_resource(&patched).expect("decode retinted");
+    let ch = back
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .and_then(|a| a.get(pi))
+        .and_then(|p| p.get("m_value"))
+        .and_then(Value::as_array)
+        .expect("m_value");
+    assert!(
+        (ch[0].as_f64().unwrap() - 0.321).abs() < 1e-9,
+        "channel retinted"
+    );
+    // Every other field is identical (binary blob included): edit the source tree's
+    // one channel and require the full trees to match.
+    let mut expect = tree.clone();
+    if let Some(Value::Array(ps)) = expect.get_mut("m_vectorParams") {
+        if let Some(Value::Array(c)) = ps[pi].get_mut("m_value") {
+            c[0] = Value::Double(0.321);
+        }
+    }
+    assert_eq!(back, expect, "only the targeted channel changed");
+}
+
+#[test]
+fn decodes_a_two_blob_material() {
+    // `necro_picker_hand_effect.vmat_c` carries TWO binary blobs (its
+    // `m_dynamicParams` expressions), framed one-per-blob. The blob-frame decoder
+    // used to assume each frame fills the whole remaining region and rejected this
+    // with "blob frame: expected 12, got 6"; it must now decode both short frames.
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/material/necro_picker_hand_effect.vmat_c"
+    ))
+    .expect("read 2-blob fixture");
+
+    let tree = morphic::decode_kv3_resource(&bytes).expect("decode 2-blob material");
+    // Sanity: it parsed as a real material (its self-illum tint is present), and the
+    // two dynamic-param expressions decoded as non-empty binary blobs.
+    assert!(tree
+        .get("m_vectorParams")
+        .and_then(Value::as_array)
+        .is_some_and(|p| p.iter().any(|param| param
+            .get("m_name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| n.starts_with("g_vSelfIllumTint")))));
+    let blobs: Vec<&[u8]> = collect_binaries(&tree);
+    assert_eq!(blobs.len(), 2, "two dynamic-param blobs");
+    assert!(blobs.iter().all(|b| !b.is_empty()), "blobs are non-empty");
+}
+
+/// Every `Value::Binary` in the tree, in document order.
+fn collect_binaries(value: &Value) -> Vec<&[u8]> {
+    fn walk<'a>(v: &'a Value, out: &mut Vec<&'a [u8]>) {
+        match v {
+            Value::Binary(b) => out.push(b.as_slice()),
+            Value::Array(items) => items.iter().for_each(|x| walk(x, out)),
+            Value::Object(pairs) => pairs.iter().for_each(|(_, x)| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, &mut out);
+    out
+}

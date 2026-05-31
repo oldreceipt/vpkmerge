@@ -51,10 +51,18 @@ pub fn rewrap_uncompressed(block: &[u8]) -> Result<Vec<u8>, DecodeError> {
         return Err(DecodeError::Kv3("re-wrap supports only KV3 v4/v5"));
     }
 
-    let count_blocks = i32_at(block, 56);
-    if count_blocks != 0 {
+    // A binary-blob section cannot be re-emitted uncompressed in an engine-loadable
+    // way. Decompressing the blob frames and flipping compressionMethod to 0 leaves
+    // the now-stale per-frame size table in the buffer tail; morphic's own reader
+    // ignores it when comp=0, but Source 2 still consults it and misreads the blob,
+    // so the owning material loads broken and the mesh it covers renders as
+    // wireframe (observed in-game on `inferno_body.vmat_c`). So a blobbed block is
+    // refused here for every version, exactly as the recolor callers already expect:
+    // they skip that entry and leave it vanilla rather than ship a broken file.
+    // (`countBlocks` is at offset 56 for both v4 and v5.)
+    if i32_at(block, 56) != 0 {
         return Err(DecodeError::Kv3(
-            "re-wrap does not support KV3 blocks with a binary-blob section",
+            "re-wrap does not support a binary-blob section (not engine-loadable uncompressed)",
         ));
     }
 
@@ -88,7 +96,9 @@ fn rewrap_v4(block: &[u8], compression: u32) -> Result<Vec<u8>, DecodeError> {
 }
 
 /// v5 two-buffer: `[header(120)][buf1][buf2]`. buf1 (aux) sizes at 72/76, buf2
-/// (main) sizes at 80/84.
+/// (main) sizes at 80/84. A binary-blob section is rejected upstream in
+/// [`rewrap_uncompressed`] (it cannot be re-emitted uncompressed for the engine),
+/// so only the two typed buffers are decompressed here.
 fn rewrap_v5(block: &[u8], compression: u32) -> Result<Vec<u8>, DecodeError> {
     const HEADER: usize = 120;
     let unc1 = usize_at(block, 72)?;
@@ -107,12 +117,142 @@ fn rewrap_v5(block: &[u8], compression: u32) -> Result<Vec<u8>, DecodeError> {
     write_u32(&mut out, 20, 0); // compressionMethod = 0
     write_u16(&mut out, 26, 0); // frame size (u16) unused
     write_i32(&mut out, 52, i32_at(block, 48)); // size_comp_total = size_unc_total
-    write_u32(&mut out, 68, 0); // sizeBlockCompressed = 0
+    write_u32(&mut out, 68, 0); // sizeBlockCompressed = 0 (no frame table when raw)
     write_i32(&mut out, 76, i32_at(block, 72)); // comp_buf1 = unc_buf1
     write_i32(&mut out, 84, i32_at(block, 80)); // comp_buf2 = unc_buf2
     out.extend_from_slice(&buf1);
     out.extend_from_slice(&buf2);
     Ok(out)
+}
+
+/// True for a v5 block that is LZ4-compressed (`compressionMethod == 1`) and
+/// carries a binary-blob section (`countBlocks != 0`). This is the one shape that
+/// cannot be re-emitted `compressionMethod = 0` in an engine-loadable way (see the
+/// refusal in [`rewrap_uncompressed`]); the in-place double patch handles it
+/// instead via [`decompress_v5_working`] + [`reassemble_blobbed_v5`], keeping the
+/// block compressed and the blob frames byte-identical. ZSTD-compressed blobbed
+/// blocks are excluded (we have no ZSTD encoder) and still take the refusal path.
+pub(crate) fn is_blobbed_lz4_v5(block: &[u8]) -> bool {
+    block.len() >= 120
+        && (u32_at(block, 0) & 0xFF) == 5
+        && u32_at(block, 20) == 1 // LZ4
+        && i32_at(block, 56) != 0 // has a binary-blob section
+}
+
+/// Decompress a v5 block's two typed buffers into a flat, **walkable**
+/// uncompressed copy: `[original 120-byte header][raw buf1][raw buf2]`. The blob
+/// frames are deliberately omitted: a `BINARY_BLOB` node consumes no typed-lane
+/// bytes, and the in-place walkers never read past buf2's type stream, so they
+/// need only the two decompressed typed buffers. The header is copied verbatim
+/// (its `unc1` at offset 72 still locates buf2 at `120 + unc1`, exactly as
+/// [`super::patch::lanes_v5`] expects); the stale compression fields are unread by
+/// the walk. Pair with [`reassemble_blobbed_v5`] to re-emit after patching.
+pub(crate) fn decompress_v5_working(block: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    if block.len() < HEADER {
+        return Err(DecodeError::Truncated {
+            offset: 0,
+            needed: HEADER,
+            had: block.len(),
+        });
+    }
+    let compression = u32_at(block, 20);
+    let unc1 = usize_at(block, 72)?;
+    let comp1 = usize_at(block, 76)?;
+    let unc2 = usize_at(block, 80)?;
+    let comp2 = usize_at(block, 84)?;
+    let b2c = HEADER
+        .checked_add(comp1)
+        .ok_or(DecodeError::Kv3("buffer1 extent overflow"))?;
+    let raw1 = decompress(slice(block, HEADER, comp1)?, compression, unc1, comp1)?;
+    let raw2 = decompress(slice(block, b2c, comp2)?, compression, unc2, comp2)?;
+
+    let mut out = Vec::with_capacity(HEADER + raw1.len() + raw2.len());
+    out.extend_from_slice(&block[..HEADER]);
+    out.extend_from_slice(&raw1);
+    out.extend_from_slice(&raw2);
+    Ok(out)
+}
+
+/// Re-emit a compressed v5 blobbed block from a patched uncompressed working copy
+/// (the `[header][raw buf1][raw buf2]` produced by [`decompress_v5_working`] and
+/// then patched in place), keeping `compressionMethod = 1`.
+///
+/// Only the typed buffer whose raw bytes actually changed is recompressed (with
+/// `lz4_flex`); the other typed buffer and the entire binary-blob frame region are
+/// spliced through byte-for-byte. The blob frames are located by sequential,
+/// size-derived reads (no absolute offset is stored anywhere), so rewriting the
+/// buffer compressed-size fields relocates them correctly. The per-blob length
+/// table, the document trailer, and the LZ4 per-frame size table all live in
+/// buf2's tail and in the frame region, none of which a tint-double edit touches,
+/// so they stay valid.
+///
+/// This is the engine-loadable alternative to flipping a blobbed block to
+/// `compressionMethod = 0`: that leaves a stale per-frame size table the engine
+/// still consults, so it misreads the blob and the owning material renders broken.
+pub(crate) fn reassemble_blobbed_v5(orig: &[u8], working: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    let unc1 = usize_at(orig, 72)?;
+    let comp1 = usize_at(orig, 76)?;
+    let unc2 = usize_at(orig, 80)?;
+    let comp2 = usize_at(orig, 84)?;
+
+    let b2c = HEADER
+        .checked_add(comp1)
+        .ok_or(DecodeError::Kv3("buffer1 extent overflow"))?;
+    let frames_start = b2c
+        .checked_add(comp2)
+        .ok_or(DecodeError::Kv3("buffer2 extent overflow"))?;
+    let frames = slice(orig, frames_start, orig.len().saturating_sub(frames_start))?;
+
+    // Patched raw buffers, carved from the working copy by uncompressed size.
+    let raw1_start = HEADER;
+    let raw2_start = HEADER
+        .checked_add(unc1)
+        .ok_or(DecodeError::Kv3("buffer1 raw extent overflow"))?;
+    let new_raw1 = slice(working, raw1_start, unc1)?;
+    let new_raw2 = slice(working, raw2_start, unc2)?;
+
+    // Originals, so a buffer that did not change is re-emitted byte-identical.
+    let orig_comp1 = slice(orig, HEADER, comp1)?;
+    let orig_comp2 = slice(orig, b2c, comp2)?;
+    let orig_raw1 = decompress(orig_comp1, 1, unc1, comp1)?;
+    let orig_raw2 = decompress(orig_comp2, 1, unc2, comp2)?;
+
+    let (bytes1, ncomp1) = recompress_if_changed(new_raw1, &orig_raw1, orig_comp1);
+    let (bytes2, ncomp2) = recompress_if_changed(new_raw2, &orig_raw2, orig_comp2);
+    let total_comp = ncomp1
+        .checked_add(ncomp2)
+        .ok_or(DecodeError::Kv3("compressed size overflow"))?;
+
+    let mut out = orig[..HEADER].to_vec();
+    // size_comp_total (52) is comp1 + comp2 in these files (blob frames excluded);
+    // size_unc_total (48), countBlocks (56), sizeBlobs (60), sizeBlockCompressed
+    // (68), blob frame size (26), and compressionMethod (20) are all unchanged: the
+    // uncompressed sizes and the entire blob framing are untouched by the patch.
+    write_i32(&mut out, 52, fit_i32(total_comp)?);
+    write_i32(&mut out, 76, fit_i32(ncomp1)?);
+    write_i32(&mut out, 84, fit_i32(ncomp2)?);
+    out.extend_from_slice(&bytes1);
+    out.extend_from_slice(&bytes2);
+    out.extend_from_slice(frames);
+    Ok(out)
+}
+
+/// Keep a buffer byte-identical when its raw bytes did not change (so an unchanged
+/// buffer round-trips exactly), else LZ4-recompress the patched raw bytes.
+fn recompress_if_changed(new_raw: &[u8], orig_raw: &[u8], orig_comp: &[u8]) -> (Vec<u8>, usize) {
+    if new_raw == orig_raw {
+        (orig_comp.to_vec(), orig_comp.len())
+    } else {
+        let c = lz4_flex::block::compress(new_raw);
+        let n = c.len();
+        (c, n)
+    }
+}
+
+fn fit_i32(v: usize) -> Result<i32, DecodeError> {
+    i32::try_from(v).map_err(|_| DecodeError::Kv3("size field exceeds i32"))
 }
 
 fn decompress(
@@ -188,4 +328,50 @@ fn slice(b: &[u8], start: usize, len: usize) -> Result<&[u8], DecodeError> {
     let end = start.checked_add(len).ok_or(DecodeError::Kv3("overflow"))?;
     b.get(start..end)
         .ok_or(DecodeError::Kv3("buffer slice out of range"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A KV3 `DATA` block carrying a binary-blob section (`countBlocks > 0`) cannot
+    /// be re-emitted uncompressed in an engine-loadable form, so the re-wrap must
+    /// refuse it rather than produce a file that only morphic's lenient reader
+    /// accepts (a blobbed `inferno_body.vmat_c` patched this way rendered the hero's
+    /// upper body as wireframe in-game). The refusal is what lets the recolor caller
+    /// skip the entry and leave it vanilla. Regression guard for that path, which had
+    /// no coverage when the v5 blob pass-through was (wrongly) added.
+    #[test]
+    fn rewrap_refuses_a_binary_blob_section() {
+        // Minimal v5 header: magic (v5) + a nonzero compressionMethod (so it is not
+        // a no-op pass-through) + a nonzero countBlocks at offset 56. The blob check
+        // fires before any buffer math, so the rest of the header can stay zero.
+        let mut block = vec![0u8; 120];
+        write_u32(&mut block, 0, MAGIC_BASE | 5); // KV3 v5
+        write_u32(&mut block, 20, 1); // compressionMethod = LZ4 (nonzero)
+        write_i32(&mut block, 56, 1); // countBlocks = 1 (has a blob section)
+
+        let err = rewrap_uncompressed(&block).expect_err("blobbed block must be refused");
+        assert!(
+            matches!(err, DecodeError::Kv3(msg) if msg.contains("binary-blob section")),
+            "expected a binary-blob-section refusal, got {err:?}"
+        );
+    }
+
+    /// The same header with `countBlocks == 0` gets past the blob guard (it then
+    /// proceeds to buffer decompression), proving the guard keys on the blob count,
+    /// not on something incidental to the synthetic header.
+    #[test]
+    fn rewrap_blob_guard_keys_on_count_blocks() {
+        let mut block = vec![0u8; 120];
+        write_u32(&mut block, 0, MAGIC_BASE | 5);
+        write_u32(&mut block, 20, 1);
+        write_i32(&mut block, 56, 0); // no blob section
+
+        let err = rewrap_uncompressed(&block).expect_err("zero-size LZ4 buffers still error");
+        assert!(
+            !matches!(err, DecodeError::Kv3(msg) if msg.contains("binary-blob section")),
+            "a non-blobbed block must not trip the blob guard, got {err:?}"
+        );
+    }
 }

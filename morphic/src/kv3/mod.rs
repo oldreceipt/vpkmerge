@@ -18,7 +18,9 @@ mod rewrap;
 mod types;
 mod writer;
 
-pub use patch::{neutralize_draw_calls, set_bools, set_scalars, Seg};
+pub use patch::{
+    neutralize_draw_calls, set_bools, set_doubles, set_floats, set_scalars, set_strings, Seg,
+};
 pub use rewrap::rewrap_uncompressed;
 pub use types::Value;
 

@@ -74,6 +74,20 @@ pub fn decode_kv3_resource(file_bytes: &[u8]) -> Result<kv3::Value, DecodeError>
     kv3::decode(data)
 }
 
+/// Whether a resource's KV3 `DATA` block carries a binary-blob section
+/// (`countBlocks > 0`). A blobbed block must not be re-emitted uncompressed
+/// (the engine misreads the blob framing), so callers use this to choose between
+/// the byte-faithful in-place patch and a full re-encode.
+pub fn kv3_resource_has_blobs(file_bytes: &[u8]) -> Result<bool, DecodeError> {
+    let resource = resource::Resource::parse(file_bytes)?;
+    let data = resource.data_block()?;
+    // countBlocks is the i32 at block offset 56 for KV3 v2..=5.
+    if data.len() < 60 {
+        return Ok(false);
+    }
+    Ok(i32::from_le_bytes([data[56], data[57], data[58], data[59]]) != 0)
+}
+
 /// Re-encode `value` into the `DATA` block of `original`, keeping the original
 /// KV3 format GUID and every non-DATA block (e.g. `RED2`) byte-for-byte. The new
 /// `DATA` is uncompressed KV3 v4. Returns a complete, loadable resource file.
@@ -102,5 +116,47 @@ pub fn patch_kv3_resource_scalars(
     let resource = resource::Resource::parse(original)?;
     let data = resource.data_block()?;
     let new_data = kv3::set_scalars(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
+
+/// Patch `DOUBLE` (f64) fields of a resource's KV3 `DATA` block in place by path,
+/// preserving every other byte. The double sibling of [`patch_kv3_resource_scalars`],
+/// built to retint a material's `g_vColorTint` RGBA vector in a `.vmat_c` without a
+/// lossy re-encode. Edits and their path contract are exactly [`kv3::set_doubles`]'s.
+pub fn patch_kv3_resource_doubles(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, f64)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_doubles(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
+
+/// Patch `FLOAT` (f32) fields of a resource's KV3 `DATA` block in place by path,
+/// preserving every other byte. This is the particle-safe path for probing
+/// existing brightness/radius/lifetime-style controls without a lossy full
+/// particle re-encode.
+pub fn patch_kv3_resource_floats(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, f32)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_floats(data, edits)?;
+    resource.rebuild_with_data(&new_data)
+}
+
+/// Patch `STRING` fields of a resource's KV3 `DATA` block in place by path by
+/// redirecting the field to an already-interned string table value. This does not
+/// add strings or change the KV3 structure, so it is suitable for conservative
+/// enum probes such as existing particle input modes/types.
+pub fn patch_kv3_resource_strings(
+    original: &[u8],
+    edits: &[(Vec<kv3::Seg>, String)],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_strings(data, edits)?;
     resource.rebuild_with_data(&new_data)
 }

@@ -68,8 +68,23 @@ enum Command {
     /// Recolor a hero's full ability VFX (particles + color textures + baked
     /// vertex colors) to one hue and pack it into a single addon VPK. The
     /// one-call bridge for a mod manager: composes all three recolor mechanisms
-    /// over a built-in per-hero recipe (Paige / `bookworm` for now).
+    /// over a built-in per-hero recipe. Pinned: `bookworm` (Paige, full
+    /// particles+textures+models), plus particle-only `unicorn` (Celeste),
+    /// `gigawatt` (Seven), `vampirebat` (Mina), `necro` (Graves), `wraith`,
+    /// `inferno` (Infernus), `yamato` (Yamato).
     RecolorHero(RecolorHeroCmd),
+
+    /// Recolor a hero's full ability VFX as a static prism/rainbow and pack it
+    /// into a single addon VPK. Same composition as `recolor-hero`, but instead
+    /// of one target hue it spreads each effect's existing color/tint scalars
+    /// across a spectrum (gradient stops become spectral ramps, themed by effect
+    /// type) so the VFX reads as a moving rainbow in game. Same pinned heroes as
+    /// `recolor-hero`; run `rainbow-scan` first to see which carry the richest
+    /// spectrum.
+    Prism(PrismCmd),
+
+    /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
+    RainbowScan(RainbowScanCmd),
 }
 
 #[derive(Args)]
@@ -159,8 +174,9 @@ struct TextureCmd {
 
 #[derive(Args)]
 struct RecolorHeroCmd {
-    /// Hero model/particle codename to recolor (e.g. `bookworm` for Paige). Only
-    /// heroes with a pinned recipe are supported so far.
+    /// Hero model/particle codename to recolor (e.g. `bookworm` for Paige,
+    /// `vampirebat` for Mina). Only heroes with a pinned recipe are supported;
+    /// an unknown codename lists the pinned set.
     #[arg(long, value_name = "CODENAME")]
     hero: String,
 
@@ -206,6 +222,52 @@ struct RecolorHeroCmd {
     /// (preview wins and the bake is skipped).
     #[arg(long = "preview-png", value_name = "PNG")]
     preview_png: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct PrismCmd {
+    /// Hero model/particle codename to prism-recolor (e.g. `unicorn` for Celeste,
+    /// `yamato` for Yamato). Only heroes with a pinned recipe are supported; an
+    /// unknown codename lists the pinned set.
+    #[arg(long, value_name = "CODENAME")]
+    hero: String,
+
+    /// VPK to read the hero's VFX from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for any entry `--vpk` does not ship
+    /// (so a texture-only skin still recolors the base mesh/particles).
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Pack the whole prism-recolored VFX set into this one addon VPK, each entry
+    /// at its base path so it overrides the base game in place.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
+
+    /// Also animate high-visibility effects (glow/beam/trail/arc/slash/...):
+    /// repoint their texture scroll at particle age, boost the scroll, and retime
+    /// gradient stops so the spectrum sweeps over each particle's lifetime. Without
+    /// this the prism is color-only (still reads as moving on heroes whose
+    /// gradients already loop). Byte-faithful and best-effort per file.
+    #[arg(long)]
+    animated: bool,
+}
+
+#[derive(Args)]
+struct RainbowScanCmd {
+    /// VPK to scan the hero's VFX from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for entries `--vpk` does not ship.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Hero codename(s) to scan. Defaults to every pinned hero recipe.
+    #[arg(long = "hero", value_name = "CODENAME")]
+    heroes: Vec<String>,
 }
 
 #[derive(Args)]
@@ -541,6 +603,8 @@ fn main() -> Result<()> {
         Some(Command::Soundevents(args)) => run_soundevents(args),
         Some(Command::Texture(args)) => run_texture(args),
         Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
+        Some(Command::Prism(args)) => run_prism(&args),
+        Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         None => run_merge(cli),
     }
 }
@@ -1424,14 +1488,25 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
     .with_context(|| format!("recoloring hero {} to hue {}", args.hero, args.hue))?;
 
     eprintln!(
-        "{}: {} particle(s) recolored ({} color-free skipped), {} texture(s), {} model(s) ({} verts)",
+        "{}: {} particle(s) recolored ({} color-free skipped, {} unpatchable left vanilla), {} texture(s), {} material tint(s) ({} left vanilla), {} model(s) ({} verts)",
         report.codename,
         report.particles_recolored,
         report.particles_no_color,
+        report.particles_unpatchable,
         report.textures_recolored,
+        report.materials_recolored,
+        report.materials_unpatchable,
         report.models_recolored,
         report.model_vertices,
     );
+    if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
+        eprintln!(
+            "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \
+             place (a non-v5 KV3 block, or a ZSTD-compressed binary-blob section) and were left \
+             vanilla; this hero's recolor is PARTIAL.",
+            report.particles_unpatchable, report.materials_unpatchable,
+        );
+    }
     println!(
         "wrote {}: {} entries, hero {} recolored to hue {} deg (overrides the base in place)",
         out.display(),
@@ -1440,6 +1515,135 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
         args.hue,
     );
     Ok(())
+}
+
+fn run_prism(args: &PrismCmd) -> Result<()> {
+    let report = vpkmerge_core::prism_recolor_hero_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &args.hero,
+        args.animated,
+        &args.encode_vpk,
+    )
+    .with_context(|| format!("prism-recoloring hero {}", args.hero))?;
+
+    eprintln!(
+        "{}: {}/{} particle(s) prism-recolored ({} color-free, {} unpatchable left vanilla), {} gradient field(s), {} color field(s) ({} boosted, {} black-lifted, {} random-range), {} texture(s), {} material tint(s) ({} left vanilla), {} model(s) ({} verts)",
+        report.codename,
+        report.particles_recolored,
+        report.particles_total,
+        report.particles_no_color,
+        report.particles_unpatchable,
+        report.gradient_fields,
+        report.color_fields,
+        report.boosted_fields,
+        report.lifted_black_gradient_fields,
+        report.random_range_fields,
+        report.textures_recolored,
+        report.materials_recolored,
+        report.materials_unpatchable,
+        report.models_recolored,
+        report.model_vertices,
+    );
+    if args.animated {
+        eprintln!(
+            "  animated: {} high-visibility particle(s) retimed ({} texture-age input(s), {} scroll multiplier(s), {} gradient timing edit(s))",
+            report.particles_animated,
+            report.texture_age_inputs,
+            report.texture_offset_multipliers,
+            report.gradient_timing_edits,
+        );
+    }
+    if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
+        eprintln!(
+            "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \
+             place (a non-v5 KV3 block, or a ZSTD-compressed binary-blob section) and were left \
+             vanilla; this hero's prism is PARTIAL.",
+            report.particles_unpatchable, report.materials_unpatchable,
+        );
+    }
+    println!(
+        "wrote {}: {} entries, hero {} recolored as a prism spectrum (overrides the base in place)",
+        args.encode_vpk.display(),
+        report.total_entries,
+        report.codename,
+    );
+    Ok(())
+}
+
+fn run_rainbow_scan(args: &RainbowScanCmd) -> Result<()> {
+    let heroes: Vec<String> = if args.heroes.is_empty() {
+        vpkmerge_core::pinned_hero_codenames()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    } else {
+        args.heroes.clone()
+    };
+
+    println!(
+        "{:<12} {:>5} {:>5} {:>5} {:>5} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>5} {:>3} {:>3} {:>3}  mode",
+        "hero",
+        "vpcf",
+        "patch",
+        "none",
+        "err",
+        "colors",
+        "grad",
+        "multi",
+        "age",
+        "loop",
+        "rand",
+        "fade",
+        "tex",
+        "mat",
+        "mdl",
+    );
+    for hero in heroes {
+        let report =
+            vpkmerge_core::scan_hero_rainbow_support(&args.vpk, args.base.as_deref(), &hero)
+                .with_context(|| format!("scanning rainbow support for hero {hero}"))?;
+        let age_grad = report.collection_age_gradient_fields + report.particle_age_gradient_fields;
+        println!(
+            "{:<12} {:>5} {:>5} {:>5} {:>5} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>5} {:>3} {:>3} {:>3}  {}",
+            report.codename,
+            report.particles_total,
+            report.particles_patchable,
+            report.particles_color_free,
+            report.particles_unpatchable + report.particles_decode_failed,
+            report.visible_color_fields,
+            report.gradient_fields,
+            report.multi_stop_gradient_fields,
+            age_grad,
+            report.looped_gradient_fields,
+            report.random_color_initializers,
+            report.color_interpolate_ops,
+            report.texture_entries,
+            report.material_entries,
+            report.model_entries,
+            rainbow_scan_mode(&report),
+        );
+    }
+    println!(
+        "\nmode: looped = existing looped gradient color inputs; animated = age/lifetime gradients; strong = many static gradients; static = color constants only"
+    );
+    Ok(())
+}
+
+fn rainbow_scan_mode(r: &vpkmerge_core::HeroRainbowSupportReport) -> &'static str {
+    if r.particles_patchable == 0 {
+        "none"
+    } else if r.looped_gradient_fields > 0 {
+        "looped"
+    } else if r.collection_age_gradient_fields + r.particle_age_gradient_fields > 0 {
+        "animated"
+    } else if r.multi_stop_gradient_fields >= 12 {
+        "strong"
+    } else if r.gradient_fields > 0 {
+        "gradient"
+    } else {
+        "static"
+    }
 }
 
 fn read_plan(path: &Path) -> Result<PlanFile> {
