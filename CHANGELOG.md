@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0
+
+Adds spectrum tuning to the `prism` rainbow recolor. The canonical rainbow can now be rotated to a different start hue and scaled in saturation and brightness, so a UI can offer "rotate / desaturate the rainbow" without losing the per-effect spread. Defaults reproduce the v0.8 prism byte for byte. Also wires Yamato into the prism path's chromatic-texture set.
+
+### CLI (`vpkmerge` 0.9)
+
+- `prism` gains `--hue-offset <DEG>` (rotate the whole spectrum's start hue; the per-effect spread is unchanged, just shifted), `--saturation <SCALE>`, and `--brightness <SCALE>` (scale the spectrum, e.g. a pastel rainbow). All three default to the canonical rainbow, so omitting them reproduces the previous output.
+
+### Library (`vpkmerge-core` 0.9)
+
+- New `PrismTuning { hue_offset, saturation, brightness }` and `prism_recolor_hero_to_addon_tuned`, threading the tuning through every spectrum site (particle gradient stops + color fields, textures, materials, models, and the Yamato shadow-band texture). The existing `prism_recolor_hero_to_addon` delegates with `PrismTuning::default()`, so callers that do not expose the knobs (e.g. the GUI Prism tab) are unchanged; default tuning is byte-identical to v0.8.
+
 ## v0.8.0
 
 Lands the Deadlock ability-VFX recolor toolkit and the first part-level model edits, plus a large texture-encode speedup. A VFX effect carries its color on up to three axes (particle params, textures, and baked mesh vertex colors); this release can retint all three to one target color, exposes a per-hero "recolor recipe" that drives them together, and adds saturation and brightness control on top of hue. On the geometry side, `model edit` graduates from whole-model reshape to removing and replacing individual mesh parts, and `model export --pose` now poses the WIP heroes whose menu pose ships as a loose motion-matching clip. The recolor and part-edit paths are confirmed in-game.
