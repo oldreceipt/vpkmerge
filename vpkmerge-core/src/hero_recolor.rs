@@ -102,6 +102,12 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // vanilla fire textures in place. See [`inferno_recipe`].
         "inferno" => Some(inferno_recipe()),
         "yamato" => Some(yamato_recipe()),
+        // Paradox (`chrono`): ability VFX color is overwhelmingly particle-driven (the
+        // teal time-warp; the `recolor_assets` walk found 0 chromatic ability textures,
+        // her ability maps are grayscale ramps tinted by particle params). The two real
+        // chromatic textures are the time-stop bubble energy bands on her bubble /
+        // projectile prop models, recolored so the dome matches. See [`chrono_recipe`].
+        "chrono" => Some(chrono_recipe()),
         "abrams" => Some(abrams_recipe()),
         "fencer" => Some(fencer_recipe()),
         "ghost" => Some(ghost_recipe()),
@@ -125,6 +131,7 @@ pub const fn pinned_hero_codenames() -> &'static [&'static str] {
         "necro",
         "inferno",
         "yamato",
+        "chrono",
         "abrams",
         "astro",
         "fencer",
@@ -477,6 +484,36 @@ fn yamato_recipe() -> HeroRecolorRecipe {
         model_entries: Vec::new(),
         preview_texture: Some(
             "materials/particle/abilities/yamato/yamato_shadow_redemption_complete_status.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Paradox (`chrono`). Ability VFX color is overwhelmingly in particle color params
+/// (the teal time-warp), so the prism/recolor lands the whole ability set off the two
+/// particle prefixes. The only real chromatic ability textures are the time-stop bubble
+/// energy bands (`chrono_fx_bubble02/04`, baked crimson scanlines on her bubble and
+/// projectile fx prop models); they take the spectrum/hue too so the time-stop dome
+/// matches. Her hourglass-head / shoulder glow are skin accents (a separate reskin), not
+/// ability props, so they are intentionally excluded here.
+fn chrono_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "chrono".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/chrono/".to_string(),
+            "particles/weapon_fx/chrono/".to_string(),
+        ],
+        texture_entries: [
+            "models/heroes_staging/chrono/materials/chrono_fx_bubble02_color_psd_f57b1ef0.vtex_c",
+            "models/heroes_staging/chrono/materials/chrono_fx_bubble04_color_psd_ee26af5c.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "models/heroes_staging/chrono/materials/chrono_fx_bubble04_color_psd_ee26af5c.vtex_c"
                 .to_string(),
         ),
     }
