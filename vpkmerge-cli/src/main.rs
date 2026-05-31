@@ -73,6 +73,9 @@ enum Command {
     /// `gigawatt` (Seven), `vampirebat` (Mina), `necro` (Graves), `wraith`,
     /// `inferno` (Infernus), `yamato` (Yamato).
     RecolorHero(RecolorHeroCmd),
+
+    /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
+    RainbowScan(RainbowScanCmd),
 }
 
 #[derive(Args)]
@@ -210,6 +213,21 @@ struct RecolorHeroCmd {
     /// (preview wins and the bake is skipped).
     #[arg(long = "preview-png", value_name = "PNG")]
     preview_png: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct RainbowScanCmd {
+    /// VPK to scan the hero's VFX from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for entries `--vpk` does not ship.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Hero codename(s) to scan. Defaults to every pinned hero recipe.
+    #[arg(long = "hero", value_name = "CODENAME")]
+    heroes: Vec<String>,
 }
 
 #[derive(Args)]
@@ -545,6 +563,7 @@ fn main() -> Result<()> {
         Some(Command::Soundevents(args)) => run_soundevents(args),
         Some(Command::Texture(args)) => run_texture(args),
         Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
+        Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         None => run_merge(cli),
     }
 }
@@ -1455,6 +1474,81 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
         args.hue,
     );
     Ok(())
+}
+
+fn run_rainbow_scan(args: &RainbowScanCmd) -> Result<()> {
+    let heroes: Vec<String> = if args.heroes.is_empty() {
+        vpkmerge_core::pinned_hero_codenames()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    } else {
+        args.heroes.clone()
+    };
+
+    println!(
+        "{:<12} {:>5} {:>5} {:>5} {:>5} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>5} {:>3} {:>3} {:>3}  mode",
+        "hero",
+        "vpcf",
+        "patch",
+        "none",
+        "err",
+        "colors",
+        "grad",
+        "multi",
+        "age",
+        "loop",
+        "rand",
+        "fade",
+        "tex",
+        "mat",
+        "mdl",
+    );
+    for hero in heroes {
+        let report =
+            vpkmerge_core::scan_hero_rainbow_support(&args.vpk, args.base.as_deref(), &hero)
+                .with_context(|| format!("scanning rainbow support for hero {hero}"))?;
+        let age_grad = report.collection_age_gradient_fields + report.particle_age_gradient_fields;
+        println!(
+            "{:<12} {:>5} {:>5} {:>5} {:>5} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>5} {:>3} {:>3} {:>3}  {}",
+            report.codename,
+            report.particles_total,
+            report.particles_patchable,
+            report.particles_color_free,
+            report.particles_unpatchable + report.particles_decode_failed,
+            report.visible_color_fields,
+            report.gradient_fields,
+            report.multi_stop_gradient_fields,
+            age_grad,
+            report.looped_gradient_fields,
+            report.random_color_initializers,
+            report.color_interpolate_ops,
+            report.texture_entries,
+            report.material_entries,
+            report.model_entries,
+            rainbow_scan_mode(&report),
+        );
+    }
+    println!(
+        "\nmode: looped = existing looped gradient color inputs; animated = age/lifetime gradients; strong = many static gradients; static = color constants only"
+    );
+    Ok(())
+}
+
+fn rainbow_scan_mode(r: &vpkmerge_core::HeroRainbowSupportReport) -> &'static str {
+    if r.particles_patchable == 0 {
+        "none"
+    } else if r.looped_gradient_fields > 0 {
+        "looped"
+    } else if r.collection_age_gradient_fields + r.particle_age_gradient_fields > 0 {
+        "animated"
+    } else if r.multi_stop_gradient_fields >= 12 {
+        "strong"
+    } else if r.gradient_fields > 0 {
+        "gradient"
+    } else {
+        "static"
+    }
 }
 
 fn read_plan(path: &Path) -> Result<PlanFile> {

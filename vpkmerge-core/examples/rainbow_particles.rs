@@ -95,6 +95,7 @@ fn rainbow_gradient_stop(
     path: &[Seg],
     index: usize,
     count: usize,
+    position: Option<f64>,
 ) -> [i64; 3] {
     let (_, _, v) = rgb_to_hsv(
         rgb[0] as f64 / 255.0,
@@ -103,6 +104,14 @@ fn rainbow_gradient_stop(
     );
     let hue = if count <= 1 {
         hash_hue(&format!("{entry}{}", path_label(path)))
+    } else if count == 2 {
+        // Two-stop gradients usually need contrast more than a full loop.
+        [0.0, 190.0][index.min(1)]
+    } else if let Some(position) = position {
+        // Most authored gradients have uneven stop spacing. Mapping hue to the
+        // actual stop position keeps the rainbow aligned to that authored timing,
+        // and a stop at 1.0 wraps cleanly back to red for looped inputs.
+        position.clamp(0.0, 1.0) * 360.0
     } else {
         index as f64 * 360.0 / count as f64
     };
@@ -139,16 +148,16 @@ fn collect_edits(
     v: &Value,
     path: &mut Vec<Seg>,
     colorish: bool,
-    gradient_stop: Option<(usize, usize)>,
+    gradient_stop: Option<(usize, usize, Option<f64>)>,
     edits: &mut Vec<(Vec<Seg>, i64)>,
     gradient_fields: &mut usize,
     color_fields: &mut usize,
 ) {
     if colorish {
         if let Some(rgb) = as_color(v) {
-            let new = if let Some((i, n)) = gradient_stop {
+            let new = if let Some((i, n, position)) = gradient_stop {
                 *gradient_fields += 1;
-                rainbow_gradient_stop(rgb, entry, path, i, n)
+                rainbow_gradient_stop(rgb, entry, path, i, n, position)
             } else {
                 *color_fields += 1;
                 rainbow_color_field(rgb, entry, path)
@@ -188,7 +197,12 @@ fn collect_edits(
             let len = items.len();
             for (i, item) in items.iter().enumerate() {
                 path.push(Seg::Index(i));
-                let child_gradient = if stops { Some((i, len)) } else { gradient_stop };
+                let child_gradient = if stops {
+                    let position = item.get("m_flPosition").and_then(Value::as_f64);
+                    Some((i, len, position))
+                } else {
+                    gradient_stop
+                };
                 collect_edits(
                     entry,
                     item,

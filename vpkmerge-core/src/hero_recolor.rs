@@ -100,6 +100,21 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
     }
 }
 
+/// Hero codenames with built-in ability-VFX recolor recipes.
+#[must_use]
+pub const fn pinned_hero_codenames() -> &'static [&'static str] {
+    &[
+        "bookworm",
+        "necro",
+        "inferno",
+        "yamato",
+        "unicorn",
+        "gigawatt",
+        "vampirebat",
+        "wraith",
+    ]
+}
+
 /// Paige (`bookworm`). Pinned from the in-game-verified purple recolor:
 /// `pak02` (particles), `pak04` (the 9 color textures), and the ult vertex-color
 /// addon (`models/particle/bookworm_horse_knight` + `bookworm_mace`). Source of
@@ -332,6 +347,105 @@ pub struct HeroRecolorReport {
     pub model_vertices: usize,
     /// Total entries packed into the addon.
     pub total_entries: usize,
+}
+
+/// Particle-shape scan for deciding whether a hero is a good candidate for
+/// rainbow / animated rainbow VFX.
+#[derive(Debug, Clone, Default)]
+pub struct HeroRainbowSupportReport {
+    pub codename: String,
+    pub particles_total: usize,
+    pub particles_decoded: usize,
+    pub particles_decode_failed: usize,
+    /// Particles whose existing color scalars can be patched in place.
+    pub particles_patchable: usize,
+    /// Particles with no color edit to apply (usually color-free helper systems
+    /// or black literal defaults).
+    pub particles_color_free: usize,
+    /// Color-bearing particles that the scalar patcher rejected.
+    pub particles_unpatchable: usize,
+    /// Color/tint-keyed Color32 arrays found in particle KV3.
+    pub color_fields: usize,
+    /// Non-black color/tint arrays, a better proxy for visible color controls.
+    pub visible_color_fields: usize,
+    /// Objects with a non-empty `m_Gradient.m_Stops`.
+    pub gradient_fields: usize,
+    pub gradient_stops: usize,
+    pub multi_stop_gradient_fields: usize,
+    /// Gradient color inputs driven by collection age.
+    pub collection_age_gradient_fields: usize,
+    /// Gradient color inputs driven by particle lifetime.
+    pub particle_age_gradient_fields: usize,
+    /// Gradient color inputs with `PF_INPUT_MODE_LOOPED`.
+    pub looped_gradient_fields: usize,
+    pub random_color_initializers: usize,
+    pub color_interpolate_ops: usize,
+    pub collection_age_inputs: usize,
+    pub particle_age_inputs: usize,
+    pub looped_inputs: usize,
+    pub texture_entries: usize,
+    pub material_entries: usize,
+    pub model_entries: usize,
+}
+
+/// Scan one pinned hero recipe and report how much of its particle VFX can
+/// support rainbow treatment with the current in-place scalar patcher.
+pub fn scan_hero_rainbow_support(
+    vpk: impl AsRef<Path>,
+    base: Option<&Path>,
+    codename: &str,
+) -> Result<HeroRainbowSupportReport> {
+    let recipe = recipe_for(codename).with_context(|| {
+        format!(
+            "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
+             (pinned: {})",
+            pinned_hero_codenames().join(", ")
+        )
+    })?;
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let particle_entries = list_entries(&vpks, &recipe.particle_prefixes, ".vpcf_c");
+
+    let mut report = HeroRainbowSupportReport {
+        codename: recipe.codename.clone(),
+        particles_total: particle_entries.len(),
+        texture_entries: recipe.texture_entries.len(),
+        material_entries: recipe.material_entries.len(),
+        model_entries: recipe.model_entries.len(),
+        ..Default::default()
+    };
+
+    for entry in &particle_entries {
+        let bytes = read_entry(&vpks, entry)
+            .with_context(|| format!("reading particle {entry} (listed but unreadable)"))?;
+        let value = match morphic::decode_kv3_resource(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                report.particles_decode_failed += 1;
+                continue;
+            }
+        };
+        report.particles_decoded += 1;
+        collect_rainbow_support_stats(&value, false, &mut report);
+
+        let mut edits = Vec::new();
+        collect_color_edits(
+            &value,
+            &mut Vec::new(),
+            false,
+            Recolor::hue(300.0),
+            &mut edits,
+        );
+        if edits.is_empty() {
+            report.particles_color_free += 1;
+            continue;
+        }
+        match morphic::patch_kv3_resource_scalars(&bytes, &edits) {
+            Ok(_) => report.particles_patchable += 1,
+            Err(_) => report.particles_unpatchable += 1,
+        }
+    }
+
+    Ok(report)
 }
 
 /// Recolor a hero's full ability-VFX set (particles + color textures + vertex
@@ -740,6 +854,86 @@ fn recolored(rgb: [i64; 3], recolor: Recolor) -> [i64; 3] {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn clamp_channel(n: i64) -> u8 {
     n.clamp(0, 255) as u8
+}
+
+fn collect_rainbow_support_stats(v: &Value, colorish: bool, report: &mut HeroRainbowSupportReport) {
+    if colorish {
+        if let Some(rgb) = as_color(v) {
+            report.color_fields += 1;
+            if rgb.iter().copied().max().unwrap_or(0) > 1 {
+                report.visible_color_fields += 1;
+            }
+            return; // a color array has no colorish children
+        }
+    }
+
+    match v {
+        Value::Object(pairs) => {
+            if let Some(class) = v.get("_class").and_then(Value::as_str) {
+                match class {
+                    "C_INIT_RandomColor" => report.random_color_initializers += 1,
+                    "C_OP_ColorInterpolate" => report.color_interpolate_ops += 1,
+                    _ => {}
+                }
+            }
+
+            if let Some(input_type) = v.get("m_nType").and_then(Value::as_str) {
+                match input_type {
+                    "PF_TYPE_COLLECTION_AGE" => report.collection_age_inputs += 1,
+                    "PF_TYPE_PARTICLE_AGE_NORMALIZED" => report.particle_age_inputs += 1,
+                    _ => {}
+                }
+            }
+            if matches!(
+                v.get("m_nInputMode").and_then(Value::as_str),
+                Some("PF_INPUT_MODE_LOOPED")
+            ) {
+                report.looped_inputs += 1;
+            }
+
+            if let Some(stops) = v
+                .get("m_Gradient")
+                .and_then(|g| g.get("m_Stops"))
+                .and_then(Value::as_array)
+                .filter(|stops| !stops.is_empty())
+            {
+                report.gradient_fields += 1;
+                report.gradient_stops += stops.len();
+                if stops.len() > 1 {
+                    report.multi_stop_gradient_fields += 1;
+                }
+                if let Some(interp) = v.get("m_FloatInterp") {
+                    match interp.get("m_nType").and_then(Value::as_str) {
+                        Some("PF_TYPE_COLLECTION_AGE") => {
+                            report.collection_age_gradient_fields += 1;
+                        }
+                        Some("PF_TYPE_PARTICLE_AGE_NORMALIZED") => {
+                            report.particle_age_gradient_fields += 1;
+                        }
+                        _ => {}
+                    }
+                    if matches!(
+                        interp.get("m_nInputMode").and_then(Value::as_str),
+                        Some("PF_INPUT_MODE_LOOPED")
+                    ) {
+                        report.looped_gradient_fields += 1;
+                    }
+                }
+            }
+
+            for (k, child) in pairs {
+                let kl = k.to_lowercase();
+                let c = kl.contains("color") || kl.contains("tint");
+                collect_rainbow_support_stats(child, c, report);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_rainbow_support_stats(item, false, report);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Walk the value tree, building scalar edits for color channels. `path` is the
