@@ -326,6 +326,260 @@ pub fn set_strings(block: &[u8], edits: &[(Vec<Seg>, String)]) -> Result<Vec<u8>
     Ok(out)
 }
 
+/// Sets `STRING` fields by path, **adding** any target string that is not already
+/// interned in the KV3 v5 string table (the structural cousin of [`set_strings`],
+/// which can only redirect to an already-present value).
+///
+/// Each distinct, non-empty target string absent from the table is appended via
+/// [`append_strings_v5`] (which rebuilds the aux buffer byte-faithfully and fixes
+/// the header sizes); then the field redirect is applied by [`set_strings`] exactly
+/// as usual. The decoded tree is unchanged except at the targeted fields, so the
+/// engine's particle loader accepts the result just like the existing in-place
+/// patches. This is the lever for true animated VFX: pointing a gradient's
+/// `m_FloatInterp/m_nType` at `PF_TYPE_COLLECTION_AGE` and `m_nInputMode` at
+/// `PF_INPUT_MODE_LOOPED` even when those enum strings were not already present.
+///
+/// Only v5 supports the append; a v4 block falls back to [`set_strings`] (which
+/// succeeds only if every target is already interned, else errors so the caller can
+/// skip that entry). Errors if the block is not v4/v5, or for the usual
+/// missing/ambiguous/not-a-string path failures from [`set_strings`].
+pub fn set_strings_adding(
+    block: &[u8],
+    edits: &[(Vec<Seg>, String)],
+) -> Result<Vec<u8>, DecodeError> {
+    let out = rewrap_uncompressed(block)?;
+    let version = u32_at(&out, 0)? & 0xFF;
+    let mut wanted: Vec<String> = Vec::new();
+    for (_, s) in edits {
+        if !s.is_empty() && !wanted.contains(s) {
+            wanted.push(s.clone());
+        }
+    }
+    let appended = match version {
+        5 => append_strings_v5(&out, &wanted)?,
+        4 => append_strings_v4(&out, &wanted)?,
+        // Other versions are not patched in place; set_strings reports the error.
+        _ => out,
+    };
+    set_strings(&appended, edits)
+}
+
+/// Appends each of `wanted` that is not already interned to the KV3 v5 string table
+/// of an **uncompressed** v5 `block`, returning the rebuilt block (or the input
+/// unchanged if nothing needs adding).
+///
+/// The string table is the null-terminated run at the front of the aux buffer's b1
+/// lane, with the string count stored as the first int of aux b4 (see
+/// `reader::layout_aux_v5`). Appending rebuilds the aux buffer: the new strings are
+/// inserted after the existing table, the b1 value lane and the b2/b4/b8 lanes are
+/// carried through verbatim at their re-aligned positions, the count int is bumped,
+/// and the header size fields (aux b1 count at 28, buf1 sizes at 72/76, total sizes
+/// at 48/52) are corrected. Buffer 2 (the main buffer) is untouched. Because the
+/// new strings are not yet referenced by any field, the decoded value tree is
+/// identical; a following [`set_strings`] points a field at the new index.
+fn append_strings_v5(block: &[u8], wanted: &[String]) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    if block.len() < HEADER || u32_at(block, 0)? & 0xFF != 5 {
+        return Err(DecodeError::Kv3(
+            "string append requires an uncompressed KV3 v5 block",
+        ));
+    }
+    let aux_b1 = i32_at(block, 28)? as usize;
+    let aux_b4 = i32_at(block, 32)? as usize;
+    let aux_b8 = i32_at(block, 36)? as usize;
+    let aux_b2 = i32_at(block, 64)? as usize;
+    let unc_buf1 = i32_at(block, 72)? as usize;
+
+    let buf1 = HEADER;
+    let buf1_end = buf1
+        .checked_add(unc_buf1)
+        .filter(|&e| e <= block.len())
+        .ok_or(DecodeError::Kv3("buf1 out of range"))?;
+
+    // Aux lane layout within buf1 (mirrors reader::layout_aux_v5).
+    let mut off = 0usize;
+    off += aux_b1;
+    let (a_b2_start, a_b2_len) = lane(&mut off, aux_b2, 2);
+    let (a_b4_start, a_b4_len) = lane(&mut off, aux_b4, 4);
+    let (a_b8_start, a_b8_len) = lane(&mut off, aux_b8, 8);
+    let aux_content_end = off;
+    if aux_content_end > unc_buf1 || a_b4_len < 4 {
+        return Err(DecodeError::Kv3("aux lane layout out of range"));
+    }
+    // Trailing bytes after the last lane (alignment padding), preserved verbatim.
+    let tail = block
+        .get(buf1 + aux_content_end..buf1_end)
+        .ok_or(DecodeError::Kv3("buf1 tail out of range"))?;
+
+    // String table: `count` null-terminated strings at the front of b1; count is the
+    // first int of aux b4.
+    let count = u32::try_from(i32_at(block, buf1 + a_b4_start)?)
+        .map_err(|_| DecodeError::Kv3("negative string count"))? as usize;
+    let mut sp = buf1;
+    let mut existing = Vec::with_capacity(count);
+    for _ in 0..count {
+        existing.push(read_cstr(block, &mut sp)?);
+    }
+    let strtab = block
+        .get(buf1..sp)
+        .ok_or(DecodeError::Kv3("string table out of range"))?;
+    let b1_lane = block
+        .get(sp..buf1 + aux_b1)
+        .ok_or(DecodeError::Kv3("b1 value lane out of range"))?;
+
+    // Which wanted strings genuinely need adding.
+    let mut to_add: Vec<&str> = Vec::new();
+    for s in wanted {
+        if !s.is_empty() && !existing.iter().any(|e| e == s) && !to_add.contains(&s.as_str()) {
+            to_add.push(s.as_str());
+        }
+    }
+    if to_add.is_empty() {
+        return Ok(block.to_vec());
+    }
+
+    // New string table, then the new b1 lane (table + carried value lane).
+    let mut new_strtab = strtab.to_vec();
+    for s in &to_add {
+        new_strtab.extend_from_slice(s.as_bytes());
+        new_strtab.push(0);
+    }
+    let new_count = count + to_add.len();
+    let new_aux_b1 = new_strtab.len() + b1_lane.len();
+
+    // Re-lay out the aux buffer with the grown b1, mirroring the reader's alignment.
+    let mut off = new_aux_b1;
+    let (n_b2_start, _) = lane(&mut off, aux_b2, 2);
+    let (n_b4_start, _) = lane(&mut off, aux_b4, 4);
+    let (n_b8_start, _) = lane(&mut off, aux_b8, 8);
+    let new_content_end = off;
+    let new_buf1_len = new_content_end + tail.len();
+
+    let mut nb = vec![0u8; new_buf1_len];
+    nb[..new_strtab.len()].copy_from_slice(&new_strtab);
+    nb[new_strtab.len()..new_aux_b1].copy_from_slice(b1_lane);
+    nb[n_b2_start..n_b2_start + a_b2_len]
+        .copy_from_slice(&block[buf1 + a_b2_start..buf1 + a_b2_start + a_b2_len]);
+    nb[n_b4_start..n_b4_start + 4].copy_from_slice(
+        &u32::try_from(new_count)
+            .map_err(|_| DecodeError::Kv3("string count overflow"))?
+            .to_le_bytes(),
+    );
+    nb[n_b4_start + 4..n_b4_start + a_b4_len]
+        .copy_from_slice(&block[buf1 + a_b4_start + 4..buf1 + a_b4_start + a_b4_len]);
+    nb[n_b8_start..n_b8_start + a_b8_len]
+        .copy_from_slice(&block[buf1 + a_b8_start..buf1 + a_b8_start + a_b8_len]);
+    nb[new_content_end..].copy_from_slice(tail);
+
+    // header + rebuilt buf1 + (unchanged) buf2.
+    let mut out = Vec::with_capacity(HEADER + new_buf1_len + (block.len() - buf1_end));
+    out.extend_from_slice(&block[..HEADER]);
+    out.extend_from_slice(&nb);
+    out.extend_from_slice(&block[buf1_end..]);
+
+    // Fix the header size fields the grown buf1 invalidates. buf1 only grows, so
+    // the byte delta is a non-negative usize added to each total.
+    let fit = |v: usize| i32::try_from(v).map_err(|_| DecodeError::Kv3("size field overflow"));
+    let grow = fit(new_buf1_len - unc_buf1)?;
+    let grow_total = |o: usize| -> Result<i32, DecodeError> {
+        i32_at(block, o)?
+            .checked_add(grow)
+            .ok_or(DecodeError::Kv3("size field overflow"))
+    };
+    let new_unc_total = grow_total(48)?;
+    let new_comp_total = grow_total(52)?;
+    write_i32_at(&mut out, 28, fit(new_aux_b1)?);
+    write_i32_at(&mut out, 72, fit(new_buf1_len)?);
+    write_i32_at(&mut out, 76, fit(new_buf1_len)?); // comp == unc (uncompressed)
+    write_i32_at(&mut out, 48, new_unc_total);
+    write_i32_at(&mut out, 52, new_comp_total);
+    Ok(out)
+}
+
+/// v4 sibling of [`append_strings_v5`]. A v4 block is a single buffer laid out
+/// `[b1][b2][b4][b8][strings][types][trailer]` (see `reader::layout_single`): the
+/// string table is an inline region *after* the typed lanes, so appending is simpler
+/// than v5 (no lane realignment). The new strings are spliced in at the end of the
+/// table, shifting the type stream and trailer; the count int (first int of b4),
+/// `countTypes` (the combined string+type byte count at offset 40), and the total
+/// sizes (48/52) are bumped by the inserted byte count. The typed lanes, which sit
+/// before the strings, do not move.
+fn append_strings_v4(block: &[u8], wanted: &[String]) -> Result<Vec<u8>, DecodeError> {
+    const BUF: usize = 72;
+    if block.len() < BUF || u32_at(block, 0)? & 0xFF != 4 {
+        return Err(DecodeError::Kv3(
+            "v4 string append requires an uncompressed KV3 v4 block",
+        ));
+    }
+    let count_b1 = i32_at(block, 28)? as usize;
+    let count_b4 = i32_at(block, 32)? as usize;
+    let count_b8 = i32_at(block, 36)? as usize;
+    let count_b2 = i32_at(block, 64)? as usize;
+
+    // Lane layout within the single buffer (mirrors reader::layout_single), to find
+    // where the string table begins (just past b8).
+    let mut off = 0usize;
+    off += count_b1;
+    let _ = lane(&mut off, count_b2, 2);
+    let (b4_start, b4_len) = lane(&mut off, count_b4, 4);
+    if count_b8 > 0 {
+        lane(&mut off, count_b8, 8);
+    } else {
+        align(&mut off, 8);
+    }
+    if b4_len < 4 {
+        return Err(DecodeError::Kv3("v4 b4 lane missing string count"));
+    }
+    let strings_start = BUF + off;
+    let count = u32::try_from(i32_at(block, BUF + b4_start)?)
+        .map_err(|_| DecodeError::Kv3("negative string count"))? as usize;
+    let mut sp = strings_start;
+    let mut existing = Vec::with_capacity(count);
+    for _ in 0..count {
+        existing.push(read_cstr(block, &mut sp)?);
+    }
+
+    let mut to_add: Vec<&str> = Vec::new();
+    for s in wanted {
+        if !s.is_empty() && !existing.iter().any(|e| e == s) && !to_add.contains(&s.as_str()) {
+            to_add.push(s.as_str());
+        }
+    }
+    if to_add.is_empty() {
+        return Ok(block.to_vec());
+    }
+
+    let mut added = Vec::new();
+    for s in &to_add {
+        added.extend_from_slice(s.as_bytes());
+        added.push(0);
+    }
+    let new_count = u32::try_from(count + to_add.len())
+        .map_err(|_| DecodeError::Kv3("string count overflow"))?;
+    let grow = i32::try_from(added.len()).map_err(|_| DecodeError::Kv3("size field overflow"))?;
+
+    // Splice the new strings in at the end of the existing table.
+    let mut out = Vec::with_capacity(block.len() + added.len());
+    out.extend_from_slice(&block[..sp]);
+    out.extend_from_slice(&added);
+    out.extend_from_slice(&block[sp..]);
+
+    // Bump the string-count int (sits in b4, before the splice point) and the size
+    // fields the larger string region invalidates.
+    out[BUF + b4_start..BUF + b4_start + 4].copy_from_slice(&new_count.to_le_bytes());
+    for o in [40usize, 48, 52] {
+        let v = i32_at(&out, o)?
+            .checked_add(grow)
+            .ok_or(DecodeError::Kv3("size field overflow"))?;
+        write_i32_at(&mut out, o, v);
+    }
+    Ok(out)
+}
+
+fn write_i32_at(b: &mut [u8], o: usize, v: i32) {
+    b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
 /// Sets boolean fields located by KV3 path, in place, on a byte-faithful
 /// uncompressed re-wrap of `block` (preserving structure, as the engine's model
 /// loader requires). Each edit is a `(path, value)` resolving to exactly one bool.
@@ -1276,5 +1530,165 @@ mod tests {
         let (buf2_new, frames_new) = buf2_and_frames(&patched);
         assert_eq!(buf2_new, buf2_old, "buf2 (main) byte-identical");
         assert_eq!(frames_new, frames_old, "blob frames byte-identical");
+    }
+
+    /// A real Deadlock soundevents resource: KV3 v5, LZ4-compressed, NO binary-blob
+    /// section, so its `DATA` block re-wraps cleanly uncompressed. Used to exercise
+    /// the string-table append (format-generic: append works on any v5 KV3, not just
+    /// particles).
+    const GIGAWATT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/kv3/gigawatt.vsndevts_c"
+    ));
+
+    fn gigawatt_data() -> Vec<u8> {
+        let res = Resource::parse(GIGAWATT).expect("parse gigawatt");
+        res.data_block().expect("DATA block").to_vec()
+    }
+
+    /// Path to the first non-empty `String` leaf in `v` (depth-first), or `None`.
+    fn first_string_path(v: &Value, path: &mut Vec<Seg>) -> Option<Vec<Seg>> {
+        match v {
+            Value::String(s) if !s.is_empty() => Some(path.clone()),
+            Value::Object(pairs) => {
+                for (k, child) in pairs {
+                    path.push(Seg::Key(k.clone()));
+                    if let Some(p) = first_string_path(child, path) {
+                        return Some(p);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    path.push(Seg::Index(i));
+                    if let Some(p) = first_string_path(child, path) {
+                        return Some(p);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn get_at<'a>(v: &'a Value, path: &[Seg]) -> Option<&'a Value> {
+        let mut cur = v;
+        for seg in path {
+            cur = match (seg, cur) {
+                (Seg::Key(k), Value::Object(pairs)) => &pairs.iter().find(|(kk, _)| kk == k)?.1,
+                (Seg::Index(i), Value::Array(items)) => items.get(*i)?,
+                _ => return None,
+            };
+        }
+        Some(cur)
+    }
+
+    fn set_at(v: &mut Value, path: &[Seg], new: Value) {
+        let Some((seg, rest)) = path.split_first() else {
+            *v = new;
+            return;
+        };
+        match (seg, v) {
+            (Seg::Key(k), Value::Object(pairs)) => {
+                let slot = pairs.iter_mut().find(|(kk, _)| kk == k).expect("key");
+                set_at(&mut slot.1, rest, new);
+            }
+            (Seg::Index(i), Value::Array(items)) => set_at(&mut items[*i], rest, new),
+            _ => panic!("path does not resolve"),
+        }
+    }
+
+    /// Appending an unreferenced string must not change the decoded tree (no field
+    /// points at it yet), and re-appending the same string is a no-op (proving it was
+    /// interned). This is the core faithfulness guarantee of the aux-buffer rebuild.
+    #[test]
+    fn append_string_preserves_the_tree_and_interns_it() {
+        let data = gigawatt_data();
+        let unc = rewrap_uncompressed(&data).expect("rewrap");
+        let novel = String::from("MORPHIC_APPEND_PROBE_STRING");
+
+        let added = append_strings_v5(&unc, std::slice::from_ref(&novel)).expect("append");
+        assert_ne!(added, unc, "buffer grew");
+        assert_eq!(
+            crate::kv3::decode(&added).expect("decode added"),
+            crate::kv3::decode(&unc).expect("decode unc"),
+            "appending an unreferenced string leaves the value tree identical"
+        );
+        // Idempotent: the second append finds it already interned and is a no-op.
+        let again = append_strings_v5(&added, std::slice::from_ref(&novel)).expect("append 2");
+        assert_eq!(again, added, "re-appending an interned string changes nothing");
+    }
+
+    /// The end-to-end lever: redirect an existing string field to a string that is
+    /// NOT already in the table. The plain `set_strings` cannot (the target is
+    /// missing); `set_strings_adding` appends it first, and the field reads the new
+    /// value while every other field is unchanged.
+    #[test]
+    fn set_strings_adding_redirects_a_field_to_a_brand_new_string() {
+        let data = gigawatt_data();
+        let tree = crate::kv3::decode(&data).expect("decode");
+        let path = first_string_path(&tree, &mut Vec::new()).expect("a string field");
+        let novel = String::from("MORPHIC_BRAND_NEW_ENUM_VALUE");
+
+        // Precondition: the target really is absent (so plain redirect would fail).
+        let unc = rewrap_uncompressed(&data).expect("rewrap");
+        assert!(
+            set_strings(&unc, &[(path.clone(), novel.clone())]).is_err(),
+            "novel string must be absent from the table to start"
+        );
+
+        let patched =
+            set_strings_adding(&data, &[(path.clone(), novel.clone())]).expect("adding redirect");
+        let new_tree = crate::kv3::decode(&patched).expect("decode patched");
+
+        assert_eq!(
+            get_at(&new_tree, &path),
+            Some(&Value::String(novel.clone())),
+            "the field now reads the brand-new string"
+        );
+        // Nothing else changed: rebuild the expected tree by editing only that field.
+        let mut expect = tree.clone();
+        set_at(&mut expect, &path, Value::String(novel));
+        assert_eq!(new_tree, expect, "only the targeted string field changed");
+    }
+
+    /// v4 append: many Deadlock particles ship KV3 v4 (single-buffer), so the append
+    /// must work there too. morphic's own encoder emits v4 uncompressed, so re-encode
+    /// the v5 fixture's tree to v4 and exercise the v4 path (no v4 fixture is committed).
+    #[test]
+    fn append_string_on_v4_block_preserves_tree_and_redirects() {
+        let data = gigawatt_data();
+        let tree = crate::kv3::decode(&data).expect("decode");
+        let format = crate::kv3::Format::from_payload(&data).expect("format");
+        let v4 = crate::kv3::encode(&tree, &format);
+        assert_eq!(u32_at(&v4, 0).unwrap() & 0xFF, 4, "encoder emits v4");
+
+        let novel = String::from("MORPHIC_V4_APPEND_PROBE");
+        // Append alone leaves the tree identical (the new string is unreferenced).
+        let added = append_strings_v4(&v4, std::slice::from_ref(&novel)).expect("v4 append");
+        assert_ne!(added, v4, "buffer grew");
+        assert_eq!(
+            crate::kv3::decode(&added).expect("decode added"),
+            tree,
+            "v4 append leaves the value tree identical"
+        );
+
+        // set_strings_adding dispatches to the v4 path and redirects a field to the
+        // brand-new string.
+        let path = first_string_path(&tree, &mut Vec::new()).expect("a string field");
+        let patched =
+            set_strings_adding(&v4, &[(path.clone(), novel.clone())]).expect("v4 redirect");
+        let new_tree = crate::kv3::decode(&patched).expect("decode patched");
+        assert_eq!(
+            get_at(&new_tree, &path),
+            Some(&Value::String(novel.clone())),
+            "the v4 field now reads the brand-new string"
+        );
+        let mut expect = tree;
+        set_at(&mut expect, &path, Value::String(novel));
+        assert_eq!(new_tree, expect, "only the targeted field changed (v4)");
     }
 }

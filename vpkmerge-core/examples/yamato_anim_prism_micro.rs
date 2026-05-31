@@ -27,7 +27,9 @@ const SKIP_KEYWORDS: &[&str] = &[
     "fog",
     "gas",
     "pnt",
-    "power_slash",
+    // power_slash is no longer skipped wholesale: its beams/trails animate fine, and
+    // its sprite-sheet inputs (the square that broke it) are now skipped per-input by
+    // vpkmerge_core::non_tiling_texture_inputs, not by name.
     "shake",
     "sleep",
     "smoke",
@@ -82,11 +84,25 @@ fn stop_target(label: &str) -> Option<f64> {
     }
 }
 
-fn collect_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut EntryPlan) {
+/// Whether `path` lies under one of the `m_Renderers[i]/m_vecTexturesInput[j]`
+/// prefixes whose UV offset must not be animated (a non-tiling sprite-sheet input).
+fn under_any(path: &[Seg], prefixes: &[Vec<Seg>]) -> bool {
+    prefixes
+        .iter()
+        .any(|p| path.len() >= p.len() && path[..p.len()] == p[..])
+}
+
+fn collect_plan(v: &Value, path: &mut Vec<Seg>, skip_offset: &[Vec<Seg>], plan: &mut EntryPlan) {
     let label = path_label(path);
     let lower = label.to_ascii_lowercase();
 
-    if matches!(v, Value::String(s) if s != AGE_TYPE)
+    // Offset enum redirect + multiplier bump are UV-scroll edits: skip them on
+    // non-tiling sprite-sheet inputs (they would reveal an atlas-cell square). The
+    // gradient-stop retiming below is color timing, not UV, so it is unconstrained.
+    let offset_animatable = !under_any(path, skip_offset);
+
+    if offset_animatable
+        && matches!(v, Value::String(s) if s != AGE_TYPE)
         && lower.contains("/m_texturecontrols/")
         && lower.contains("/m_flfinaltextureoffset")
         && lower.ends_with("/m_ntype")
@@ -94,7 +110,8 @@ fn collect_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut EntryPlan) {
         plan.string_paths.push(path.clone());
     }
 
-    if lower.contains("/m_texturecontrols/")
+    if offset_animatable
+        && lower.contains("/m_texturecontrols/")
         && lower.contains("/m_flfinaltextureoffset")
         && lower.ends_with("/m_flmultfactor")
     {
@@ -111,14 +128,14 @@ fn collect_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut EntryPlan) {
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
                 path.push(Seg::Index(i));
-                collect_plan(item, path, plan);
+                collect_plan(item, path, skip_offset, plan);
                 path.pop();
             }
         }
         Value::Object(pairs) => {
             for (key, child) in pairs {
                 path.push(Seg::Key(key.clone()));
-                collect_plan(child, path, plan);
+                collect_plan(child, path, skip_offset, plan);
                 path.pop();
             }
         }
@@ -138,13 +155,22 @@ fn patch_one_number(bytes: Vec<u8>, path: Vec<Seg>, value: f64) -> (Vec<u8>, boo
 
 fn patch_entry(bytes: &[u8]) -> anyhow::Result<(Vec<u8>, EntryStats)> {
     let tree = morphic::decode_kv3_resource(bytes)?;
+    // Texture inputs whose UV offset must NOT be animated (non-tiling sprite sheets:
+    // the Power Slash square). The shared core classifier, so the example and the
+    // future core animation pass agree on which inputs are safe.
+    let skip_offset = vpkmerge_core::non_tiling_texture_inputs(&tree);
     let mut plan = EntryPlan::default();
-    collect_plan(&tree, &mut Vec::new(), &mut plan);
+    collect_plan(&tree, &mut Vec::new(), &skip_offset, &mut plan);
 
     let mut out = bytes.to_vec();
     let mut stats = EntryStats::default();
 
-    if has_string(&tree, AGE_TYPE) {
+    // Bisection toggles: set any of these to "1" to drop that edit family, to
+    // isolate which one breaks Power Slash.
+    let no_offset = std::env::var("ANIM_NO_OFFSET").as_deref() == Ok("1");
+    let no_gradient = std::env::var("ANIM_NO_GRADIENT").as_deref() == Ok("1");
+
+    if !no_offset && has_string(&tree, AGE_TYPE) {
         for path in plan.string_paths {
             match morphic::patch_kv3_resource_strings(&out, &[(path, AGE_TYPE.to_string())]) {
                 Ok(patched) => {
@@ -156,19 +182,23 @@ fn patch_entry(bytes: &[u8]) -> anyhow::Result<(Vec<u8>, EntryStats)> {
         }
     }
 
-    for path in plan.mult_paths {
-        let (patched, ok) = patch_one_number(out, path, 2.5);
-        out = patched;
-        if ok {
-            stats.multipliers += 1;
+    if !no_offset {
+        for path in plan.mult_paths {
+            let (patched, ok) = patch_one_number(out, path, 2.5);
+            out = patched;
+            if ok {
+                stats.multipliers += 1;
+            }
         }
     }
 
-    for (path, value) in plan.gradient_paths {
-        let (patched, ok) = patch_one_number(out, path, value);
-        out = patched;
-        if ok {
-            stats.gradients += 1;
+    if !no_gradient {
+        for (path, value) in plan.gradient_paths {
+            let (patched, ok) = patch_one_number(out, path, value);
+            out = patched;
+            if ok {
+                stats.gradients += 1;
+            }
         }
     }
 

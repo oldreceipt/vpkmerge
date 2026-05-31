@@ -19,7 +19,8 @@ mod types;
 mod writer;
 
 pub use patch::{
-    neutralize_draw_calls, set_bools, set_doubles, set_floats, set_scalars, set_strings, Seg,
+    neutralize_draw_calls, set_bools, set_doubles, set_floats, set_scalars, set_strings,
+    set_strings_adding, Seg,
 };
 pub use rewrap::rewrap_uncompressed;
 pub use types::Value;
