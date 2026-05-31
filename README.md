@@ -7,7 +7,7 @@
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](https://github.com/Slush97/vpkmerge/releases/latest)
 
-Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many. Plus a small toolkit for the assets inside: decode Source 2 textures, extract hero portraits, read/edit soundevents, and export compiled models to glTF.
+Combine multiple Valve Pak (`.vpk`) files into one, or split one back into many. Plus a small toolkit for the assets inside: decode Source 2 textures, extract hero portraits, read/edit soundevents, export compiled models to glTF, and recolor a hero's whole ability VFX (one hue or a static/animated rainbow).
 
 Built for **Deadlock** modding: pre-merging several mods into one VPK consolidates them into a single addon slot, so a mod manager can resolve load order and overrides up front instead of dropping a pile of loose VPKs into the game. Splitting is the inverse operation for mod managers that want per-feature granularity (e.g. one ability slot at a time).
 
@@ -18,6 +18,8 @@ What it does:
 - **Portrait**: extract and decode hero card/portrait art from a VPK to PNG.
 - **Soundevents**: decode a Deadlock `.vsndevts_c` file to JSON, edit clip paths and params (volume, pitch), and re-emit a file the engine can load.
 - **Model**: export a hero `.vmdl_c` to a textured, skinned, animated binary glTF (`.glb`), decoded entirely in pure Rust (no .NET or C runtime).
+- **Texture**: recolor a Source 2 `.vtex_c` by hue (keeping each pixel's saturation and value) and re-encode in its own format, to override a texture in place with no `.vmat_c` edit.
+- **Hero VFX recolor**: recolor a whole hero's ability VFX (particles + chromatic textures + baked mesh vertex colors) to one hue (`recolor-hero`) or spread it across a static / animated rainbow (`prism`), packed into a single drop-in addon VPK. `rainbow-scan` rates which heroes carry the richest spectrum.
 - **Desktop GUI**: drag-and-drop merging with a visual conflict resolver, plus a Browse tab to walk a VPK's file tree and preview textures.
 - **`morphic`**: a pure-Rust Source 2 decoder underpinning the rest: `.vtex_c` textures (decode/encode), binary KeyValues3, and `.vmdl_c` -> `.glb` model export (no .NET runtime required).
 
@@ -57,10 +59,10 @@ On Linux/macOS, run `chmod +x vpkmerge-*` once after downloading, then call it f
 
 This repo is a Cargo workspace with four crates:
 
-- [`vpkmerge-core/`](./vpkmerge-core) (v0.6): pure Rust library with the merge and split engines plus the portrait-extraction, soundevents, and model-export layers. No UI dependencies. Reusable from any Rust project.
-- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.5): the `vpkmerge` command-line binary (`merge`, `split`, `portrait`, `model`, `soundevents`).
-- [`gui/src-tauri/`](./gui/src-tauri) (v0.5): Tauri v2 desktop app with a visual conflict resolver, a Browse tab for walking a VPK's file tree, a themeable paper UI, and texture preview for Source 2 `.vtex_c` entries (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
-- [`morphic/`](./morphic) (v0.2): pure-Rust Source 2 decoder. Decodes `.vtex_c` textures in LDR and HDR (BC6H), selecting mips/cubemap faces and re-encoding; reads/writes binary KeyValues3 (`.vsndevts_c`); and decodes `.vmdl_c` models (skeleton, skinned LOD0 meshes, materials, animation clips) to binary glTF. Powers the GUI texture previews, the soundevents layer, and the model exporter. See [`morphic/README.md`](./morphic/README.md).
+- [`vpkmerge-core/`](./vpkmerge-core) (v0.9): pure Rust library with the merge and split engines plus the portrait-extraction, soundevents, model-export, and hero-VFX-recolor layers. No UI dependencies. Reusable from any Rust project.
+- [`vpkmerge-cli/`](./vpkmerge-cli) (v0.9): the `vpkmerge` command-line binary (`merge`, `split`, `portrait`, `model`, `soundevents`, `texture`, `recolor-hero`, `prism`, `rainbow-scan`).
+- [`gui/src-tauri/`](./gui/src-tauri) (v0.6): Tauri v2 desktop app with a visual conflict resolver, a Browse tab for walking a VPK's file tree, a themeable paper UI, and texture preview for Source 2 `.vtex_c` entries (Vue 3 + Tailwind frontend in [`gui/src/`](./gui/src)).
+- [`morphic/`](./morphic) (v0.4): pure-Rust Source 2 decoder. Decodes `.vtex_c` textures in LDR and HDR (BC6H), selecting mips/cubemap faces and re-encoding; reads, writes, and byte-faithfully patches binary KeyValues3 (`.vsndevts_c`, `.vpcf_c`); and decodes `.vmdl_c` models (skeleton, skinned LOD0 meshes, materials, animation clips) to binary glTF. Powers the GUI texture previews, the soundevents layer, the model exporter, and the VFX recolor. See [`morphic/README.md`](./morphic/README.md).
 
 ## CLI
 
@@ -187,6 +189,50 @@ vpkmerge soundevents soundevents/hero/gigawatt.vsndevts_c \
 
 See [`docs/spike-vsndevts-kv3.md`](./docs/spike-vsndevts-kv3.md) for the format writeup.
 
+### Texture
+
+```bash
+vpkmerge texture <input.vtex_c | entry-path>... --hue <DEG> \
+  [--from-vpk <vpk>] [--saturation <SCALE>] [--brightness <SCALE>] \
+  [--preview <PNG>] [--encode <FILE> | --encode-vpk <OUT_dir.vpk> [--vpk-entry <PATH>]]
+```
+
+Recolor a Source 2 `.vtex_c`: set every pixel's hue to a target while keeping its saturation and value (so neutral highlights and shadows stay neutral), then re-encode in the texture's own `BCn` format. Pack the result at the base entry path and it overrides the texture in place, no `.vmat_c` edit needed. The same hue value also drives the particle and vertex-color recolors, so one number lands all three. **LDR (8-bit) textures only.**
+
+| Flag | Description |
+|------|-------------|
+| `--hue <DEG>` | Target hue in degrees (0..360) |
+| `--from-vpk <VPK>` | Read each positional argument as an entry path inside this VPK instead of a file on disk |
+| `--saturation <SCALE>` | Saturation scale (default 1.0 = keep source); > 1 lifts pale areas, < 1 mutes toward pastel |
+| `--brightness <SCALE>` | HSV value scale (default 1.0 = keep source); > 1 lightens, < 1 darkens |
+| `--preview <PNG>` | Write a PNG of the recolored top mip (pre-`BCn`) to eyeball before committing. Single input |
+| `--encode <FILE>` | Write the recolored `.vtex_c` to a loose file. Single input |
+| `--encode-vpk <OUT_dir.vpk>` | Pack all recolored textures into one addon VPK, each at its entry path |
+| `--vpk-entry <PATH>` | Entry path inside `--encode-vpk` (defaults to INPUT with `--from-vpk`; required for a loose-file input). Single input |
+
+### Hero VFX recolor: `recolor-hero`, `prism`, `rainbow-scan`
+
+A hero's ability color lives across three mechanisms: particle color params (`.vpcf_c`), chromatic textures (`.vtex_c`), and baked mesh vertex colors (`.vmdl_c`). These commands compose all three over a built-in per-hero **recipe** and pack the result into one addon VPK that overrides the base game in place.
+
+```bash
+# One absolute hue across the whole VFX set.
+vpkmerge recolor-hero --hero <CODENAME> --vpk <VPK> [--base <VPK>] --hue <DEG> \
+  [--saturation <SCALE>] [--brightness <SCALE>] \
+  (--encode-vpk <OUT_dir.vpk> | --preview-png <PNG>)
+
+# A static (or animated) rainbow: spread each effect's color across a spectrum.
+vpkmerge prism --hero <CODENAME> --vpk <VPK> [--base <VPK>] \
+  --encode-vpk <OUT_dir.vpk> [--animated] \
+  [--hue-offset <DEG>] [--saturation <SCALE>] [--brightness <SCALE>]
+
+# Rate how well each pinned hero suits rainbow treatment (run this first).
+vpkmerge rainbow-scan --vpk <VPK> [--base <VPK>] [--hero <CODENAME>...]
+```
+
+Pinned codenames: `bookworm` (Paige, full particles + textures + models), `necro` (Graves), `inferno` (Infernus), `yamato` (Yamato), plus particle-only `unicorn` (Celeste), `gigawatt` (Seven), `vampirebat` (Mina), and `wraith`. An unknown codename lists the pinned set.
+
+`prism --animated` adds a byte-faithful timing pass on high-visibility effects (glow / beam / trail / arc / slash): texture scroll repointed at particle age and gradient stops retimed so the spectrum sweeps over each particle's lifetime. Without it the prism is color-only (still reads as moving on heroes whose gradients already loop). `--hue-offset` rotates where the rainbow starts (the per-effect spread is unchanged, just shifted), and `--saturation` / `--brightness` scale the whole spectrum (e.g. a pastel rainbow); all three default to the canonical rainbow. `recolor-hero --preview-png` skips the (slow) full bake and writes a fast swatch of the recipe's representative texture for a live UI preview.
+
 ### Example (merge)
 
 ```bash
@@ -223,7 +269,7 @@ To use the merge / split engines from another Rust project:
 
 ```toml
 [dependencies]
-vpkmerge-core = "0.6"
+vpkmerge-core = "0.9"
 ```
 
 ```rust

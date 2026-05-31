@@ -665,12 +665,55 @@ pub fn recolor_hero_to_addon(
 /// and never touch color, so `animated = false` reproduces the static prism byte
 /// for byte. Promoted from `examples/yamato_anim_prism_micro.rs`, generalized off
 /// Yamato to run on any pinned hero's particle prefixes.
-#[allow(clippy::too_many_lines)]
+/// User adjustments layered on top of the deterministic prism spectrum: rotate
+/// the whole rainbow's start hue and scale its saturation / brightness. The
+/// default reproduces the original prism byte-for-byte (offset 0, scales 1.0), so
+/// callers that want the canonical rainbow can ignore this entirely.
+#[derive(Debug, Clone, Copy)]
+pub struct PrismTuning {
+    /// Degrees added to every spectrum hue (rotate where the rainbow starts).
+    pub hue_offset: f64,
+    /// Saturation scale on the spectrum (1.0 = engine default, <1 pastels it).
+    pub saturation: f64,
+    /// Brightness (HSV value) scale on the spectrum (1.0 = engine default).
+    pub brightness: f64,
+}
+
+impl Default for PrismTuning {
+    fn default() -> Self {
+        Self {
+            hue_offset: 0.0,
+            saturation: 1.0,
+            brightness: 1.0,
+        }
+    }
+}
+
+/// [`prism_recolor_hero_to_addon_tuned`] with no spectrum tuning: the canonical
+/// rainbow. Kept as the stable entry point for callers (e.g. the GUI Prism tab)
+/// that don't expose the rotation / saturation knobs.
 pub fn prism_recolor_hero_to_addon(
     vpk: impl AsRef<Path>,
     base: Option<&Path>,
     codename: &str,
     animated: bool,
+    out: impl AsRef<Path>,
+) -> Result<HeroPrismRecolorReport> {
+    prism_recolor_hero_to_addon_tuned(vpk, base, codename, animated, PrismTuning::default(), out)
+}
+
+/// Spectrum-tuned sibling of [`prism_recolor_hero_to_addon`]: the same rainbow
+/// bake, but `tuning` rotates the whole spectrum's start hue and scales its
+/// saturation / brightness uniformly across particles, textures, materials, and
+/// models, so a UI can offer "rotate / desaturate the rainbow" without losing the
+/// per-effect spread.
+#[allow(clippy::too_many_lines)]
+pub fn prism_recolor_hero_to_addon_tuned(
+    vpk: impl AsRef<Path>,
+    base: Option<&Path>,
+    codename: &str,
+    animated: bool,
+    tuning: PrismTuning,
     out: impl AsRef<Path>,
 ) -> Result<HeroPrismRecolorReport> {
     let recipe = recipe_for(codename).with_context(|| {
@@ -697,7 +740,7 @@ pub fn prism_recolor_hero_to_addon(
 
         // 1. Color spread: retint every color-bearing particle to its spectrum.
         let (mut working, had_color) =
-            match prism_recolor_particle_bytes(&bytes, &recipe.codename, entry) {
+            match prism_recolor_particle_bytes(&bytes, &recipe.codename, entry, tuning) {
                 Ok(Some((new_bytes, stats))) => {
                     report.gradient_fields += stats.gradient_fields;
                     report.color_fields += stats.color_fields;
@@ -750,7 +793,7 @@ pub fn prism_recolor_hero_to_addon(
         match read_entry(&vpks, entry) {
             Some(bytes) => {
                 let new_bytes =
-                    prism_recolor_texture_bytes(&recipe.codename, entry, &bytes, animated)
+                    prism_recolor_texture_bytes(&recipe.codename, entry, &bytes, animated, tuning)
                         .with_context(|| format!("prism-recoloring texture {entry}"))?;
                 packed.push((entry.clone(), new_bytes));
                 report.textures_recolored += 1;
@@ -762,7 +805,7 @@ pub fn prism_recolor_hero_to_addon(
     for entry in &recipe.material_entries {
         match read_entry(&vpks, entry) {
             Some(bytes) => {
-                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.33);
+                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.33, tuning);
                 match recolor_material_color_bytes(&bytes, recolor) {
                     Ok(Some(new_bytes)) => {
                         packed.push((entry.clone(), new_bytes));
@@ -782,7 +825,7 @@ pub fn prism_recolor_hero_to_addon(
     for entry in &recipe.model_entries {
         match read_entry(&vpks, entry) {
             Some(bytes) => {
-                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.66);
+                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.66, tuning);
                 let (new_bytes, stats) =
                     crate::recolor::recolor_model_vertex_colors(&bytes, recolor)
                         .with_context(|| format!("prism-recoloring model {entry}"))?;
@@ -856,6 +899,7 @@ fn prism_recolor_particle_bytes(
     vpcf_bytes: &[u8],
     codename: &str,
     entry: &str,
+    tuning: PrismTuning,
 ) -> Result<Option<(Vec<u8>, ParticlePrismStats)>> {
     let value = morphic::decode_kv3_resource(vpcf_bytes)
         .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
@@ -868,6 +912,7 @@ fn prism_recolor_particle_bytes(
         &mut Vec::new(),
         false,
         None,
+        tuning,
         &mut edits,
         &mut stats,
     );
@@ -1124,19 +1169,30 @@ fn prism_theme_for(codename: &str, entry: &str) -> PrismTheme {
     }
 }
 
-fn spectrum_recolor_for(codename: &str, entry: &str, offset: f64) -> Recolor {
-    let hue = (hash01(&format!("{codename}:{entry}")) + offset).fract() * 360.0;
-    Recolor::new(hue, 1.0, 1.0)
+fn spectrum_recolor_for(codename: &str, entry: &str, offset: f64, tuning: PrismTuning) -> Recolor {
+    let hue = (hash01(&format!("{codename}:{entry}")) + offset + tuning.hue_offset / 360.0).fract()
+        * 360.0;
+    Recolor::new(hue, tuning.saturation, tuning.brightness)
 }
 
-fn prism_texture_recolor_for(codename: &str, entry: &str, offset: f64) -> Recolor {
+fn prism_texture_recolor_for(
+    codename: &str,
+    entry: &str,
+    offset: f64,
+    tuning: PrismTuning,
+) -> Recolor {
     if codename == "yamato" && entry == YAMATO_SHADOW_SHAPE_COLOR_TEXTURE {
         // This full-body shadow-form albedo sits under status-effect color warp and
         // cloak lighting. A saturated spectrum hue turns the ult body into a loud
         // static sheet, so keep it cool and subdued while still removing the red.
-        Recolor::new(190.0, 0.45, 0.72)
+        // The tuning still rotates / scales it so it tracks the rest of the rainbow.
+        Recolor::new(
+            (190.0 + tuning.hue_offset).rem_euclid(360.0),
+            0.45 * tuning.saturation,
+            0.72 * tuning.brightness,
+        )
     } else {
-        spectrum_recolor_for(codename, entry, offset)
+        spectrum_recolor_for(codename, entry, offset, tuning)
     }
 }
 
@@ -1145,12 +1201,13 @@ fn prism_recolor_texture_bytes(
     entry: &str,
     bytes: &[u8],
     animated: bool,
+    tuning: PrismTuning,
 ) -> Result<Vec<u8>> {
     if animated && codename == "yamato" && is_yamato_shadow_status_texture(entry) {
-        return rainbowize_yamato_shadow_status_texture(bytes);
+        return rainbowize_yamato_shadow_status_texture(bytes, tuning);
     }
 
-    let recolor = prism_texture_recolor_for(codename, entry, 0.0);
+    let recolor = prism_texture_recolor_for(codename, entry, 0.0, tuning);
     crate::recolor::recolor_texture_hue(bytes, recolor)
 }
 
@@ -1164,7 +1221,10 @@ fn is_yamato_shadow_status_texture(entry: &str) -> bool {
 /// carry an animated rainbow while preserving the original texture's luminance and
 /// alpha mask.
 #[allow(clippy::cast_precision_loss)]
-fn rainbowize_yamato_shadow_status_texture(vtex_bytes: &[u8]) -> Result<Vec<u8>> {
+fn rainbowize_yamato_shadow_status_texture(
+    vtex_bytes: &[u8],
+    tuning: PrismTuning,
+) -> Result<Vec<u8>> {
     let mut image =
         morphic::decode(vtex_bytes).context("decoding Yamato Shadow Form status texture")?;
     let w = image.width as usize;
@@ -1180,6 +1240,7 @@ fn rainbowize_yamato_shadow_status_texture(vtex_bytes: &[u8]) -> Result<Vec<u8>>
                 [px[i], px[i + 1], px[i + 2]],
                 x as f64 / w as f64,
                 y as f64 / h as f64,
+                tuning,
             );
             px[i] = rgb[0];
             px[i + 1] = rgb[1];
@@ -1192,14 +1253,18 @@ fn rainbowize_yamato_shadow_status_texture(vtex_bytes: &[u8]) -> Result<Vec<u8>>
         .context("re-encoding Yamato Shadow Form rainbow status texture")
 }
 
-fn rainbow_status_band_rgb(rgb: [u8; 3], u: f64, v: f64) -> [u8; 3] {
+fn rainbow_status_band_rgb(rgb: [u8; 3], u: f64, v: f64, tuning: PrismTuning) -> [u8; 3] {
     let value = (f64::from(rgb[0].max(rgb[1]).max(rgb[2])) / 255.0)
         .powf(0.85)
         .clamp(0.0, 1.0);
     // Eight diagonal hue repeats across the top mip. The status effect's authored
     // UV scroll moves these bands over the model surface in-game.
     let band = (u * 8.0 + v * 3.0).fract();
-    let out = hsv_to_rgb_i64(band * 360.0, 1.0, value);
+    let out = hsv_to_rgb_i64(
+        band * 360.0 + tuning.hue_offset,
+        tuning.saturation.clamp(0.0, 1.0),
+        (value * tuning.brightness).clamp(0.0, 1.0),
+    );
     [
         clamp_channel(out[0]),
         clamp_channel(out[1]),
@@ -1366,6 +1431,7 @@ fn prism_gradient_stop(
     index: usize,
     count: usize,
     position: Option<f64>,
+    tuning: PrismTuning,
     stats: &mut ParticlePrismStats,
 ) -> [i64; 3] {
     stats.gradient_fields += 1;
@@ -1386,7 +1452,7 @@ fn prism_gradient_stop(
     } else {
         index as f64 / (count - 1) as f64
     };
-    let hue = hue_at(theme, entry, &path_label, t);
+    let hue = hue_at(theme, entry, &path_label, t) + tuning.hue_offset;
     let (val, boosted, lifted_black) = value_floor(v, &effect_label, true);
     if boosted {
         stats.boosted_fields += 1;
@@ -1394,7 +1460,11 @@ fn prism_gradient_stop(
     if lifted_black {
         stats.lifted_black_gradient_fields += 1;
     }
-    hsv_to_rgb_i64(hue, saturation_for(&effect_label), val)
+    hsv_to_rgb_i64(
+        hue,
+        (saturation_for(&effect_label) * tuning.saturation).clamp(0.0, 1.0),
+        (val * tuning.brightness).clamp(0.0, 1.0),
+    )
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1403,6 +1473,7 @@ fn prism_color_field(
     codename: &str,
     entry: &str,
     path: &[Seg],
+    tuning: PrismTuning,
     stats: &mut ParticlePrismStats,
 ) -> [i64; 3] {
     stats.color_fields += 1;
@@ -1431,12 +1502,16 @@ fn prism_color_field(
     } else {
         base_t
     };
-    let hue = hue_at(theme, entry, &path_label, t);
+    let hue = hue_at(theme, entry, &path_label, t) + tuning.hue_offset;
     let (val, boosted, _) = value_floor(v, &effect_label, false);
     if boosted {
         stats.boosted_fields += 1;
     }
-    hsv_to_rgb_i64(hue, saturation_for(&effect_label), val)
+    hsv_to_rgb_i64(
+        hue,
+        (saturation_for(&effect_label) * tuning.saturation).clamp(0.0, 1.0),
+        (val * tuning.brightness).clamp(0.0, 1.0),
+    )
 }
 
 fn prism_path_is_stops(path: &[Seg]) -> bool {
@@ -1451,15 +1526,16 @@ fn collect_prism_edits(
     path: &mut Vec<Seg>,
     colorish: bool,
     gradient_stop: Option<(usize, usize, Option<f64>)>,
+    tuning: PrismTuning,
     edits: &mut Vec<(Vec<Seg>, i64)>,
     stats: &mut ParticlePrismStats,
 ) {
     if colorish {
         if let Some(rgb) = as_color(v) {
             let new = if let Some((i, n, position)) = gradient_stop {
-                prism_gradient_stop(rgb, codename, entry, path, i, n, position, stats)
+                prism_gradient_stop(rgb, codename, entry, path, i, n, position, tuning, stats)
             } else {
-                prism_color_field(rgb, codename, entry, path, stats)
+                prism_color_field(rgb, codename, entry, path, tuning, stats)
             };
             for (i, &nv) in new.iter().enumerate() {
                 if nv != rgb[i] {
@@ -1478,7 +1554,17 @@ fn collect_prism_edits(
                 let kl = k.to_lowercase();
                 let c = kl.contains("color") || kl.contains("tint");
                 path.push(Seg::Key(k.clone()));
-                collect_prism_edits(codename, entry, child, path, c, gradient_stop, edits, stats);
+                collect_prism_edits(
+                    codename,
+                    entry,
+                    child,
+                    path,
+                    c,
+                    gradient_stop,
+                    tuning,
+                    edits,
+                    stats,
+                );
                 path.pop();
             }
         }
@@ -1500,6 +1586,7 @@ fn collect_prism_edits(
                     path,
                     false,
                     child_gradient,
+                    tuning,
                     edits,
                     stats,
                 );
@@ -2351,12 +2438,22 @@ mod tests {
 
     #[test]
     fn yamato_shadow_form_prism_texture_is_muted() {
-        let r = prism_texture_recolor_for("yamato", YAMATO_SHADOW_SHAPE_COLOR_TEXTURE, 0.0);
+        let r = prism_texture_recolor_for(
+            "yamato",
+            YAMATO_SHADOW_SHAPE_COLOR_TEXTURE,
+            0.0,
+            PrismTuning::default(),
+        );
         assert!((r.hue - 190.0).abs() < 1e-9);
         assert!((r.saturation - 0.45).abs() < 1e-9);
         assert!((r.value - 0.72).abs() < 1e-9);
 
-        let generic = prism_texture_recolor_for("yamato", "materials/example.vtex_c", 0.0);
+        let generic = prism_texture_recolor_for(
+            "yamato",
+            "materials/example.vtex_c",
+            0.0,
+            PrismTuning::default(),
+        );
         assert!((generic.saturation - 1.0).abs() < 1e-9);
         assert!((generic.value - 1.0).abs() < 1e-9);
     }
@@ -2370,15 +2467,16 @@ mod tests {
             YAMATO_SHADOW_SHAPE_COLOR_TEXTURE
         ));
 
+        let dt = PrismTuning::default();
         assert_eq!(
-            rainbow_status_band_rgb([255, 255, 255], 0.0, 0.0),
+            rainbow_status_band_rgb([255, 255, 255], 0.0, 0.0, dt),
             [255, 0, 0]
         );
         assert_eq!(
-            rainbow_status_band_rgb([255, 255, 255], 1.0 / 48.0, 0.0),
+            rainbow_status_band_rgb([255, 255, 255], 1.0 / 48.0, 0.0, dt),
             [255, 255, 0]
         );
-        assert_eq!(rainbow_status_band_rgb([0, 0, 0], 0.5, 0.5), [0, 0, 0]);
+        assert_eq!(rainbow_status_band_rgb([0, 0, 0], 0.5, 0.5, dt), [0, 0, 0]);
     }
 
     #[test]

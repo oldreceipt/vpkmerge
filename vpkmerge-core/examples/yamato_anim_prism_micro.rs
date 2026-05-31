@@ -20,19 +20,11 @@ const TARGET_KEYWORDS: &[&str] = &[
 ];
 
 const SKIP_KEYWORDS: &[&str] = &[
-    "blood",
-    "darkness",
-    "debris",
-    "dust",
-    "fog",
-    "gas",
-    "pnt",
+    "blood", "darkness", "debris", "dust", "fog", "gas", "pnt",
     // power_slash is no longer skipped wholesale: its beams/trails animate fine, and
     // its sprite-sheet inputs (the square that broke it) are now skipped per-input by
     // vpkmerge_core::non_tiling_texture_inputs, not by name.
-    "shake",
-    "sleep",
-    "smoke",
+    "shake", "sleep", "smoke",
 ];
 
 #[derive(Default)]
