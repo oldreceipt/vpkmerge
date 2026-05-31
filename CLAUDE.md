@@ -199,6 +199,46 @@ model particle (`.vpcf_c`), not named obviously. Paige's ult body is
 the `heroes_wip/bookworm/bookworm_horse*` models. Full writeup + workflow:
 [docs/handoff-vertex-color-recolor.md](docs/handoff-vertex-color-recolor.md).
 
+## Hero ability-VFX recolor (compose + prism)
+
+`vpkmerge_core::hero_recolor` is the composition layer over the three mechanisms
+above. A built-in per-hero **recipe** (`recipe_for`) pins which entries carry that
+hero's ability color (particle prefixes + chromatic textures + tint materials +
+vertex-color models), and one call recolors the whole set into a single addon VPK
+that overrides the base in place. Pinned codenames (`pinned_hero_codenames`):
+`bookworm` (Paige, full particles+textures+models), `necro` (Graves, +tint
+materials), `inferno` (Infernus), `yamato` (Yamato), plus particle-only `unicorn`
+(Celeste), `gigawatt` (Seven), `vampirebat` (Mina), `wraith`. An unknown codename
+lists the pinned set.
+
+Three CLI commands share these recipes:
+
+- `vpkmerge recolor-hero --hero <CODENAME> --vpk <VPK> [--base <VPK>] --hue <DEG>
+  [--saturation <SCALE>] [--brightness <SCALE>] (--encode-vpk <OUT_dir.vpk> |
+  --preview-png <PNG>)`: recolor the whole VFX set to **one** absolute hue (the same
+  `set_color` as the texture/model/particle recolors, so one value lands all three).
+  `--preview-png` renders the recipe's representative texture as a fast swatch
+  instead of baking.
+- `vpkmerge prism --hero <CODENAME> --vpk <VPK> [--base <VPK>] --encode-vpk
+  <OUT_dir.vpk> [--animated]`: instead of one hue, spread each effect's existing
+  color/tint scalars across a **spectrum** (gradient stops become spectral ramps,
+  themed by effect type). `--animated` adds a byte-faithful timing pass on
+  high-visibility effects (glow/beam/trail/arc/slash): texture scroll repointed at
+  particle age, scroll multiplier boosted, gradient stops retimed, so the spectrum
+  sweeps over each particle's lifetime. Without it the prism is color-only (still
+  reads as moving on heroes whose gradients already loop). `--animated` off is
+  byte-identical to the static prism.
+- `vpkmerge rainbow-scan --vpk <VPK> [--base <VPK>] [--hero <CODENAME>...]`: scan
+  the pinned recipes (or the given heroes) and print a per-hero table classifying
+  how well each suits rainbow treatment (`looped` > `animated` > `strong` >
+  `gradient` > `static`). Run this first to pick the best prism candidate; Celeste
+  (`unicorn`) is the richest.
+
+Same engine as the GUI's Prism tab (`build_hero_prism_vpk`). In-game confirmed:
+single-hue on Paige (purple); static + animated prism on Celeste and Paige. Source
+of truth: [../grimoire/docs/ability-vfx-recolor.md](../grimoire/docs/ability-vfx-recolor.md)
+and [docs/handoff-vertex-color-recolor.md](docs/handoff-vertex-color-recolor.md).
+
 ## Related
 
 - `../grimoire/` is the mod manager that uses these VPKs. The user plans to eventually fold the GUI logic into the Grimoire desktop client; treat `gui/` as a prototype for that integration.
