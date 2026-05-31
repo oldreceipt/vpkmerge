@@ -38,9 +38,9 @@ pub use recolor::{
 
 pub mod hero_recolor;
 pub use hero_recolor::{
-    pinned_hero_codenames, recipe_for, recolor_hero_preview_png, recolor_hero_to_addon,
-    recolor_particle_bytes, scan_hero_rainbow_support, HeroRainbowSupportReport, HeroRecolorRecipe,
-    HeroRecolorReport,
+    pinned_hero_codenames, prism_recolor_hero_to_addon, recipe_for, recolor_hero_preview_png,
+    recolor_hero_to_addon, recolor_particle_bytes, scan_hero_rainbow_support,
+    HeroPrismRecolorReport, HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport,
 };
 
 #[derive(Debug, Clone)]

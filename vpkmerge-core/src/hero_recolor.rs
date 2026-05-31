@@ -349,6 +349,50 @@ pub struct HeroRecolorReport {
     pub total_entries: usize,
 }
 
+/// What a [`prism_recolor_hero_to_addon`] run produced.
+#[derive(Debug, Clone, Default)]
+pub struct HeroPrismRecolorReport {
+    pub codename: String,
+    /// `.vpcf_c` files under the recipe prefixes.
+    pub particles_total: usize,
+    /// `.vpcf_c` files whose color/tint channels were changed and packed.
+    pub particles_recolored: usize,
+    /// `.vpcf_c` files under the prefixes that carry no color param.
+    pub particles_no_color: usize,
+    /// Color-bearing particles that the scalar patcher rejected.
+    pub particles_unpatchable: usize,
+    /// Existing gradient color stop arrays recolored as spectral ramps.
+    pub gradient_fields: usize,
+    /// Non-gradient color/tint arrays recolored.
+    pub color_fields: usize,
+    /// Color fields lifted brighter so the spectrum reads in game.
+    pub boosted_fields: usize,
+    /// Black gradient endpoints lifted to dark spectral color instead of pure gaps.
+    pub lifted_black_gradient_fields: usize,
+    /// Random min/max/fade fields spread across wider hue offsets.
+    pub random_range_fields: usize,
+    /// Explicit recipe color textures recolored to deterministic spectrum hues.
+    pub textures_recolored: usize,
+    /// Explicit recipe material tint constants recolored to deterministic spectrum hues.
+    pub materials_recolored: usize,
+    pub materials_unpatchable: usize,
+    /// Explicit recipe vertex-color models recolored to deterministic spectrum hues.
+    pub models_recolored: usize,
+    pub model_vertices: usize,
+    /// Total entries packed into the addon.
+    pub total_entries: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_field_names)]
+struct ParticlePrismStats {
+    gradient_fields: usize,
+    color_fields: usize,
+    boosted_fields: usize,
+    lifted_black_gradient_fields: usize,
+    random_range_fields: usize,
+}
+
 /// Particle-shape scan for deciding whether a hero is a good candidate for
 /// rainbow / animated rainbow VFX.
 #[derive(Debug, Clone, Default)]
@@ -417,12 +461,9 @@ pub fn scan_hero_rainbow_support(
     for entry in &particle_entries {
         let bytes = read_entry(&vpks, entry)
             .with_context(|| format!("reading particle {entry} (listed but unreadable)"))?;
-        let value = match morphic::decode_kv3_resource(&bytes) {
-            Ok(value) => value,
-            Err(_) => {
-                report.particles_decode_failed += 1;
-                continue;
-            }
+        let Ok(value) = morphic::decode_kv3_resource(&bytes) else {
+            report.particles_decode_failed += 1;
+            continue;
         };
         report.particles_decoded += 1;
         collect_rainbow_support_stats(&value, false, &mut report);
@@ -585,6 +626,130 @@ pub fn recolor_hero_to_addon(
     Ok(report)
 }
 
+/// Recolor a hero's ability-VFX set as a static prism/rainbow addon.
+///
+/// This is the app-facing version of the in-game-proven prism particle probes:
+/// it only patches existing particle color/tint scalars in place, so compiled
+/// particle resource framing is preserved. Explicit recipe textures/materials/
+/// vertex-color models are included too, but they receive deterministic
+/// per-entry spectrum hues rather than true texture animation.
+#[allow(clippy::too_many_lines)]
+pub fn prism_recolor_hero_to_addon(
+    vpk: impl AsRef<Path>,
+    base: Option<&Path>,
+    codename: &str,
+    out: impl AsRef<Path>,
+) -> Result<HeroPrismRecolorReport> {
+    let recipe = recipe_for(codename).with_context(|| {
+        format!(
+            "no built-in ability-VFX recolor recipe for hero codename {codename:?} \
+             (pinned: {})",
+            pinned_hero_codenames().join(", ")
+        )
+    })?;
+
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let mut packed: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    let mut report = HeroPrismRecolorReport {
+        codename: recipe.codename.clone(),
+        ..Default::default()
+    };
+
+    let particle_entries = list_entries(&vpks, &recipe.particle_prefixes, ".vpcf_c");
+    report.particles_total = particle_entries.len();
+    for entry in &particle_entries {
+        let bytes = read_entry(&vpks, entry)
+            .with_context(|| format!("reading particle {entry} (listed but unreadable)"))?;
+        match prism_recolor_particle_bytes(&bytes, &recipe.codename, entry) {
+            Ok(Some((new_bytes, stats))) => {
+                packed.push((entry.clone(), new_bytes));
+                report.particles_recolored += 1;
+                report.gradient_fields += stats.gradient_fields;
+                report.color_fields += stats.color_fields;
+                report.boosted_fields += stats.boosted_fields;
+                report.lifted_black_gradient_fields += stats.lifted_black_gradient_fields;
+                report.random_range_fields += stats.random_range_fields;
+            }
+            Ok(None) => report.particles_no_color += 1,
+            Err(e) => {
+                report.particles_unpatchable += 1;
+                eprintln!("  note: skipping {entry} (left vanilla): {e:#}");
+            }
+        }
+    }
+
+    for entry in &recipe.texture_entries {
+        match read_entry(&vpks, entry) {
+            Some(bytes) => {
+                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.0);
+                let new_bytes = crate::recolor::recolor_texture_hue(&bytes, recolor)
+                    .with_context(|| format!("prism-recoloring texture {entry}"))?;
+                packed.push((entry.clone(), new_bytes));
+                report.textures_recolored += 1;
+            }
+            None => missing.push(entry),
+        }
+    }
+
+    for entry in &recipe.material_entries {
+        match read_entry(&vpks, entry) {
+            Some(bytes) => {
+                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.33);
+                match recolor_material_color_bytes(&bytes, recolor) {
+                    Ok(Some(new_bytes)) => {
+                        packed.push((entry.clone(), new_bytes));
+                        report.materials_recolored += 1;
+                    }
+                    Ok(None) => eprintln!("  note: {entry} has no prism material tint; skipping"),
+                    Err(e) => {
+                        report.materials_unpatchable += 1;
+                        eprintln!("  note: skipping material {entry} (left vanilla): {e:#}");
+                    }
+                }
+            }
+            None => missing.push(entry),
+        }
+    }
+
+    for entry in &recipe.model_entries {
+        match read_entry(&vpks, entry) {
+            Some(bytes) => {
+                let recolor = spectrum_recolor_for(&recipe.codename, entry, 0.66);
+                let (new_bytes, stats) =
+                    crate::recolor::recolor_model_vertex_colors(&bytes, recolor)
+                        .with_context(|| format!("prism-recoloring model {entry}"))?;
+                if stats.buffers_recolored == 0 {
+                    eprintln!("  note: {entry} has no color-bearing vertex buffer; skipping");
+                    continue;
+                }
+                packed.push((entry.clone(), new_bytes));
+                report.models_recolored += 1;
+                report.model_vertices += stats.vertices;
+            }
+            None => missing.push(entry),
+        }
+    }
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} recipe entr{} not found in the given VPK(s) (recipe drift?): {}",
+            missing.len(),
+            if missing.len() == 1 { "y" } else { "ies" },
+            missing.join(", ")
+        );
+    }
+
+    let refs: Vec<(&str, &[u8])> = packed
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    crate::pack(&refs, out.as_ref())
+        .with_context(|| format!("packing hero prism recolor into {}", out.as_ref().display()))?;
+    report.total_entries = packed.len();
+    Ok(report)
+}
+
 /// Render a hero's recolor as a PNG swatch for a live UI preview, without baking
 /// the whole addon. Reads the recipe's representative `preview_texture` from the
 /// VPK(s) and recolors just its top mip (no lossy re-encode, no pack), so a color
@@ -616,6 +781,397 @@ pub fn recolor_hero_preview_png(
     })?;
     crate::recolor::recolor_texture_preview_png(&bytes, recolor)
         .context("rendering hero recolor preview")
+}
+
+/// Recolor one `.vpcf_c` as a static prism by changing existing color/tint
+/// channels only. Returns `None` when the particle has no color channels.
+fn prism_recolor_particle_bytes(
+    vpcf_bytes: &[u8],
+    codename: &str,
+    entry: &str,
+) -> Result<Option<(Vec<u8>, ParticlePrismStats)>> {
+    let value = morphic::decode_kv3_resource(vpcf_bytes)
+        .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
+    let mut edits = Vec::new();
+    let mut stats = ParticlePrismStats::default();
+    collect_prism_edits(
+        codename,
+        entry,
+        &value,
+        &mut Vec::new(),
+        false,
+        None,
+        &mut edits,
+        &mut stats,
+    );
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    let new_bytes = morphic::patch_kv3_resource_scalars(vpcf_bytes, &edits)
+        .map_err(|e| anyhow::anyhow!("patching particle prism scalars: {e}"))?;
+    Ok(Some((new_bytes, stats)))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PrismTheme {
+    base: f64,
+    span: f64,
+    jitter: f64,
+}
+
+fn prism_theme_for(codename: &str, entry: &str) -> PrismTheme {
+    let base = hash01(codename) * 360.0;
+    let e = entry.to_ascii_lowercase();
+    if e.contains("weapon_fx") || e.contains("tracer") || e.contains("bullet") {
+        PrismTheme {
+            base: base + 25.0,
+            span: 310.0,
+            jitter: 24.0,
+        }
+    } else if e.contains("beam") || e.contains("laser") || e.contains("arc") {
+        PrismTheme {
+            base: base + 185.0,
+            span: 175.0,
+            jitter: 18.0,
+        }
+    } else if e.contains("projectile")
+        || e.contains("grenade")
+        || e.contains("dart")
+        || e.contains("bomb")
+        || e.contains("explode")
+        || e.contains("impact")
+    {
+        PrismTheme {
+            base: base + 45.0,
+            span: 230.0,
+            jitter: 20.0,
+        }
+    } else if e.contains("shield")
+        || e.contains("heal")
+        || e.contains("buff")
+        || e.contains("status")
+        || e.contains("aura")
+    {
+        PrismTheme {
+            base: base + 125.0,
+            span: 185.0,
+            jitter: 18.0,
+        }
+    } else {
+        PrismTheme {
+            base,
+            span: 320.0,
+            jitter: 24.0,
+        }
+    }
+}
+
+fn spectrum_recolor_for(codename: &str, entry: &str, offset: f64) -> Recolor {
+    let hue = (hash01(&format!("{codename}:{entry}")) + offset).fract() * 360.0;
+    Recolor::new(hue, 1.0, 1.0)
+}
+
+// Exact float comparisons are intentional: `max` is built from `r`/`g`/`b` by
+// `.max()`, so `max == r` etc. are exact-by-construction channel selects.
+#[allow(clippy::float_cmp, clippy::many_single_char_names)]
+fn rgb_to_hsv(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / d).rem_euclid(6.0))
+    } else if max == g {
+        60.0 * (((b - r) / d) + 2.0)
+    } else {
+        60.0 * (((r - g) / d) + 4.0)
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    (h, s, max)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
+)]
+fn hsv_to_rgb_i64(h: f64, s: f64, v: f64) -> [i64; 3] {
+    let c = v * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    [
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as i64,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as i64,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as i64,
+    ]
+}
+
+// FNV-1a over the bytes, mapped into 0..1. The named FNV offset/prime constants
+// read better unseparated; the final scale to 0..1 is a deliberate hash->float.
+#[allow(clippy::unreadable_literal, clippy::cast_precision_loss)]
+fn hash01(s: &str) -> f64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h as f64 / u64::MAX as f64
+}
+
+fn path_label(path: &[Seg]) -> String {
+    let mut out = String::new();
+    for seg in path {
+        match seg {
+            Seg::Key(k) => {
+                out.push('/');
+                out.push_str(k);
+            }
+            Seg::Index(i) => {
+                out.push('[');
+                out.push_str(&i.to_string());
+                out.push(']');
+            }
+        }
+    }
+    out
+}
+
+fn effect_label(entry: &str, path: &[Seg]) -> String {
+    format!(
+        "{}{}",
+        entry.to_ascii_lowercase(),
+        path_label(path).to_ascii_lowercase()
+    )
+}
+
+fn spectral_path(label: &str) -> bool {
+    [
+        "glow",
+        "light",
+        "beam",
+        "core",
+        "flash",
+        "ring",
+        "symbol",
+        "energy",
+        "magic",
+        "trail",
+        "arc",
+        "rope",
+        "slash",
+        "sweep",
+        "tracer",
+        "streak",
+        "pulse",
+        "endcap",
+        "projectile",
+        "explode",
+        "impact",
+    ]
+    .iter()
+    .any(|needle| label.contains(needle))
+}
+
+fn subdued_path(label: &str) -> bool {
+    ["smoke", "dust", "debris", "darkness", "fog", "gas", "blood"]
+        .iter()
+        .any(|needle| label.contains(needle))
+}
+
+fn hue_at(theme: PrismTheme, entry: &str, label: &str, t: f64) -> f64 {
+    let jitter = (hash01(&format!("{entry}{label}")) - 0.5) * 2.0 * theme.jitter;
+    theme.base + theme.span * t + jitter
+}
+
+fn value_floor(source_v: f64, label: &str, gradient: bool) -> (f64, bool, bool) {
+    if source_v < 0.02 {
+        return if gradient && spectral_path(label) {
+            (0.30, true, true)
+        } else {
+            (source_v, false, false)
+        };
+    }
+
+    if subdued_path(label) {
+        (source_v.max(0.48), false, false)
+    } else if spectral_path(label) {
+        (source_v.max(0.96), source_v < 0.96, false)
+    } else if gradient {
+        (source_v.max(0.86), source_v < 0.86, false)
+    } else {
+        (source_v.max(0.78), source_v < 0.78, false)
+    }
+}
+
+fn saturation_for(label: &str) -> f64 {
+    if subdued_path(label) {
+        0.82
+    } else {
+        1.0
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+fn prism_gradient_stop(
+    rgb: [i64; 3],
+    codename: &str,
+    entry: &str,
+    path: &[Seg],
+    index: usize,
+    count: usize,
+    position: Option<f64>,
+    stats: &mut ParticlePrismStats,
+) -> [i64; 3] {
+    stats.gradient_fields += 1;
+    let (_, _, v) = rgb_to_hsv(
+        rgb[0] as f64 / 255.0,
+        rgb[1] as f64 / 255.0,
+        rgb[2] as f64 / 255.0,
+    );
+    let path_label = path_label(path).to_ascii_lowercase();
+    let effect_label = effect_label(entry, path);
+    let theme = prism_theme_for(codename, entry);
+    let t = if count <= 1 {
+        hash01(&format!("{entry}{path_label}"))
+    } else if count == 2 {
+        [0.10, 0.82][index.min(1)]
+    } else if let Some(position) = position {
+        position.clamp(0.0, 1.0)
+    } else {
+        index as f64 / (count - 1) as f64
+    };
+    let hue = hue_at(theme, entry, &path_label, t);
+    let (val, boosted, lifted_black) = value_floor(v, &effect_label, true);
+    if boosted {
+        stats.boosted_fields += 1;
+    }
+    if lifted_black {
+        stats.lifted_black_gradient_fields += 1;
+    }
+    hsv_to_rgb_i64(hue, saturation_for(&effect_label), val)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn prism_color_field(
+    rgb: [i64; 3],
+    codename: &str,
+    entry: &str,
+    path: &[Seg],
+    stats: &mut ParticlePrismStats,
+) -> [i64; 3] {
+    stats.color_fields += 1;
+    let (_, _, v) = rgb_to_hsv(
+        rgb[0] as f64 / 255.0,
+        rgb[1] as f64 / 255.0,
+        rgb[2] as f64 / 255.0,
+    );
+    if v < 0.02 {
+        return rgb;
+    }
+
+    let path_label = path_label(path).to_ascii_lowercase();
+    let effect_label = effect_label(entry, path);
+    let theme = prism_theme_for(codename, entry);
+    let base_t = hash01(&format!("{entry}{path_label}"));
+    let t = if path_label.ends_with("/m_colormin") {
+        stats.random_range_fields += 1;
+        0.02 + base_t * 0.18
+    } else if path_label.ends_with("/m_colormax") {
+        stats.random_range_fields += 1;
+        0.70 + base_t * 0.28
+    } else if path_label.ends_with("/m_colorfade") {
+        stats.random_range_fields += 1;
+        0.40 + base_t * 0.35
+    } else {
+        base_t
+    };
+    let hue = hue_at(theme, entry, &path_label, t);
+    let (val, boosted, _) = value_floor(v, &effect_label, false);
+    if boosted {
+        stats.boosted_fields += 1;
+    }
+    hsv_to_rgb_i64(hue, saturation_for(&effect_label), val)
+}
+
+fn prism_path_is_stops(path: &[Seg]) -> bool {
+    matches!(path.last(), Some(Seg::Key(k)) if k == "m_Stops")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_prism_edits(
+    codename: &str,
+    entry: &str,
+    v: &Value,
+    path: &mut Vec<Seg>,
+    colorish: bool,
+    gradient_stop: Option<(usize, usize, Option<f64>)>,
+    edits: &mut Vec<(Vec<Seg>, i64)>,
+    stats: &mut ParticlePrismStats,
+) {
+    if colorish {
+        if let Some(rgb) = as_color(v) {
+            let new = if let Some((i, n, position)) = gradient_stop {
+                prism_gradient_stop(rgb, codename, entry, path, i, n, position, stats)
+            } else {
+                prism_color_field(rgb, codename, entry, path, stats)
+            };
+            for (i, &nv) in new.iter().enumerate() {
+                if nv != rgb[i] {
+                    let mut p = path.clone();
+                    p.push(Seg::Index(i));
+                    edits.push((p, nv));
+                }
+            }
+            return;
+        }
+    }
+
+    match v {
+        Value::Object(pairs) => {
+            for (k, child) in pairs {
+                let kl = k.to_lowercase();
+                let c = kl.contains("color") || kl.contains("tint");
+                path.push(Seg::Key(k.clone()));
+                collect_prism_edits(codename, entry, child, path, c, gradient_stop, edits, stats);
+                path.pop();
+            }
+        }
+        Value::Array(items) => {
+            let stops = prism_path_is_stops(path);
+            let len = items.len();
+            for (i, item) in items.iter().enumerate() {
+                path.push(Seg::Index(i));
+                let child_gradient = if stops {
+                    let position = item.get("m_flPosition").and_then(Value::as_f64);
+                    Some((i, len, position))
+                } else {
+                    gradient_stop
+                };
+                collect_prism_edits(
+                    codename,
+                    entry,
+                    item,
+                    path,
+                    false,
+                    child_gradient,
+                    edits,
+                    stats,
+                );
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Recolor one `.vpcf_c`'s color params to `hue_deg` in place, returning the new

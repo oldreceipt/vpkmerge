@@ -60,6 +60,62 @@ impl From<vpkmerge_core::MergeReport> for MergeReport {
     }
 }
 
+#[derive(Serialize)]
+struct HeroOption {
+    codename: String,
+    label: String,
+    particles: usize,
+    textures: usize,
+    materials: usize,
+    models: usize,
+    has_preview: bool,
+}
+
+#[derive(Serialize)]
+struct HeroPrismReport {
+    codename: String,
+    particles_total: usize,
+    particles_recolored: usize,
+    particles_no_color: usize,
+    particles_unpatchable: usize,
+    gradient_fields: usize,
+    color_fields: usize,
+    boosted_fields: usize,
+    lifted_black_gradient_fields: usize,
+    random_range_fields: usize,
+    textures_recolored: usize,
+    materials_recolored: usize,
+    materials_unpatchable: usize,
+    models_recolored: usize,
+    model_vertices: usize,
+    total_entries: usize,
+    output_path: String,
+}
+
+impl HeroPrismReport {
+    fn from_core(report: vpkmerge_core::HeroPrismRecolorReport, output_path: String) -> Self {
+        Self {
+            codename: report.codename,
+            particles_total: report.particles_total,
+            particles_recolored: report.particles_recolored,
+            particles_no_color: report.particles_no_color,
+            particles_unpatchable: report.particles_unpatchable,
+            gradient_fields: report.gradient_fields,
+            color_fields: report.color_fields,
+            boosted_fields: report.boosted_fields,
+            lifted_black_gradient_fields: report.lifted_black_gradient_fields,
+            random_range_fields: report.random_range_fields,
+            textures_recolored: report.textures_recolored,
+            materials_recolored: report.materials_recolored,
+            materials_unpatchable: report.materials_unpatchable,
+            models_recolored: report.models_recolored,
+            model_vertices: report.model_vertices,
+            total_entries: report.total_entries,
+            output_path,
+        }
+    }
+}
+
 #[tauri::command]
 async fn pick_vpk_files(app: AppHandle) -> Vec<String> {
     app.dialog()
@@ -133,6 +189,10 @@ async fn path_exists(path: String) -> bool {
 /// candidate exists; the frontend then falls back to asking the user.
 #[tauri::command]
 async fn default_deadlock_vpk_path() -> Option<String> {
+    default_deadlock_vpk_candidate().map(|p| p.to_string_lossy().into_owned())
+}
+
+fn default_deadlock_vpk_candidate() -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if cfg!(target_os = "linux") {
         if let Ok(home) = std::env::var("HOME") {
@@ -157,10 +217,86 @@ async fn default_deadlock_vpk_path() -> Option<String> {
                 .into(),
         );
     }
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .map(|p| p.to_string_lossy().into_owned())
+    candidates.into_iter().find(|p| p.exists())
+}
+
+#[tauri::command]
+async fn default_addon_output_path() -> Option<String> {
+    let base = default_deadlock_vpk_candidate()?;
+    let citadel_dir = base.parent()?;
+    let addons = citadel_dir.join("addons");
+    let mut max_slot = 1u32;
+    if let Ok(read_dir) = std::fs::read_dir(&addons) {
+        for entry in read_dir.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(slot) = name
+                .strip_prefix("pak")
+                .and_then(|s| s.strip_suffix("_dir.vpk"))
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            max_slot = max_slot.max(slot);
+        }
+    }
+    Some(
+        addons
+            .join(format!("pak{:02}_dir.vpk", max_slot + 1))
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[tauri::command]
+async fn supported_hero_options() -> Vec<HeroOption> {
+    vpkmerge_core::pinned_hero_codenames()
+        .iter()
+        .filter_map(|codename| {
+            let recipe = vpkmerge_core::recipe_for(codename)?;
+            Some(HeroOption {
+                codename: (*codename).to_string(),
+                label: hero_label(codename).to_string(),
+                particles: recipe.particle_prefixes.len(),
+                textures: recipe.texture_entries.len(),
+                materials: recipe.material_entries.len(),
+                models: recipe.model_entries.len(),
+                has_preview: recipe.preview_texture.is_some(),
+            })
+        })
+        .collect()
+}
+
+fn hero_label(codename: &str) -> &str {
+    match codename {
+        "bookworm" => "Paige",
+        "necro" => "Graves",
+        "inferno" => "Infernus",
+        "yamato" => "Yamato",
+        "unicorn" => "Celeste",
+        "gigawatt" => "Seven",
+        "vampirebat" => "Mina",
+        "wraith" => "Wraith",
+        _ => codename,
+    }
+}
+
+#[tauri::command]
+async fn build_hero_prism_vpk(
+    vpk_path: String,
+    base_path: Option<String>,
+    hero: String,
+    output_path: String,
+) -> Result<HeroPrismReport, String> {
+    let base = base_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let report =
+        vpkmerge_core::prism_recolor_hero_to_addon(&vpk_path, base.as_deref(), &hero, &output_path)
+            .map_err(|e| format!("{e:#}"))?;
+    Ok(HeroPrismReport::from_core(report, output_path))
 }
 
 #[derive(Serialize)]
@@ -396,7 +532,10 @@ pub fn run() {
             reveal_in_folder,
             preview_texture,
             save_text_file,
-            default_deadlock_vpk_path
+            default_deadlock_vpk_path,
+            default_addon_output_path,
+            supported_hero_options,
+            build_hero_prism_vpk
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

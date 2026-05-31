@@ -74,6 +74,15 @@ enum Command {
     /// `inferno` (Infernus), `yamato` (Yamato).
     RecolorHero(RecolorHeroCmd),
 
+    /// Recolor a hero's full ability VFX as a static prism/rainbow and pack it
+    /// into a single addon VPK. Same composition as `recolor-hero`, but instead
+    /// of one target hue it spreads each effect's existing color/tint scalars
+    /// across a spectrum (gradient stops become spectral ramps, themed by effect
+    /// type) so the VFX reads as a moving rainbow in game. Same pinned heroes as
+    /// `recolor-hero`; run `rainbow-scan` first to see which carry the richest
+    /// spectrum.
+    Prism(PrismCmd),
+
     /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
     RainbowScan(RainbowScanCmd),
 }
@@ -213,6 +222,29 @@ struct RecolorHeroCmd {
     /// (preview wins and the bake is skipped).
     #[arg(long = "preview-png", value_name = "PNG")]
     preview_png: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct PrismCmd {
+    /// Hero model/particle codename to prism-recolor (e.g. `unicorn` for Celeste,
+    /// `yamato` for Yamato). Only heroes with a pinned recipe are supported; an
+    /// unknown codename lists the pinned set.
+    #[arg(long, value_name = "CODENAME")]
+    hero: String,
+
+    /// VPK to read the hero's VFX from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for any entry `--vpk` does not ship
+    /// (so a texture-only skin still recolors the base mesh/particles).
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Pack the whole prism-recolored VFX set into this one addon VPK, each entry
+    /// at its base path so it overrides the base game in place.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
 }
 
 #[derive(Args)]
@@ -563,6 +595,7 @@ fn main() -> Result<()> {
         Some(Command::Soundevents(args)) => run_soundevents(args),
         Some(Command::Texture(args)) => run_texture(args),
         Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
+        Some(Command::Prism(args)) => run_prism(&args),
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         None => run_merge(cli),
     }
@@ -1472,6 +1505,50 @@ fn run_recolor_hero(args: &RecolorHeroCmd) -> Result<()> {
         report.total_entries,
         report.codename,
         args.hue,
+    );
+    Ok(())
+}
+
+fn run_prism(args: &PrismCmd) -> Result<()> {
+    let report = vpkmerge_core::prism_recolor_hero_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &args.hero,
+        &args.encode_vpk,
+    )
+    .with_context(|| format!("prism-recoloring hero {}", args.hero))?;
+
+    eprintln!(
+        "{}: {}/{} particle(s) prism-recolored ({} color-free, {} unpatchable left vanilla), {} gradient field(s), {} color field(s) ({} boosted, {} black-lifted, {} random-range), {} texture(s), {} material tint(s) ({} left vanilla), {} model(s) ({} verts)",
+        report.codename,
+        report.particles_recolored,
+        report.particles_total,
+        report.particles_no_color,
+        report.particles_unpatchable,
+        report.gradient_fields,
+        report.color_fields,
+        report.boosted_fields,
+        report.lifted_black_gradient_fields,
+        report.random_range_fields,
+        report.textures_recolored,
+        report.materials_recolored,
+        report.materials_unpatchable,
+        report.models_recolored,
+        report.model_vertices,
+    );
+    if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
+        eprintln!(
+            "  warning: {} color-bearing particle(s) and {} material(s) could not be patched in \
+             place (a non-v5 KV3 block, or a ZSTD-compressed binary-blob section) and were left \
+             vanilla; this hero's prism is PARTIAL.",
+            report.particles_unpatchable, report.materials_unpatchable,
+        );
+    }
+    println!(
+        "wrote {}: {} entries, hero {} recolored as a prism spectrum (overrides the base in place)",
+        args.encode_vpk.display(),
+        report.total_entries,
+        report.codename,
     );
     Ok(())
 }
