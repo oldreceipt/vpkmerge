@@ -182,3 +182,25 @@ pub fn patch_kv3_resource_strings_adding(
     let new_data = kv3::set_strings_adding(data, edits)?;
     resource.rebuild_with_data(&new_data)
 }
+
+/// Insert one element into a KV3 array inside a resource's `DATA` block,
+/// byte-faithfully preserving the existing typed lanes and adding any strings the
+/// inserted subtree needs.
+///
+/// This is the structural primitive used for particle operator insertion: it
+/// appends missing key/value strings to the KV3 string table, serializes only the
+/// new element, splices those bytes into the existing b1/b2/b4/b8/type/object
+/// streams at the walked array cursor, bumps the array length/header counts, and
+/// rebuilds the resource with the resized `DATA` block. It deliberately avoids a
+/// full KV3 re-encode, which is lossy for compiled particles.
+pub fn patch_kv3_resource_array_insert(
+    original: &[u8],
+    array_path: &[kv3::Seg],
+    index: usize,
+    value: &kv3::Value,
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::insert_array_element_adding(data, array_path, index, value)?;
+    resource.rebuild_with_data(&new_data)
+}

@@ -22,6 +22,7 @@ use super::node;
 use super::rewrap::{
     decompress_v5_working, is_blobbed_lz4_v5, reassemble_blobbed_v5, rewrap_uncompressed,
 };
+use super::types::Value;
 use crate::error::DecodeError;
 
 const B1: usize = 0;
@@ -362,6 +363,807 @@ pub fn set_strings_adding(
         _ => out,
     };
     set_strings(&appended, edits)
+}
+
+/// Inserts `value` into the array at `array_path[index]`, adding any keys/string
+/// values that are not already interned in the KV3 string table.
+///
+/// This is the structural sibling of [`set_strings_adding`]. It preserves the
+/// existing typed-lane layout by walking to the insertion point, capturing the
+/// current b1/b2/b4/b8/type/object-length cursors, serializing only the inserted
+/// subtree, then rebuilding the affected buffer with those serialized bytes
+/// spliced into each lane at the captured cursor. Existing values and type flags
+/// are carried through byte-for-byte; only the target array count, header
+/// counts/sizes, string table, and inserted subtree bytes change.
+///
+/// Supports v4/v5 main-buffer arrays (`ARRAY`, `ARRAY_TYPED`, and
+/// `ARRAY_TYPE_BYTE_LENGTH`). Auxiliary-buffer arrays and binary-blob sections are
+/// deliberately refused until there is a concrete particle use case.
+pub fn insert_array_element_adding(
+    block: &[u8],
+    array_path: &[Seg],
+    index: usize,
+    value: &Value,
+) -> Result<Vec<u8>, DecodeError> {
+    let out = rewrap_uncompressed(block)?;
+    let version = u32_at(&out, 0)? & 0xFF;
+    if version != 4 && version != 5 {
+        return Err(DecodeError::Kv3("array insert requires KV3 v4 or v5"));
+    }
+    if out.len() >= 60 && i32_at(&out, 56)? != 0 {
+        return Err(DecodeError::Kv3(
+            "array insert does not support KV3 binary-blob sections",
+        ));
+    }
+
+    let mut wanted = Vec::new();
+    collect_value_strings(value, &mut wanted);
+    let with_strings = match version {
+        5 => append_strings_v5(&out, &wanted)?,
+        4 => append_strings_v4(&out, &wanted)?,
+        _ => unreachable!(),
+    };
+
+    let site = {
+        let mut w = InsertWalk::new(&with_strings, array_path, index)?;
+        let root = w.read_type()?;
+        w.value(root)?;
+        w.finish()?
+    };
+
+    let strings = lanes(&with_strings, version)?.strings;
+    let root_type = value_wire_type(value);
+    let include_root_type = site.subtype.is_none();
+    if let Some(subtype) = site.subtype {
+        if root_type != subtype {
+            return Err(DecodeError::Kv3(
+                "inserted value type does not match target typed-array subtype",
+            ));
+        }
+    }
+    let encoded = encode_insert_value(value, version, &strings, include_root_type)?;
+
+    match version {
+        5 => rebuild_v5_with_insert(&with_strings, &site, &encoded),
+        4 => rebuild_v4_with_insert(&with_strings, &site, &encoded),
+        _ => unreachable!(),
+    }
+}
+
+fn collect_value_strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => push_unique_string(out, s),
+        Value::Array(items) => {
+            for item in items {
+                collect_value_strings(item, out);
+            }
+        }
+        Value::Object(pairs) => {
+            for (key, child) in pairs {
+                push_unique_string(out, key);
+                collect_value_strings(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_unique_string(out: &mut Vec<String>, s: &str) {
+    if !s.is_empty() && !out.iter().any(|known| known == s) {
+        out.push(s.to_string());
+    }
+}
+
+struct EncodedInsert {
+    b1: Vec<u8>,
+    b2: Vec<u8>,
+    b4: Vec<u8>,
+    b8: Vec<u8>,
+    types: Vec<u8>,
+    obj_lengths: Vec<u8>,
+}
+
+fn encode_insert_value(
+    value: &Value,
+    version: u32,
+    strings: &[String],
+    include_root_type: bool,
+) -> Result<EncodedInsert, DecodeError> {
+    let mut enc = InsertEncoder {
+        version,
+        strings,
+        out: EncodedInsert {
+            b1: Vec::new(),
+            b2: Vec::new(),
+            b4: Vec::new(),
+            b8: Vec::new(),
+            types: Vec::new(),
+            obj_lengths: Vec::new(),
+        },
+    };
+    enc.value(value, include_root_type)?;
+    Ok(enc.out)
+}
+
+struct InsertEncoder<'a> {
+    version: u32,
+    strings: &'a [String],
+    out: EncodedInsert,
+}
+
+impl InsertEncoder<'_> {
+    fn string_id(&self, s: &str) -> Result<u32, DecodeError> {
+        if s.is_empty() {
+            return Ok(u32::MAX);
+        }
+        self.strings
+            .iter()
+            .position(|known| known == s)
+            .ok_or(DecodeError::Kv3("insert string was not interned"))?
+            .try_into()
+            .map_err(|_| DecodeError::Kv3("string table id does not fit u32"))
+    }
+
+    #[allow(clippy::wildcard_imports, clippy::cast_possible_truncation)]
+    fn value(&mut self, value: &Value, include_type: bool) -> Result<(), DecodeError> {
+        use node::*;
+        let t = value_wire_type(value);
+        if include_type {
+            self.out.types.push(t);
+        }
+        match (t, value) {
+            (
+                NULL | BOOLEAN_TRUE | BOOLEAN_FALSE | INT64_ZERO | INT64_ONE | DOUBLE_ZERO
+                | DOUBLE_ONE,
+                _,
+            ) => {}
+            (BOOLEAN, Value::Bool(b)) => self.out.b1.push(u8::from(*b)),
+            (INT32_AS_BYTE, Value::Int(i)) => self.out.b1.push(*i as u8),
+            (INT16, Value::Int(i)) => self.out.b2.extend_from_slice(&(*i as i16).to_le_bytes()),
+            (UINT16, Value::UInt(u)) => self.out.b2.extend_from_slice(&(*u as u16).to_le_bytes()),
+            (INT32, Value::Int(i)) => self.out.b4.extend_from_slice(&(*i as i32).to_le_bytes()),
+            (UINT32, Value::UInt(u)) => self.out.b4.extend_from_slice(&(*u as u32).to_le_bytes()),
+            (FLOAT, Value::Double(d)) => {
+                self.out
+                    .b4
+                    .extend_from_slice(&(*d as f32).to_bits().to_le_bytes());
+            }
+            (STRING, Value::String(s)) => {
+                self.out
+                    .b4
+                    .extend_from_slice(&self.string_id(s)?.to_le_bytes());
+            }
+            (INT64, Value::Int(i)) => self.out.b8.extend_from_slice(&i.to_le_bytes()),
+            (UINT64, Value::UInt(u)) => self.out.b8.extend_from_slice(&u.to_le_bytes()),
+            (DOUBLE, Value::Double(d)) => {
+                self.out.b8.extend_from_slice(&d.to_bits().to_le_bytes());
+            }
+            (ARRAY, Value::Array(items)) => {
+                let n = u32::try_from(items.len())
+                    .map_err(|_| DecodeError::Kv3("inserted array too large"))?;
+                self.out.b4.extend_from_slice(&n.to_le_bytes());
+                for item in items {
+                    self.value(item, true)?;
+                }
+            }
+            (OBJECT, Value::Object(pairs)) => {
+                let n = u32::try_from(pairs.len())
+                    .map_err(|_| DecodeError::Kv3("inserted object too large"))?;
+                if self.version >= 5 {
+                    self.out.obj_lengths.extend_from_slice(&n.to_le_bytes());
+                } else {
+                    self.out.b4.extend_from_slice(&n.to_le_bytes());
+                }
+                for (key, child) in pairs {
+                    self.out
+                        .b4
+                        .extend_from_slice(&self.string_id(key)?.to_le_bytes());
+                    self.value(child, true)?;
+                }
+            }
+            (BINARY_BLOB, Value::Binary(_)) => {
+                return Err(DecodeError::Kv3(
+                    "array insert does not support inserted binary blobs",
+                ));
+            }
+            _ => return Err(DecodeError::Kv3("insert value/type mismatch")),
+        }
+        Ok(())
+    }
+}
+
+#[allow(
+    clippy::wildcard_imports,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation
+)]
+fn value_wire_type(value: &Value) -> u8 {
+    use node::*;
+    match value {
+        Value::Null => NULL,
+        Value::Bool(b) => {
+            if *b {
+                BOOLEAN_TRUE
+            } else {
+                BOOLEAN_FALSE
+            }
+        }
+        Value::Int(i) => match *i {
+            0 => INT64_ZERO,
+            1 => INT64_ONE,
+            2..=255 => INT32_AS_BYTE,
+            i if i32::try_from(i).is_ok() => INT32,
+            _ => INT64,
+        },
+        Value::UInt(u) => {
+            if u32::try_from(*u).is_ok() {
+                UINT32
+            } else {
+                UINT64
+            }
+        }
+        Value::Double(d) => {
+            if *d == 0.0 {
+                DOUBLE_ZERO
+            } else if *d == 1.0 {
+                DOUBLE_ONE
+            } else if f64::from(*d as f32).to_bits() == d.to_bits() {
+                FLOAT
+            } else {
+                DOUBLE
+            }
+        }
+        Value::String(_) => STRING,
+        Value::Binary(_) => BINARY_BLOB,
+        Value::Array(_) => ARRAY,
+        Value::Object(_) => OBJECT,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InsertCursors {
+    types: usize,
+    obj_lengths: usize,
+    lanes: [usize; 4],
+}
+
+struct InsertSite {
+    count_lane: usize,
+    count_offset: usize,
+    count_width: usize,
+    old_count: usize,
+    subtype: Option<u8>,
+    cursors: InsertCursors,
+}
+
+struct InsertWalk<'a> {
+    block: &'a [u8],
+    version: u32,
+    types: Lane,
+    obj_lengths: Lane,
+    main: [Lane; 4],
+    aux: [Lane; 4],
+    aux_active: bool,
+    strings: Vec<String>,
+    target: &'a [Seg],
+    insert_index: usize,
+    path: Vec<Seg>,
+    site: Option<InsertSite>,
+}
+
+impl<'a> InsertWalk<'a> {
+    fn new(block: &'a [u8], target: &'a [Seg], insert_index: usize) -> Result<Self, DecodeError> {
+        let version = u32_at(block, 0)? & 0xFF;
+        let l = lanes(block, version)?;
+        Ok(Self {
+            block,
+            version,
+            types: l.types,
+            obj_lengths: l.obj_lengths,
+            main: l.main,
+            aux: l.aux,
+            aux_active: false,
+            strings: l.strings,
+            target,
+            insert_index,
+            path: Vec::new(),
+            site: None,
+        })
+    }
+
+    fn finish(self) -> Result<InsertSite, DecodeError> {
+        self.site
+            .ok_or(DecodeError::Kv3("array insert path not found"))
+    }
+
+    fn read_type(&mut self) -> Result<u8, DecodeError> {
+        let mut t = *self
+            .block
+            .get(self.types.at())
+            .ok_or(DecodeError::Kv3("type stream underrun"))?;
+        self.types.pos += 1;
+        if t & 0x80 != 0 {
+            t &= 0x3F;
+            self.types.pos += 1;
+        }
+        Ok(t)
+    }
+
+    fn lane_u32(&mut self, lane: usize) -> Result<u32, DecodeError> {
+        let at = self.main[lane].at();
+        let v = u32_at(self.block, at)?;
+        self.main[lane].pos += 4;
+        Ok(v)
+    }
+
+    fn lane_u8(&mut self, lane: usize) -> Result<u8, DecodeError> {
+        let v = *self
+            .block
+            .get(self.main[lane].at())
+            .ok_or(DecodeError::Kv3("lane underrun"))?;
+        self.main[lane].pos += 1;
+        Ok(v)
+    }
+
+    fn obj_len(&mut self) -> Result<u32, DecodeError> {
+        let v = u32_at(self.block, self.obj_lengths.at())?;
+        self.obj_lengths.pos += 4;
+        Ok(v)
+    }
+
+    fn key(&self, id: u32) -> &str {
+        if id == u32::MAX {
+            ""
+        } else {
+            self.strings.get(id as usize).map_or("", String::as_str)
+        }
+    }
+
+    fn at_target(&self) -> bool {
+        self.path.as_slice() == self.target
+    }
+
+    fn cursors(&self) -> InsertCursors {
+        InsertCursors {
+            types: self.types.at(),
+            obj_lengths: self.obj_lengths.at(),
+            lanes: [
+                self.main[B1].at(),
+                self.main[B2].at(),
+                self.main[B4].at(),
+                self.main[B8].at(),
+            ],
+        }
+    }
+
+    fn record_site(
+        &mut self,
+        count_lane: usize,
+        count_offset: usize,
+        count_width: usize,
+        old_count: usize,
+        subtype: Option<u8>,
+    ) -> Result<(), DecodeError> {
+        if self.aux_active {
+            return Err(DecodeError::Kv3(
+                "array insert does not support auxiliary-buffer arrays",
+            ));
+        }
+        if self.site.is_some() {
+            return Err(DecodeError::Kv3("array insert path is ambiguous"));
+        }
+        self.site = Some(InsertSite {
+            count_lane,
+            count_offset,
+            count_width,
+            old_count,
+            subtype,
+            cursors: self.cursors(),
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::wildcard_imports, clippy::too_many_lines)]
+    fn value(&mut self, datatype: u8) -> Result<(), DecodeError> {
+        use node::*;
+        match datatype {
+            INT32 | UINT32 | FLOAT | STRING => self.main[B4].pos += 4,
+            INT64 | UINT64 | DOUBLE => self.main[B8].pos += 8,
+            INT16 | UINT16 => self.main[B2].pos += 2,
+            INT32_AS_BYTE | BOOLEAN => self.main[B1].pos += 1,
+            NULL | BOOLEAN_TRUE | BOOLEAN_FALSE | INT64_ZERO | INT64_ONE | DOUBLE_ZERO
+            | DOUBLE_ONE | BINARY_BLOB => {}
+            ARRAY => {
+                let count_offset = self.main[B4].at();
+                let n = self.lane_u32(B4)? as usize;
+                let target = self.at_target();
+                if target && self.insert_index > n {
+                    return Err(DecodeError::Kv3("array insert index out of range"));
+                }
+                for i in 0..n {
+                    if target && self.insert_index == i {
+                        self.record_site(B4, count_offset, 4, n, None)?;
+                    }
+                    let t = self.read_type()?;
+                    self.path.push(Seg::Index(i));
+                    self.value(t)?;
+                    self.path.pop();
+                }
+                if target && self.insert_index == n {
+                    self.record_site(B4, count_offset, 4, n, None)?;
+                }
+            }
+            ARRAY_TYPED => {
+                let count_offset = self.main[B4].at();
+                let n = self.lane_u32(B4)? as usize;
+                let sub = self.read_type()?;
+                let target = self.at_target();
+                if target && self.insert_index > n {
+                    return Err(DecodeError::Kv3("array insert index out of range"));
+                }
+                for i in 0..n {
+                    if target && self.insert_index == i {
+                        self.record_site(B4, count_offset, 4, n, Some(sub))?;
+                    }
+                    self.path.push(Seg::Index(i));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+                if target && self.insert_index == n {
+                    self.record_site(B4, count_offset, 4, n, Some(sub))?;
+                }
+            }
+            ARRAY_TYPE_BYTE_LENGTH => {
+                let count_offset = self.main[B1].at();
+                let n = usize::from(self.lane_u8(B1)?);
+                let sub = self.read_type()?;
+                let target = self.at_target();
+                if target && self.insert_index > n {
+                    return Err(DecodeError::Kv3("array insert index out of range"));
+                }
+                for i in 0..n {
+                    if target && self.insert_index == i {
+                        self.record_site(B1, count_offset, 1, n, Some(sub))?;
+                    }
+                    self.path.push(Seg::Index(i));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+                if target && self.insert_index == n {
+                    self.record_site(B1, count_offset, 1, n, Some(sub))?;
+                }
+            }
+            ARRAY_TYPE_AUXILIARY_BUFFER => {
+                if self.at_target() {
+                    return Err(DecodeError::Kv3(
+                        "array insert does not support auxiliary-buffer arrays",
+                    ));
+                }
+                let n = usize::from(self.lane_u8(B1)?);
+                let sub = self.read_type()?;
+                std::mem::swap(&mut self.main, &mut self.aux);
+                self.aux_active = !self.aux_active;
+                for i in 0..n {
+                    self.path.push(Seg::Index(i));
+                    self.value(sub)?;
+                    self.path.pop();
+                }
+                self.aux_active = !self.aux_active;
+                std::mem::swap(&mut self.main, &mut self.aux);
+            }
+            OBJECT => {
+                let n = if self.version >= 5 {
+                    self.obj_len()?
+                } else {
+                    self.lane_u32(B4)?
+                };
+                for _ in 0..n {
+                    let vt = self.read_type()?;
+                    let id = self.lane_u32(B4)?;
+                    self.path.push(Seg::Key(self.key(id).to_string()));
+                    self.value(vt)?;
+                    self.path.pop();
+                }
+            }
+            other => return Err(DecodeError::Kv3NodeType(other)),
+        }
+        Ok(())
+    }
+}
+
+fn rebuild_v5_with_insert(
+    block: &[u8],
+    site: &InsertSite,
+    encoded: &EncodedInsert,
+) -> Result<Vec<u8>, DecodeError> {
+    const HEADER: usize = 120;
+    let unc_buf1 = i32_at(block, 72)? as usize;
+    let unc_buf2 = i32_at(block, 80)? as usize;
+    let main_b1 = i32_at(block, 88)? as usize;
+    let main_b2 = i32_at(block, 92)? as usize;
+    let main_b4 = i32_at(block, 96)? as usize;
+    let main_b8 = i32_at(block, 100)? as usize;
+    let main_obj = i32_at(block, 108)? as usize;
+    let count_types = i32_at(block, 40)? as usize;
+
+    let buf1 = HEADER;
+    let buf2 = buf1
+        .checked_add(unc_buf1)
+        .ok_or(DecodeError::Kv3("buf1 extent overflow"))?;
+    let buf2_end = buf2
+        .checked_add(unc_buf2)
+        .filter(|&e| e <= block.len())
+        .ok_or(DecodeError::Kv3("buf2 extent out of range"))?;
+
+    let mut off = 0usize;
+    let obj_start = off;
+    let obj_len = main_obj * 4;
+    off += obj_len;
+    let b1_start = off;
+    off += main_b1;
+    let (b2_start, b2_len) = lane(&mut off, main_b2, 2);
+    let (b4_start, b4_len) = lane(&mut off, main_b4, 4);
+    let (b8_start, b8_len) = lane(&mut off, main_b8, 8);
+    let types_start = off;
+    let tail_start = types_start
+        .checked_add(count_types)
+        .ok_or(DecodeError::Kv3("type stream extent overflow"))?;
+    if tail_start > unc_buf2 {
+        return Err(DecodeError::Kv3("type stream out of range"));
+    }
+
+    let bases = [
+        buf2 + b1_start,
+        buf2 + b2_start,
+        buf2 + b4_start,
+        buf2 + b8_start,
+    ];
+    let mut obj = block[buf2 + obj_start..buf2 + obj_start + obj_len].to_vec();
+    let mut b1 = block[bases[B1]..bases[B1] + main_b1].to_vec();
+    let mut b2 = block[bases[B2]..bases[B2] + b2_len].to_vec();
+    let mut b4 = block[bases[B4]..bases[B4] + b4_len].to_vec();
+    let mut b8 = block[bases[B8]..bases[B8] + b8_len].to_vec();
+    let mut types = block[buf2 + types_start..buf2 + tail_start].to_vec();
+    let tail = &block[buf2 + tail_start..buf2_end];
+
+    match site.count_lane {
+        B1 => bump_array_count(&mut b1, site, bases)?,
+        B2 => bump_array_count(&mut b2, site, bases)?,
+        B4 => bump_array_count(&mut b4, site, bases)?,
+        B8 => bump_array_count(&mut b8, site, bases)?,
+        _ => return Err(DecodeError::Kv3("unsupported array count lane")),
+    }
+    let obj_insert = rel(site.cursors.obj_lengths, buf2 + obj_start, obj.len())?;
+    let b1_insert = rel(site.cursors.lanes[B1], bases[B1], b1.len())?;
+    let b2_insert = rel(site.cursors.lanes[B2], bases[B2], b2.len())?;
+    let b4_insert = rel(site.cursors.lanes[B4], bases[B4], b4.len())?;
+    let b8_insert = rel(site.cursors.lanes[B8], bases[B8], b8.len())?;
+    let types_insert = rel(site.cursors.types, buf2 + types_start, types.len())?;
+    splice_at(&mut obj, obj_insert, &encoded.obj_lengths)?;
+    splice_at(&mut b1, b1_insert, &encoded.b1)?;
+    splice_at(&mut b2, b2_insert, &encoded.b2)?;
+    splice_at(&mut b4, b4_insert, &encoded.b4)?;
+    splice_at(&mut b8, b8_insert, &encoded.b8)?;
+    splice_at(&mut types, types_insert, &encoded.types)?;
+
+    let mut new_buf2 = Vec::new();
+    let mut cursor = 0usize;
+    new_buf2.extend_from_slice(&obj);
+    cursor += obj.len();
+    new_buf2.extend_from_slice(&b1);
+    cursor += b1.len();
+    append_aligned_lane(&mut new_buf2, &mut cursor, &b2, 2, false);
+    append_aligned_lane(&mut new_buf2, &mut cursor, &b4, 4, false);
+    append_aligned_lane(&mut new_buf2, &mut cursor, &b8, 8, false);
+    new_buf2.extend_from_slice(&types);
+    cursor += types.len();
+    debug_assert_eq!(cursor, new_buf2.len());
+    new_buf2.extend_from_slice(tail);
+
+    let mut out = Vec::with_capacity(HEADER + unc_buf1 + new_buf2.len());
+    out.extend_from_slice(&block[..HEADER]);
+    out.extend_from_slice(&block[buf1..buf2]);
+    out.extend_from_slice(&new_buf2);
+
+    let new_unc_buf2 = new_buf2.len();
+    let grow = fit_i32(
+        new_unc_buf2
+            .checked_sub(unc_buf2)
+            .ok_or(DecodeError::Kv3("array insert unexpectedly shrank buf2"))?,
+    )?;
+    write_i32_at(&mut out, 48, checked_add_i32(i32_at(block, 48)?, grow)?);
+    write_i32_at(&mut out, 52, checked_add_i32(i32_at(block, 52)?, grow)?);
+    write_i32_at(&mut out, 80, fit_i32(new_unc_buf2)?);
+    write_i32_at(&mut out, 84, fit_i32(new_unc_buf2)?);
+    write_i32_at(&mut out, 88, fit_i32(b1.len())?);
+    write_i32_at(&mut out, 92, fit_i32(b2.len() / 2)?);
+    write_i32_at(&mut out, 96, fit_i32(b4.len() / 4)?);
+    write_i32_at(&mut out, 100, fit_i32(b8.len() / 8)?);
+    write_i32_at(&mut out, 108, fit_i32(obj.len() / 4)?);
+    write_i32_at(&mut out, 40, fit_i32(types.len())?);
+    Ok(out)
+}
+
+fn rebuild_v4_with_insert(
+    block: &[u8],
+    site: &InsertSite,
+    encoded: &EncodedInsert,
+) -> Result<Vec<u8>, DecodeError> {
+    const BUF: usize = 72;
+    let count_b1 = i32_at(block, 28)? as usize;
+    let count_b4 = i32_at(block, 32)? as usize;
+    let count_b8 = i32_at(block, 36)? as usize;
+    let count_b2 = i32_at(block, 64)? as usize;
+    let count_types = i32_at(block, 40)? as usize;
+    let size_unc_total = i32_at(block, 48)? as usize;
+
+    let mut off = 0usize;
+    let b1_start = off;
+    off += count_b1;
+    let (b2_start, b2_len) = lane(&mut off, count_b2, 2);
+    let (b4_start, b4_len) = lane(&mut off, count_b4, 4);
+    let (b8_start, b8_len) = if count_b8 > 0 {
+        lane(&mut off, count_b8, 8)
+    } else {
+        align(&mut off, 8);
+        (off, 0)
+    };
+    let strings_start = off;
+    let string_count = u32::try_from(i32_at(block, BUF + b4_start)?)
+        .map_err(|_| DecodeError::Kv3("negative string count"))? as usize;
+    let mut sp = BUF + strings_start;
+    for _ in 0..string_count {
+        let _ = read_cstr(block, &mut sp)?;
+    }
+    let strings_len = sp - (BUF + strings_start);
+    let types_len = count_types
+        .checked_sub(strings_len)
+        .ok_or(DecodeError::Kv3("v4 countTypes smaller than strings"))?;
+    let types_start = strings_start + strings_len;
+    let tail_start = types_start
+        .checked_add(types_len)
+        .ok_or(DecodeError::Kv3("v4 type stream extent overflow"))?;
+    if tail_start > size_unc_total {
+        return Err(DecodeError::Kv3("v4 type stream out of range"));
+    }
+
+    let bases = [
+        BUF + b1_start,
+        BUF + b2_start,
+        BUF + b4_start,
+        BUF + b8_start,
+    ];
+    let mut b1 = block[bases[B1]..bases[B1] + count_b1].to_vec();
+    let mut b2 = block[bases[B2]..bases[B2] + b2_len].to_vec();
+    let mut b4 = block[bases[B4]..bases[B4] + b4_len].to_vec();
+    let mut b8 = block[bases[B8]..bases[B8] + b8_len].to_vec();
+    let strings = &block[BUF + strings_start..BUF + types_start];
+    let mut types = block[BUF + types_start..BUF + tail_start].to_vec();
+    let tail = &block[BUF + tail_start..BUF + size_unc_total];
+
+    match site.count_lane {
+        B1 => bump_array_count(&mut b1, site, bases)?,
+        B2 => bump_array_count(&mut b2, site, bases)?,
+        B4 => bump_array_count(&mut b4, site, bases)?,
+        B8 => bump_array_count(&mut b8, site, bases)?,
+        _ => return Err(DecodeError::Kv3("unsupported array count lane")),
+    }
+    let b1_insert = rel(site.cursors.lanes[B1], bases[B1], b1.len())?;
+    let b2_insert = rel(site.cursors.lanes[B2], bases[B2], b2.len())?;
+    let b4_insert = rel(site.cursors.lanes[B4], bases[B4], b4.len())?;
+    let b8_insert = rel(site.cursors.lanes[B8], bases[B8], b8.len())?;
+    let types_insert = rel(site.cursors.types, BUF + types_start, types.len())?;
+    splice_at(&mut b1, b1_insert, &encoded.b1)?;
+    splice_at(&mut b2, b2_insert, &encoded.b2)?;
+    splice_at(&mut b4, b4_insert, &encoded.b4)?;
+    splice_at(&mut b8, b8_insert, &encoded.b8)?;
+    splice_at(&mut types, types_insert, &encoded.types)?;
+
+    let mut body = Vec::new();
+    let mut cursor = 0usize;
+    body.extend_from_slice(&b1);
+    cursor += b1.len();
+    append_aligned_lane(&mut body, &mut cursor, &b2, 2, false);
+    append_aligned_lane(&mut body, &mut cursor, &b4, 4, false);
+    append_aligned_lane(&mut body, &mut cursor, &b8, 8, true);
+    body.extend_from_slice(strings);
+    cursor += strings.len();
+    body.extend_from_slice(&types);
+    cursor += types.len();
+    debug_assert_eq!(cursor, body.len());
+    body.extend_from_slice(tail);
+
+    let mut out = Vec::with_capacity(BUF + body.len());
+    out.extend_from_slice(&block[..BUF]);
+    out.extend_from_slice(&body);
+
+    write_i32_at(&mut out, 28, fit_i32(b1.len())?);
+    write_i32_at(&mut out, 32, fit_i32(b4.len() / 4)?);
+    write_i32_at(&mut out, 36, fit_i32(b8.len() / 8)?);
+    write_i32_at(&mut out, 40, fit_i32(strings.len() + types.len())?);
+    write_i32_at(&mut out, 48, fit_i32(body.len())?);
+    write_i32_at(&mut out, 52, fit_i32(body.len())?);
+    write_i32_at(&mut out, 64, fit_i32(b2.len() / 2)?);
+    Ok(out)
+}
+
+fn append_aligned_lane(
+    body: &mut Vec<u8>,
+    cursor: &mut usize,
+    lane_bytes: &[u8],
+    alignment: usize,
+    align_even_when_empty: bool,
+) {
+    if lane_bytes.is_empty() && !align_even_when_empty {
+        return;
+    }
+    let before = *cursor;
+    align(cursor, alignment);
+    body.resize(body.len() + (*cursor - before), 0);
+    body.extend_from_slice(lane_bytes);
+    *cursor += lane_bytes.len();
+}
+
+fn rel(abs: usize, base: usize, len: usize) -> Result<usize, DecodeError> {
+    let pos = abs
+        .checked_sub(base)
+        .ok_or(DecodeError::Kv3("insert cursor before lane base"))?;
+    if pos > len {
+        return Err(DecodeError::Kv3("insert cursor past lane end"));
+    }
+    Ok(pos)
+}
+
+fn splice_at(dst: &mut Vec<u8>, at: usize, bytes: &[u8]) -> Result<(), DecodeError> {
+    if at > dst.len() {
+        return Err(DecodeError::Kv3("insert splice offset out of range"));
+    }
+    dst.splice(at..at, bytes.iter().copied());
+    Ok(())
+}
+
+fn bump_array_count(
+    lane_bytes: &mut [u8],
+    site: &InsertSite,
+    lane_bases: [usize; 4],
+) -> Result<(), DecodeError> {
+    let rel = rel(
+        site.count_offset,
+        lane_bases[site.count_lane],
+        lane_bytes.len(),
+    )?;
+    let new_count = site
+        .old_count
+        .checked_add(1)
+        .ok_or(DecodeError::Kv3("array count overflow"))?;
+    match site.count_width {
+        1 => {
+            let count = u8::try_from(new_count)
+                .map_err(|_| DecodeError::Kv3("byte-length array count overflow"))?;
+            *lane_bytes
+                .get_mut(rel)
+                .ok_or(DecodeError::Kv3("array count offset out of range"))? = count;
+        }
+        4 => {
+            let count =
+                u32::try_from(new_count).map_err(|_| DecodeError::Kv3("array count overflow"))?;
+            lane_bytes
+                .get_mut(rel..rel + 4)
+                .ok_or(DecodeError::Kv3("array count offset out of range"))?
+                .copy_from_slice(&count.to_le_bytes());
+        }
+        _ => return Err(DecodeError::Kv3("unsupported array count width")),
+    }
+    Ok(())
+}
+
+fn fit_i32(v: usize) -> Result<i32, DecodeError> {
+    i32::try_from(v).map_err(|_| DecodeError::Kv3("size/count field overflow"))
+}
+
+fn checked_add_i32(a: i32, b: i32) -> Result<i32, DecodeError> {
+    a.checked_add(b)
+        .ok_or(DecodeError::Kv3("size/count field overflow"))
 }
 
 /// Appends each of `wanted` that is not already interned to the KV3 v5 string table
@@ -1601,6 +2403,67 @@ mod tests {
         }
     }
 
+    fn first_insertable_array(v: &Value, path: &mut Vec<Seg>) -> Option<(Vec<Seg>, Value)> {
+        match v {
+            Value::Array(items) => {
+                if let Some(first) = items.first() {
+                    let inserted = match first {
+                        Value::Object(_) => Some(Value::Object(vec![(
+                            "morphic_insert_probe".to_string(),
+                            Value::String("MORPHIC_ARRAY_INSERT_V5".to_string()),
+                        )])),
+                        Value::String(_) => {
+                            Some(Value::String("MORPHIC_ARRAY_INSERT_V5".to_string()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(inserted) = inserted {
+                        return Some((path.clone(), inserted));
+                    }
+                }
+                for (i, child) in items.iter().enumerate() {
+                    path.push(Seg::Index(i));
+                    if let Some(found) = first_insertable_array(child, path) {
+                        return Some(found);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            Value::Object(pairs) => {
+                for (key, child) in pairs {
+                    path.push(Seg::Key(key.clone()));
+                    if let Some(found) = first_insertable_array(child, path) {
+                        return Some(found);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn insert_at_array(v: &mut Value, path: &[Seg], index: usize, inserted: Value) {
+        let Some((seg, rest)) = path.split_first() else {
+            let Value::Array(items) = v else {
+                panic!("insert path does not resolve to an array");
+            };
+            items.insert(index, inserted);
+            return;
+        };
+        match (seg, v) {
+            (Seg::Key(k), Value::Object(pairs)) => {
+                let slot = pairs.iter_mut().find(|(kk, _)| kk == k).expect("key");
+                insert_at_array(&mut slot.1, rest, index, inserted);
+            }
+            (Seg::Index(i), Value::Array(items)) => {
+                insert_at_array(&mut items[*i], rest, index, inserted);
+            }
+            _ => panic!("path does not resolve"),
+        }
+    }
+
     /// Appending an unreferenced string must not change the decoded tree (no field
     /// points at it yet), and re-appending the same string is a no-op (proving it was
     /// interned). This is the core faithfulness guarantee of the aux-buffer rebuild.
@@ -1619,7 +2482,10 @@ mod tests {
         );
         // Idempotent: the second append finds it already interned and is a no-op.
         let again = append_strings_v5(&added, std::slice::from_ref(&novel)).expect("append 2");
-        assert_eq!(again, added, "re-appending an interned string changes nothing");
+        assert_eq!(
+            again, added,
+            "re-appending an interned string changes nothing"
+        );
     }
 
     /// The end-to-end lever: redirect an existing string field to a string that is
@@ -1690,5 +2556,67 @@ mod tests {
         let mut expect = tree;
         set_at(&mut expect, &path, Value::String(novel));
         assert_eq!(new_tree, expect, "only the targeted field changed (v4)");
+    }
+
+    #[test]
+    fn insert_array_element_on_v5_gigawatt_preserves_everything_else() {
+        let data = gigawatt_data();
+        let tree = crate::kv3::decode(&data).expect("decode");
+        let (path, inserted) =
+            first_insertable_array(&tree, &mut Vec::new()).expect("insertable array");
+
+        let patched =
+            insert_array_element_adding(&data, &path, 0, &inserted).expect("v5 array insert");
+        let new_tree = crate::kv3::decode(&patched).expect("decode patched");
+
+        let mut expect = tree;
+        insert_at_array(&mut expect, &path, 0, inserted);
+        assert_eq!(
+            new_tree, expect,
+            "array insert should add exactly one element and preserve the rest"
+        );
+    }
+
+    #[test]
+    fn insert_array_element_on_v4_encoded_block_preserves_everything_else() {
+        let data = gigawatt_data();
+        let format = crate::kv3::Format::from_payload(&data).expect("format");
+        let tree = Value::Object(vec![
+            (
+                "items".to_string(),
+                Value::Array(vec![
+                    Value::Object(vec![(
+                        "name".to_string(),
+                        Value::String("before".to_string()),
+                    )]),
+                    Value::Object(vec![(
+                        "name".to_string(),
+                        Value::String("after".to_string()),
+                    )]),
+                ]),
+            ),
+            ("tail".to_string(), Value::String("unchanged".to_string())),
+        ]);
+        let v4 = crate::kv3::encode(&tree, &format);
+        assert_eq!(u32_at(&v4, 0).unwrap() & 0xFF, 4, "encoder emits v4");
+
+        let path = vec![Seg::Key("items".to_string())];
+        let inserted = Value::Object(vec![
+            (
+                "name".to_string(),
+                Value::String("MORPHIC_ARRAY_INSERT_V4".to_string()),
+            ),
+            ("rank".to_string(), Value::Int(7)),
+        ]);
+        let patched =
+            insert_array_element_adding(&v4, &path, 1, &inserted).expect("v4 array insert");
+        let new_tree = crate::kv3::decode(&patched).expect("decode patched");
+
+        let mut expect = tree;
+        insert_at_array(&mut expect, &path, 1, inserted);
+        assert_eq!(
+            new_tree, expect,
+            "v4 array insert should add exactly one element and preserve the rest"
+        );
     }
 }
