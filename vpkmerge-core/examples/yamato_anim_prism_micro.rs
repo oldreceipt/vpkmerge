@@ -1,7 +1,7 @@
-// Yamato animated prism micro-pass.
+// Yamato animated prism pass.
 //
-// Input should be the Prism V3.1 particle VPK. This writes a small override VPK
-// for selected high-visibility Yamato glow/beam/trail particles, using only
+// Input should be the Prism V3.1 particle VPK. This writes an override VPK for
+// high-visibility Yamato glow/beam/trail/arc/slash particles, using only
 // byte-faithful existing-field patches:
 //   - texture offset inputs -> particle age, when that enum string is present
 //   - stored texture-offset multipliers -> 2.5
@@ -14,30 +14,23 @@ use morphic::kv3::{Seg, Value};
 
 const AGE_TYPE: &str = "PF_TYPE_PARTICLE_AGE_NORMALIZED";
 
-const TARGETS: &[&str] = &[
-    "particles/abilities/yamato/yamato_power_slash_charge_body_glow.vpcf_c",
-    "particles/abilities/yamato/yamato_power_slash_charge_magic.vpcf_c",
-    "particles/abilities/yamato/yamato_power_slash_charge_light.vpcf_c",
-    "particles/abilities/yamato/yamato_power_slash_charge_streaks.vpcf_c",
-    "particles/abilities/yamato/yamato_power_slash_pulse_glow.vpcf_c",
-    "particles/abilities/yamato/yamato_power_slash_sweep_line.vpcf_c",
-    "particles/abilities/yamato/yamato_blade_glow_trail.vpcf_c",
-    "particles/abilities/yamato/yamato_blade_dash_trail.vpcf_c",
-    "particles/abilities/yamato/yamato_blade_dash_trail_core.vpcf_c",
-    "particles/abilities/yamato/yamato_blade_dash_model_glow.vpcf_c",
-    "particles/abilities/yamato/yamato_crimson_slash_blade_glow_beam.vpcf_c",
-    "particles/abilities/yamato/yamato_crimson_slash_blade_glow_trail.vpcf_c",
-    "particles/abilities/yamato/yamato_infinity_slash_start_beam.vpcf_c",
-    "particles/abilities/yamato/yamato_infinity_slash_end_beam.vpcf_c",
-    "particles/abilities/yamato/yamato_infinity_slash_dash_trail.vpcf_c",
-    "particles/abilities/yamato/yamato_shadow_form_glow.vpcf_c",
-    "particles/abilities/yamato/yamato_shadow_form_energy.vpcf_c",
-    "particles/abilities/yamato/yamato_shadow_form_source_beam.vpcf_c",
-    "particles/abilities/yamato/yamato_flying_strike_rope_tracer_glow.vpcf_c",
-    "particles/abilities/yamato/yamato_flying_strike_rope_tracer_trail.vpcf_c",
-    "particles/weapon_fx/yamato/yamato_weapon_arc_beam.vpcf_c",
-    "particles/weapon_fx/yamato/yamato_weapon_arc_trail.vpcf_c",
-    "particles/weapon_fx/yamato/yamato_tracer_track_trail.vpcf_c",
+const TARGET_KEYWORDS: &[&str] = &[
+    "arc", "beam", "charge", "core", "dash", "endcap", "energy", "flash", "glow", "light", "magic",
+    "pulse", "ring", "rope", "slash", "streak", "sweep", "tracer", "trail",
+];
+
+const SKIP_KEYWORDS: &[&str] = &[
+    "blood",
+    "darkness",
+    "debris",
+    "dust",
+    "fog",
+    "gas",
+    "pnt",
+    "power_slash",
+    "shake",
+    "sleep",
+    "smoke",
 ];
 
 #[derive(Default)]
@@ -182,17 +175,37 @@ fn patch_entry(bytes: &[u8]) -> anyhow::Result<(Vec<u8>, EntryStats)> {
     Ok((out, stats))
 }
 
+fn is_target_entry(entry: &str) -> bool {
+    if !(entry.starts_with("particles/abilities/yamato/")
+        || entry.starts_with("particles/weapon_fx/yamato/"))
+        || !entry.ends_with(".vpcf_c")
+    {
+        return false;
+    }
+
+    let name = entry.to_ascii_lowercase();
+    TARGET_KEYWORDS.iter().any(|kw| name.contains(kw))
+        && !SKIP_KEYWORDS.iter().any(|kw| name.contains(kw))
+}
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let input = args.next().expect("yamato_prism_v31_particles_dir.vpk");
     let out = args.next().expect("out_micro_dir.vpk");
 
     let vpk = valve_pak::open(&input)?;
+    let mut entries: Vec<String> = vpk
+        .file_paths()
+        .filter(|entry| is_target_entry(entry))
+        .cloned()
+        .collect();
+    entries.sort();
+
     let mut packed = Vec::new();
     let mut missing = 0usize;
     let mut totals = EntryStats::default();
 
-    for &entry in TARGETS {
+    for entry in &entries {
         let Ok(mut file) = vpk.get_file(entry) else {
             missing += 1;
             eprintln!("missing {entry}");
@@ -204,7 +217,7 @@ fn main() -> anyhow::Result<()> {
         totals.multipliers += stats.multipliers;
         totals.gradients += stats.gradients;
         if stats.strings + stats.multipliers + stats.gradients > 0 {
-            packed.push((entry.to_string(), patched));
+            packed.push((entry.clone(), patched));
         }
     }
 
@@ -214,8 +227,9 @@ fn main() -> anyhow::Result<()> {
         .collect();
     vpkmerge_core::pack(&refs, &out)?;
     println!(
-        "wrote {out}: {} entries, {missing} missing, {} string enum edits, {} multiplier edits, {} gradient timing edits",
+        "wrote {out}: {} patched of {} target entries, {missing} missing, {} string enum edits, {} multiplier edits, {} gradient timing edits",
         refs.len(),
+        entries.len(),
         totals.strings,
         totals.multipliers,
         totals.gradients
