@@ -17,6 +17,7 @@
 //   cargo run --release --example reskin_chrono_trippy -- <pak01_dir.vpk> --png <preview.png>
 use morphic::kv3::{Seg, Value};
 use morphic::{Image, ImageData, TextureFormat};
+use std::f32::consts::TAU;
 
 const BODY_COLOR: &str =
     "models/heroes_staging/chrono/materials/chrono_v2_color_png_d1d22ba7.vtex_c";
@@ -112,11 +113,166 @@ fn confetti(u: f32, v: f32, phase: f32) -> [u8; 3] {
     let sat = (0.82 + 0.18 * fine).clamp(0.0, 1.0);
     let val = (0.55 + 0.42 * fbm(wu + 1.1, wv + 6.6, 24, 3)).clamp(0.0, 1.0);
     let rgb = hsv2rgb(hue, sat, val);
+    pack_rgb(rgb)
+}
+
+fn pack_rgb(rgb: [f32; 3]) -> [u8; 3] {
     [
         (rgb[0] * 255.0).clamp(0.0, 255.0) as u8,
         (rgb[1] * 255.0).clamp(0.0, 255.0) as u8,
         (rgb[2] * 255.0).clamp(0.0, 255.0) as u8,
     ]
+}
+
+// ---------------------------------------------------------------------------
+// LIQUID MARBLE. Iterated domain warping (flow noise): the field is sampled
+// through two layers of fbm displacement, so straight contours bend into
+// molten, marbled veins. Every fbm is the period-1 wrapped `vnoise`, so warping
+// the coordinates keeps the whole field period-1 -> it still tiles and the UV
+// scroll wraps seamlessly, the colour just appears to FLOW like a lava lamp.
+// ---------------------------------------------------------------------------
+fn liquid(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let warp = 0.5;
+    // layer 1 warp vector
+    let q0 = fbm(u, v, 4, 5);
+    let q1 = fbm(u + 3.1, v + 6.2, 4, 5);
+    // layer 2 warp vector, displaced by layer 1
+    let r0 = fbm(u + warp * q0 + 1.7, v + warp * q1 + 9.2, 5, 5);
+    let r1 = fbm(u + warp * q0 + 8.3, v + warp * q1 + 2.8, 5, 5);
+    // final field, displaced by layer 2
+    let f = fbm(u + warp * r0, v + warp * r1, 6, 5);
+    // veins: a banded sine of the field carves thin filaments between colour pools
+    let veins = ((f * 11.0 + r0 * 3.0) * TAU).sin() * 0.5 + 0.5;
+    let hue = (f * 2.4 + r0 * 0.9 + phase).fract() * 360.0;
+    let sat = (0.80 + 0.20 * q1).clamp(0.0, 1.0);
+    let val = (0.30 + 0.68 * veins).clamp(0.0, 1.0);
+    pack_rgb(hsv2rgb(hue, sat, val))
+}
+
+// ---------------------------------------------------------------------------
+// MOIRE. Two pairs of plane-wave gratings whose frequencies differ by one
+// cycle beat against each other into a slow interference envelope. Integer
+// frequencies make every grating period-1, so the field tiles exactly. The
+// phase term + UV scroll slide the gratings, sweeping the moire fringes.
+// ---------------------------------------------------------------------------
+fn moire(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let g = |a: f32, b: f32, ph: f32| (TAU * (a * u + b * v) + ph).sin();
+    let p = phase * TAU;
+    // close-frequency pairs -> low-frequency beat in two orientations
+    let m1 = g(9.0, 4.0, p) + g(10.0, 5.0, -p);
+    let m2 = g(4.0, 9.0, p * 1.3) + g(5.0, 8.0, -p);
+    let field = (m1 * m2) * 0.25 + 0.5; // 0..1 interference
+    let hue = (field * 1.6 + 0.12 * m1 + phase).fract() * 360.0;
+    let sat = 0.95;
+    let val = (0.42 + 0.5 * ((field * 6.0).sin() * 0.5 + 0.5)).clamp(0.0, 1.0);
+    pack_rgb(hsv2rgb(hue, sat, val))
+}
+
+// ---------------------------------------------------------------------------
+// KALEIDOSCOPE. A superposition of gratings on the square symmetry axes
+// (horizontal, vertical, both diagonals) builds an 8-point mandala; a
+// cos-based radial term (periodic, so still tiling) pulls the hue into rings
+// around each tile centre. All wavevectors are integer -> exact tiling.
+// ---------------------------------------------------------------------------
+fn kaleido(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let g = |a: f32, b: f32| (TAU * (a * u + b * v)).cos();
+    let k = 6.0;
+    let mandala = (g(k, 0.0) + g(0.0, k) + 0.7 * g(k, k) + 0.7 * g(k, -k)) * 0.25; // ~ -1..1
+                                                                                   // periodic radial: peaks at tile centre + corners, troughs at edge midpoints
+    let radial = ((TAU * u).cos() + (TAU * v).cos()) * 0.5;
+    let field = mandala * 0.5 + 0.5;
+    let hue = (field + 0.35 * radial + phase).fract() * 360.0;
+    let sat = (0.85 + 0.15 * radial).clamp(0.0, 1.0);
+    let val = (0.45 + 0.5 * (mandala * 0.5 + 0.5)).clamp(0.0, 1.0);
+    pack_rgb(hsv2rgb(hue, sat, val))
+}
+
+// ---------------------------------------------------------------------------
+// HOLOGRAPHIC FOIL. A smooth iridescent sweep with fine foil striations -- the
+// flat base the holo material treatment sits on (Fresnel rim + crawling
+// specular, applied as vmat patches in main). Tiling: integer-frequency hue
+// sweep + foil lines, fbm-warped (period-1) so the runtime scroll still wraps.
+// ---------------------------------------------------------------------------
+fn holo(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let warp = 0.06 * fbm(u + 1.3, v + 4.1, 6, 3);
+    let sweep = (u * 2.0 + v + warp).fract(); // smooth diagonal iridescence (tiles)
+    let foil = ((u * 48.0 - v * 48.0) * TAU).sin() * 0.5 + 0.5; // fine foil lines (tiles)
+    let hue = (sweep + 0.04 * foil + phase).fract() * 360.0;
+    let sat = (0.45 + 0.30 * foil).clamp(0.0, 1.0); // desaturate on the foil highlights
+    let val = (0.72 + 0.28 * foil).clamp(0.0, 1.0);
+    pack_rgb(hsv2rgb(hue, sat, val))
+}
+
+// ---------------------------------------------------------------------------
+// GLITCH / CRT. Rainbow base broken by horizontal scanlines, datamosh bands that
+// slide sideways, and per-channel chromatic aberration (R/G/B sampled at slightly
+// offset u) for the classic broken-signal fringing. Tiling: scanline + hue are
+// integer-frequency; band displacement is hashed per row-block (period-1).
+// ---------------------------------------------------------------------------
+fn glitch(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let band = (v * 28.0).floor() as i64; // 28 horizontal bands per tile
+    let r = hash2(band, 7);
+    let shift = if r > 0.62 { (r - 0.62) * 0.9 } else { 0.0 }; // glitch bands slide
+    let warp = 0.15 * fbm(u, v, 10, 3);
+    let hue_at = |off: f32| (((u + shift + warp + off) * 2.0 + phase).fract()) * 360.0;
+    // chromatic aberration: split the three channels across a small u offset
+    let s = 0.92;
+    let val = 0.9;
+    let rr = hsv2rgb(hue_at(0.0), s, val)[0];
+    let gg = hsv2rgb(hue_at(0.010), s, val)[1];
+    let bb = hsv2rgb(hue_at(0.020), s, val)[2];
+    // scanlines: fine dark horizontal lines (integer freq -> tiles)
+    let scan = 0.55 + 0.45 * ((v * 512.0 * TAU).sin().abs());
+    pack_rgb([rr * scan, gg * scan, bb * scan])
+}
+
+// FLIR "ironbow" thermal ramp: black -> indigo -> magenta -> red -> orange ->
+// yellow -> white as t goes 0..1.
+fn thermal_color(t: f32) -> [f32; 3] {
+    const STOPS: &[(f32, [f32; 3])] = &[
+        (0.00, [0.0, 0.0, 0.05]),
+        (0.22, [0.20, 0.0, 0.45]),
+        (0.42, [0.65, 0.0, 0.55]),
+        (0.60, [0.95, 0.10, 0.10]),
+        (0.76, [1.0, 0.55, 0.0]),
+        (0.90, [1.0, 0.95, 0.25]),
+        (1.00, [1.0, 1.0, 1.0]),
+    ];
+    let t = t.clamp(0.0, 1.0);
+    for w in STOPS.windows(2) {
+        let (a, ca) = w[0];
+        let (b, cb) = w[1];
+        if t <= b {
+            let k = ((t - a) / (b - a)).clamp(0.0, 1.0);
+            return [
+                ca[0] + (cb[0] - ca[0]) * k,
+                ca[1] + (cb[1] - ca[1]) * k,
+                ca[2] + (cb[2] - ca[2]) * k,
+            ];
+        }
+    }
+    [1.0, 1.0, 1.0]
+}
+
+// THERMAL / x-ray: a domain-warped fbm "heat" field mapped through the ironbow
+// ramp -> looks like a heat-signature skin that flows with the UV scroll.
+fn thermal(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let warp = 0.25 * fbm(u + 1.7, v + 4.2, 6, 4);
+    let heat =
+        (fbm(u + warp, v + warp, 6, 5) * 1.5 + 0.25 * fbm(u + 9.0, v + 2.0, 24, 3) + phase).fract();
+    pack_rgb(thermal_color(heat))
+}
+
+fn body_pixel(style: &str, u: f32, v: f32, phase: f32) -> [u8; 3] {
+    match style {
+        "liquid" | "hololiquid" => liquid(u, v, phase),
+        "moire" => moire(u, v, phase),
+        "kaleido" | "kaleidoscope" => kaleido(u, v, phase),
+        "holo" => holo(u, v, phase),
+        "glitch" | "crt" => glitch(u, v, phase),
+        "thermal" | "xray" => thermal(u, v, phase),
+        _ => confetti(u, v, phase),
+    }
 }
 
 fn rgba8_mut(img: &mut Image) -> anyhow::Result<&mut Vec<u8>> {
@@ -126,14 +282,14 @@ fn rgba8_mut(img: &mut Image) -> anyhow::Result<&mut Vec<u8>> {
     }
 }
 
-fn paint(img: &mut Image, phase: f32) -> anyhow::Result<()> {
+fn paint_body(img: &mut Image, style: &str, phase: f32) -> anyhow::Result<()> {
     let (w, h) = (img.width, img.height);
     let px = rgba8_mut(img)?;
     for y in 0..h {
         let v = y as f32 / h as f32;
         for x in 0..w {
             let u = x as f32 / w as f32;
-            let c = confetti(u, v, phase);
+            let c = body_pixel(style, u, v, phase);
             let i = ((y * w + x) * 4) as usize;
             px[i] = c[0];
             px[i + 1] = c[1];
@@ -174,6 +330,30 @@ fn vparam_index(v: &Value, name: &str) -> Option<usize> {
         .as_array()?
         .iter()
         .position(|p| p.get("m_name").and_then(Value::as_str) == Some(name))
+}
+
+// Single scalar edit for a float param (m_floatParams[i].m_flValue). The probe
+// confirmed these are real stored doubles, patchable via the same double patcher
+// as the vector params (so a holo scale/exponent flips just those 8 bytes).
+fn fparam_edit(v: &Value, name: &str, val: f64) -> Vec<(Vec<Seg>, f64)> {
+    let Some(i) = v
+        .get("m_floatParams")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .position(|p| p.get("m_name").and_then(Value::as_str) == Some(name))
+        })
+    else {
+        return Vec::new();
+    };
+    vec![(
+        vec![
+            Seg::Key("m_floatParams".to_string()),
+            Seg::Index(i),
+            Seg::Key("m_flValue".to_string()),
+        ],
+        val,
+    )]
 }
 
 // Edits for specific components of a vector param (e.g. RGB of a tint/color const).
@@ -221,20 +401,38 @@ fn patch_optional(bytes: Vec<u8>, edits: &[(Vec<Seg>, f64)]) -> (Vec<u8>, bool) 
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut a = std::env::args().skip(1);
-    let pak = a
-        .next()
-        .expect("usage: reskin_chrono_trippy <pak01_dir.vpk> <out_dir.vpk|--png file>");
-    let arg2 = a.next().expect("second arg: <out_dir.vpk> or --png <file>");
+    // Args: <pak01_dir.vpk> <out_dir.vpk|--png file> [--style confetti|liquid|moire|kaleido]
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut style = "confetti".to_string();
+    let mut pos: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == "--style" {
+            style = raw.get(i + 1).cloned().expect("--style needs a value");
+            i += 2;
+        } else {
+            pos.push(raw[i].clone());
+            i += 1;
+        }
+    }
+    let pak = pos.first().cloned().expect(
+        "usage: reskin_chrono_trippy <pak01_dir.vpk> <out_dir.vpk|--png file> \
+         [--style confetti|liquid|moire|kaleido]",
+    );
+    let arg2 = pos
+        .get(1)
+        .cloned()
+        .expect("second arg: <out_dir.vpk> or --png <file>");
+    eprintln!("style: {style}");
 
     let body_color_bytes = vpkmerge_core::read_vpk_entry(&pak, BODY_COLOR)?;
 
-    // --- body albedo: tiling acid-confetti rainbow (BC7 re-encode) ---
+    // --- body albedo: tiling procedural rainbow (BC7 re-encode), chosen by --style ---
     let mut body = morphic::decode(&body_color_bytes)?;
-    paint(&mut body, 0.0)?;
+    paint_body(&mut body, &style, 0.0)?;
 
     if arg2 == "--png" {
-        let out = a.next().expect("--png needs an output path");
+        let out = pos.get(2).cloned().expect("--png needs an output path");
         let png = morphic::encode_image(&body, TextureFormat::PngRgba8888)?;
         std::fs::write(&out, &png)?;
         println!("wrote preview PNG: {out} ({}x{})", body.width, body.height);
@@ -261,6 +459,28 @@ fn main() -> anyhow::Result<()> {
         "g_vSelfIllumScrollSpeed1",
         [SCROLL[0], SCROLL[1]],
     ));
+    if style == "holo" || style == "hololiquid" {
+        // Crawling specular: scroll the normal/roughness map FASTER than the
+        // albedo so the moving shine separates from the colour -> a view + time
+        // dependent foil sheen, and a faux-parallax depth shimmer (the lit relief
+        // and the colour travel at different rates).
+        body_edits.extend(scroll_xy_edits(
+            &bv,
+            "g_vNormalAndRoughnessScrollSpeed1",
+            [0.12, 0.07],
+        ));
+        // Widen + brighten the Fresnel-masked self-illum so the edges glow as you
+        // orbit the hero (the real holographic, view-dependent cue). Rim tint kept
+        // white so it reads the iridescent albedo colour; albedo factor left at 1.
+        body_edits.extend(fparam_edit(&bv, "g_flSelfIllumScale1", 5.5));
+        body_edits.extend(fparam_edit(&bv, "g_flSelfIllumFresnelMaskExponent", 2.5));
+        body_edits.extend(vcomp_edits(
+            &bv,
+            "g_vSelfIllumFresnelMaskTint1",
+            &[(0, 1.0), (1, 1.0), (2, 1.0)],
+        ));
+        eprintln!("holo: Fresnel rim + crawling specular patches added");
+    }
     let new_body_vmat = patch_required(&body_vmat_bytes, &body_edits, "body scroll")?;
     eprintln!("body vmat scroll set ({} edits)", body_edits.len());
 
@@ -292,15 +512,18 @@ fn main() -> anyhow::Result<()> {
     let new_hg_vmat = patch_required(&hg_vmat_bytes, &hg_neon, "hourglass neon glow")?;
     eprintln!("hourglass glow retinted neon cyan");
 
-    let readme = "Paradox Trippy (animated) skin -- body + gun + head\n\
+    let readme = format!(
+        "Paradox Trippy (animated) skin -- body + gun + head\n\
         ===================================================\n\
-        vpkmerge test build. Hero: Paradox (chrono). All vmat edits are byte-faithful\n\
-        in-place double patches (no KV3 re-encode).\n\
-        - body + gun albedo: tiling acid-confetti RAINBOW; g_vAlbedoScrollSpeed1\n\
-          (+ body g_vSelfIllumScrollSpeed1) set so the rainbow FLOWS at runtime.\n\
+        vpkmerge test build. Hero: Paradox (chrono). Style: {style}. All vmat edits are\n\
+        byte-faithful in-place double patches (no KV3 re-encode).\n\
+        - body albedo: tiling {style} RAINBOW; gun albedo: smooth flowing gradient\n\
+          (gun UVs are collapsed, so a detailed pattern would block up there).\n\
+        - g_vAlbedoScrollSpeed1 (+ body g_vSelfIllumScrollSpeed1) set so it FLOWS at runtime.\n\
         - head glass: dome tint brightened (near-black -> light) to read CLEAR.\n\
         - hourglass: self-illum glow retinted crimson -> neon cyan.\n\
-        - normal + AO maps untouched: surface form stays put, only color sweeps.\n";
+        - normal + AO maps untouched: surface form stays put, only color sweeps.\n"
+    );
 
     vpkmerge_core::pack(
         &[
