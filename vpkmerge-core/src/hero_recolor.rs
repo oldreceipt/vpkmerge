@@ -109,16 +109,32 @@ pub fn recipe_for(codename: &str) -> Option<HeroRecolorRecipe> {
         // projectile prop models, recolored so the dome matches. See [`chrono_recipe`].
         "chrono" => Some(chrono_recipe()),
         "abrams" => Some(abrams_recipe()),
+        "archer" => Some(archer_recipe()),
+        "digger" => Some(digger_recipe()),
+        "doorman" => Some(doorman_recipe()),
+        "drifter" => Some(drifter_recipe()),
+        "dynamo" => Some(dynamo_recipe()),
+        "familiar" => Some(familiar_recipe()),
         "fencer" => Some(fencer_recipe()),
+        "frank" => Some(frank_recipe()),
         "ghost" => Some(ghost_recipe()),
+        "haze" => Some(haze_recipe()),
+        "kelvin" => Some(kelvin_recipe()),
         "nano" => Some(nano_recipe()),
         "lash" => Some(lash_recipe()),
         "mcginnis" => Some(mcginnis_recipe()),
         "magician" => Some(magician_recipe()),
         "pocket" => Some(pocket_recipe()),
-        "astro" | "unicorn" | "gigawatt" | "vampirebat" | "wraith" => {
-            Some(particle_only_recipe(&codename))
-        }
+        "priest" => Some(priest_recipe()),
+        "tengu" => Some(tengu_recipe()),
+        "viper" => Some(viper_recipe()),
+        "viscous" => Some(viscous_recipe()),
+        "warden" => Some(warden_recipe()),
+        "werewolf" => Some(werewolf_recipe()),
+        "unicorn" => Some(unicorn_recipe()),
+        "astro" | "gigawatt" | "hornet" | "mirage" | "punkgoat" | "shiv" | "vampirebat"
+        | "wraith" => Some(particle_only_recipe(&codename)),
+        "bebop" => Some(bebop_recipe()),
         _ => None,
     }
 }
@@ -133,17 +149,37 @@ pub const fn pinned_hero_codenames() -> &'static [&'static str] {
         "yamato",
         "chrono",
         "abrams",
+        "archer",
         "astro",
+        "bebop",
+        "digger",
+        "doorman",
+        "drifter",
+        "dynamo",
+        "familiar",
         "fencer",
+        "frank",
         "ghost",
         "nano",
+        "haze",
+        "hornet",
+        "kelvin",
         "lash",
         "mcginnis",
         "magician",
+        "mirage",
         "pocket",
+        "priest",
+        "punkgoat",
+        "shiv",
+        "tengu",
         "unicorn",
         "gigawatt",
         "vampirebat",
+        "viper",
+        "viscous",
+        "warden",
+        "werewolf",
         "wraith",
     ]
 }
@@ -215,6 +251,24 @@ fn particle_only_recipe(codename: &str) -> HeroRecolorRecipe {
         model_entries: Vec::new(),
         // Particle-only: no color texture to render as a swatch.
         preview_texture: None,
+    }
+}
+
+fn particles_plus_textures_recipe(
+    codename: &str,
+    texture_entries: &[&str],
+    preview_texture: &str,
+) -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: codename.to_string(),
+        particle_prefixes: vec![
+            format!("particles/abilities/{codename}/"),
+            format!("particles/weapon_fx/{codename}/"),
+        ],
+        texture_entries: texture_entries.iter().map(|s| (*s).to_string()).collect(),
+        material_entries: Vec::new(),
+        model_entries: Vec::new(),
+        preview_texture: Some(preview_texture.to_string()),
     }
 }
 
@@ -452,6 +506,269 @@ fn pocket_recipe() -> HeroRecolorRecipe {
                 .to_string(),
         ),
     }
+}
+
+/// Celeste (`unicorn`): particles plus the color-bearing projected ground masks.
+/// Her ability-3 ground decal uses `unicorn_radiant_flare_*_projected` materials;
+/// particle tint alone makes those read as flat filled circles, so animated prism
+/// uses a projected-texture rainbow over the authored falloff.
+fn unicorn_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "unicorn",
+        &[
+            "materials/particle/abilities/unicorn/unicorn_prismatic_shield_ground_warning_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/unicorn_beams_of_light_ground_projected_light_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/unicorn_flux_rainbow_ground_projected_light_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/unicorn_radiant_flare_ground_advance_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/unicorn_radiant_flare_ground_preview_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/unicorn_radiant_flare_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ],
+        "materials/particle/projected/unicorn_radiant_flare_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+/// Grey Talon (`archer`): particles plus the charged-shot gradient texture.
+fn archer_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "archer",
+        &[
+            "materials/particle/abilities/archer/archer_charged_shot_gradient_color_v2_psd_51e62704.vtex_c",
+            "materials/particle/abilities/archer/archer_charged_shot_gradient_color_psd_17c02a47.vtex_c",
+            "materials/particle/abilities/archer_guided_arrow_explosion_sphere_vmat_g_tcolor_a84e2808.vtex_c",
+            "materials/models/particle/archer/archer_arrow_illum_vmat_g_tcolor_7d46cca1.vtex_c",
+            "models/heroes_staging/archer/materials/archer_guided_arrow_color_psd_edd3d0f5.vtex_c",
+            "models/heroes_staging/archer/bird/materials/bird_color_psd_117d09e0.vtex_c",
+        ],
+        "materials/particle/abilities/archer/archer_charged_shot_gradient_color_v2_psd_51e62704.vtex_c",
+    )
+}
+
+/// Bebop: mostly particle-driven. Hyper Beam's projected ground/surface decals
+/// use bright round masks tinted by the particle color, so prism leaves those
+/// decal particles vanilla while recoloring the beam, sparks, and perimeter.
+fn bebop_recipe() -> HeroRecolorRecipe {
+    particle_only_recipe("bebop")
+}
+
+/// Mo & Krill (`digger`): burrow/spin projected ground sigils.
+fn digger_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "digger",
+        &[
+            "materials/particle/abilities/digger/digger_burrow_channel_ground_dark_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/digger/digger_burrow_explode_ground_dark_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/digger/digger_burrow_spin_ground_dark_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ],
+        "materials/particle/abilities/digger/digger_burrow_explode_ground_dark_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+fn doorman_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "doorman",
+        &["materials/particle/abilities/doorman/doorman_grenade_debuff_ground_projected_vmat_g_tselfillum_670d93d.vtex_c"],
+        "materials/particle/abilities/doorman/doorman_grenade_debuff_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+fn drifter_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "drifter",
+        &["materials/particle/projected/drifter_claw_ground_projected_vmat_g_tselfillum_670d93d.vtex_c"],
+        "materials/particle/projected/drifter_claw_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+fn dynamo_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "dynamo".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/dynamo/".to_string(),
+            "particles/weapon_fx/dynamo/".to_string(),
+            "particles/dynamo/".to_string(),
+            "particles/status_fx/status_fx_dynamo".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/projected/dynamo_void_sphere_projected_ground_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/dynamo/dynamo_void_sphere_marker_symbol_psd_73d6401e.vtex_c",
+            "materials/particle/abilities/dynamo/dynamo_void_sphere_planet_symbol.vtex_c",
+            "materials/particle/abilities/dynamo/dynamo_void_sphere_sun_halo_symbol.vtex_c",
+            "materials/particle/abilities/dynamo/dynamo_void_sphere_sun_symbol.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: vec![
+            "materials/models/particle/dynamo_void_sphere_cyl.vmat_c".to_string(),
+            "materials/models/particle/dynamo_heal_buff_model.vmat_c".to_string(),
+        ],
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/projected/dynamo_void_sphere_projected_ground_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+fn familiar_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "familiar",
+        &[
+            "materials/particle/abilities/familiar/familiar_naptime_coneradius_intersection_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/familiar/familiar_pillow_explode_ground_bright_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/familiar/familiar_pillow_explode_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/familiar/familiar_spotlight_ground_edge_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/familiar/familiar_spotlight_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ],
+        "materials/particle/abilities/familiar/familiar_spotlight_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+/// Victor (`frank`): high-saturation ground projections from the ability audit.
+fn frank_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "frank".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/frank/".to_string(),
+            "particles/weapon_fx/frank/".to_string(),
+        ],
+        texture_entries: [
+            "materials/particle/abilities/frank/frank_painaura_aoe_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/frank/frank_revive_marker_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/frank_shock_miss_projected_bright_vmat_g_tselfillum_670d93d.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: vec![
+            "materials/particle/abilities/frank/frank_painaura_sphere.vmat_c".to_string(),
+        ],
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/particle/abilities/frank/frank_painaura_aoe_ground_projected_vmat_g_tselfillum_670d93d.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+fn haze_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "haze",
+        &["materials/particle/abilities/haze/haze_tracer_self_illum_vmat_g_tcolor_52a5b2da.vtex_c"],
+        "materials/particle/abilities/haze/haze_tracer_self_illum_vmat_g_tcolor_52a5b2da.vtex_c",
+    )
+}
+
+/// Kelvin: dome projections plus the ice-dome model color map. The generic
+/// `ice_surface` texture stays excluded because it is shared broadly.
+fn kelvin_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "kelvin",
+        &[
+            "materials/particle/projected/kelvin_ice_dome_projected_psd_d86c1818.vtex_c",
+            "materials/particle/projected/kelvin_ice_dome_projected_psd_b5785889.vtex_c",
+            "models/abilities/materials/ice_dome_color_psd_3a38e562.vtex_c",
+        ],
+        "materials/particle/projected/kelvin_ice_dome_projected_psd_d86c1818.vtex_c",
+    )
+}
+
+fn priest_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "priest",
+        &[
+            "materials/particle/abilities/priest/priest_flashbang_debuff_aoe_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/priest/priest_snaptrap_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/priest_snaptrap_projectile_aoe_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ],
+        "materials/particle/abilities/priest/priest_snaptrap_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
+}
+
+/// Ivy (`tengu`): particle namespace is `tengu`, while two color-bearing ability
+/// assets still use Ivy-era paths.
+fn tengu_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "tengu",
+        &[
+            "materials/particle/cables/ivy_vine_cable_vmat_g_tcolor_9509ed42.vtex_c",
+            "models/abilities/materials/ivy_entangling_thorns_vmat_g_tcolor_59ac0039.vtex_c",
+        ],
+        "models/abilities/materials/ivy_entangling_thorns_vmat_g_tcolor_59ac0039.vtex_c",
+    )
+}
+
+fn viper_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "viper",
+        &["materials/particle/abilities/viper/viper_petrify_symbol_ground_psd_a643967f.vtex_c"],
+        "materials/particle/abilities/viper/viper_petrify_symbol_ground_psd_a643967f.vtex_c",
+    )
+}
+
+fn viscous_recipe() -> HeroRecolorRecipe {
+    HeroRecolorRecipe {
+        codename: "viscous".to_string(),
+        particle_prefixes: vec![
+            "particles/abilities/viscous/".to_string(),
+            "particles/weapon_fx/viscous/".to_string(),
+            "particles/abilities/melee/viscous/".to_string(),
+        ],
+        texture_entries: [
+            "materials/models/particle/viscous_puddle_telegraph_vmat_g_tcolor_ac749641.vtex_c",
+            "materials/particle/abilities/viscous/viscous_detail_psd_a2817163.vtex_c",
+            "materials/particle/abilities/viscous/viscous_detail_psd_3c03ec04.vtex_c",
+            "materials/particle/abilities/viscous/viscous_detail_psd_4414414e.vtex_c",
+            "models/heroes_staging/viscous/materials/viscous_punch_preview_vmat_g_tcolor_32414205.vtex_c",
+            "models/heroes_staging/viscous/materials/viscous_punch_vmat_g_tcolor_afc99362.vtex_c",
+            "models/heroes_staging/viscous/materials/viscous_fist_dissolve_vmat_g_tcolor_296284fc.vtex_c",
+            "models/heroes_staging/viscous/materials/viscous_ball_vmat_g_tcolor_2c347bde.vtex_c",
+            "models/abilities/materials/viscous_cube_color_png_81d0eb6a.vtex_c",
+            "models/abilities/materials/viscous_cube_color_png_85c8b349.vtex_c",
+            "models/abilities/materials/viscous_cube_color_png_daff99b9.vtex_c",
+            "models/abilities/materials/viscous_sphere_color_png_4de0c542.vtex_c",
+            "models/abilities/materials/viscous_fist_color_psd_ab531623.vtex_c",
+            "models/abilities/materials/viscous_fist_color_psd_d8e8086a.vtex_c",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        material_entries: vec![
+            "models/abilities/materials/viscous_slime.vmat_c".to_string(),
+            "models/abilities/materials/viscous_slime_blobs.vmat_c".to_string(),
+            "models/abilities/materials/viscous_cube.vmat_c".to_string(),
+            "models/heroes_staging/viscous/materials/viscous_punch.vmat_c".to_string(),
+            "models/heroes_staging/viscous/materials/viscous_fist_dissolve.vmat_c".to_string(),
+            "models/heroes_staging/viscous/materials/viscous_ball.vmat_c".to_string(),
+        ],
+        model_entries: Vec::new(),
+        preview_texture: Some(
+            "materials/models/particle/viscous_puddle_telegraph_vmat_g_tcolor_ac749641.vtex_c"
+                .to_string(),
+        ),
+    }
+}
+
+/// Warden: include the ability shield scanline map, but not the body albedo that
+/// `warden_temp.vmat_c` references, since overriding it would recolor the skin.
+fn warden_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "warden",
+        &["materials/models/particle/warden_tech_shield_scanline_color_psd_7e04e0b4.vtex_c"],
+        "materials/models/particle/warden_tech_shield_scanline_color_psd_7e04e0b4.vtex_c",
+    )
+}
+
+fn werewolf_recipe() -> HeroRecolorRecipe {
+    particles_plus_textures_recipe(
+        "werewolf",
+        &[
+            "materials/particle/abilities/werewolf/werewolf_cripplingslash_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/werewolf_transform_bite_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/projected/werewolf_transform_crushing_leap_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+        ],
+        "materials/particle/abilities/werewolf/werewolf_cripplingslash_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+    )
 }
 
 /// Yamato: most ability/weapon VFX color lives in particle color params. Unlike
@@ -1325,6 +1642,9 @@ fn prism_recolor_particle_bytes(
     entry: &str,
     tuning: PrismTuning,
 ) -> Result<Option<(Vec<u8>, ParticlePrismStats)>> {
+    if prism_particle_passthrough(codename, entry) {
+        return Ok(None);
+    }
     let value = morphic::decode_kv3_resource(vpcf_bytes)
         .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
     let mut edits = Vec::new();
@@ -1346,6 +1666,19 @@ fn prism_recolor_particle_bytes(
     let new_bytes = morphic::patch_kv3_resource_scalars(vpcf_bytes, &edits)
         .map_err(|e| anyhow::anyhow!("patching particle prism scalars: {e}"))?;
     Ok(Some((new_bytes, stats)))
+}
+
+fn prism_particle_passthrough(codename: &str, entry: &str) -> bool {
+    if codename != "bebop" {
+        return false;
+    }
+    let entry = entry.to_ascii_lowercase();
+    [
+        "particles/abilities/bebop/bebop_laser_beam_proj_ground.vpcf_c",
+        "particles/abilities/bebop/bebop_laser_beam_end_proj_ground.vpcf_c",
+        "particles/abilities/bebop/bebop_laser_beam_end_proj_surface.vpcf_c",
+    ]
+    .contains(&entry.as_str())
 }
 
 /// The particle-flow enum that drives an input from a particle's normalized age.
@@ -1643,6 +1976,11 @@ fn prism_recolor_texture_bytes(
     if animated && codename == "yamato" && is_yamato_shadow_status_texture(entry) {
         return rainbowize_yamato_shadow_status_texture(bytes, tuning);
     }
+    if animated {
+        if let Some(profile) = projected_texture_prism_profile(codename, entry) {
+            return rainbowize_projected_texture(bytes, tuning, profile);
+        }
+    }
 
     let recolor = prism_texture_recolor_for(codename, entry, 0.0, tuning);
     crate::recolor::recolor_texture_hue(bytes, recolor)
@@ -1650,6 +1988,111 @@ fn prism_recolor_texture_bytes(
 
 fn is_yamato_shadow_status_texture(entry: &str) -> bool {
     YAMATO_SHADOW_STATUS_TEXTURES.contains(&entry)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectedTexturePrism {
+    value_scale: f64,
+    radial_repeats: f64,
+    angular_repeats: f64,
+}
+
+fn projected_texture_prism_profile(codename: &str, entry: &str) -> Option<ProjectedTexturePrism> {
+    let e = entry.to_ascii_lowercase();
+    if codename == "digger" && e.contains("digger_burrow") && e.contains("ground_dark_projected") {
+        return Some(ProjectedTexturePrism {
+            value_scale: 0.68,
+            radial_repeats: 1.5,
+            angular_repeats: 1.0,
+        });
+    }
+    if codename == "frank"
+        && (e.contains("frank_painaura_aoe_ground_projected")
+            || e.contains("frank_revive_marker_ground_projected")
+            || e.contains("frank_shock_miss_projected_bright"))
+    {
+        return Some(ProjectedTexturePrism {
+            value_scale: 0.88,
+            radial_repeats: 2.0,
+            angular_repeats: 1.0,
+        });
+    }
+    if codename == "dynamo" && e.contains("dynamo_void_sphere_projected_ground") {
+        return Some(ProjectedTexturePrism {
+            value_scale: 0.95,
+            radial_repeats: 2.25,
+            angular_repeats: 1.0,
+        });
+    }
+    if codename == "unicorn" && e.contains("unicorn_radiant_flare_ground") {
+        return Some(ProjectedTexturePrism {
+            value_scale: 0.72,
+            radial_repeats: 1.75,
+            angular_repeats: 1.0,
+        });
+    }
+    if codename == "unicorn"
+        && (e.contains("unicorn_prismatic_shield_ground_warning_projected")
+            || e.contains("unicorn_beams_of_light_ground_projected_light")
+            || e.contains("unicorn_flux_rainbow_ground_projected_light"))
+    {
+        return Some(ProjectedTexturePrism {
+            value_scale: 0.78,
+            radial_repeats: 1.75,
+            angular_repeats: 1.0,
+        });
+    }
+    None
+}
+
+/// Projected ground textures are often grayscale/self-illum masks where a single
+/// hue recolor reads as a flat disk. For animated prism builds, paint hue bands
+/// over the existing luminance/alpha instead, so the authored edge and falloff
+/// stay intact while the decal still reads rainbow.
+#[allow(clippy::cast_precision_loss)]
+fn rainbowize_projected_texture(
+    vtex_bytes: &[u8],
+    tuning: PrismTuning,
+    profile: ProjectedTexturePrism,
+) -> Result<Vec<u8>> {
+    let mut image = morphic::decode(vtex_bytes).context("decoding projected prism texture")?;
+    let width = image.width as usize;
+    let height = image.height as usize;
+    let morphic::ImageData::Rgba8(pixels) = &mut image.data else {
+        anyhow::bail!("projected prism texture supports LDR (8-bit) textures only");
+    };
+
+    for row in 0..height {
+        let tex_v = row as f64 / height.max(1) as f64;
+        for col in 0..width {
+            let tex_u = col as f64 / width.max(1) as f64;
+            let pixel_index = (row * width + col) * 4;
+            let source_v = f64::from(
+                pixels[pixel_index]
+                    .max(pixels[pixel_index + 1])
+                    .max(pixels[pixel_index + 2]),
+            ) / 255.0;
+            if source_v < 0.015 {
+                continue;
+            }
+            let dx = tex_u - 0.5;
+            let dy = tex_v - 0.5;
+            let radius = (dx.mul_add(dx, dy * dy).sqrt() * 2.0).clamp(0.0, 1.5);
+            let angle = (dy.atan2(dx) / std::f64::consts::TAU + 1.0).fract();
+            let band = (angle * profile.angular_repeats + radius * profile.radial_repeats).fract();
+            let out = hsv_to_rgb_i64(
+                band * 360.0 + tuning.hue_offset,
+                tuning.saturation.clamp(0.0, 1.0),
+                (source_v.powf(0.9) * profile.value_scale * tuning.brightness).clamp(0.0, 1.0),
+            );
+            pixels[pixel_index] = clamp_channel(out[0]);
+            pixels[pixel_index + 1] = clamp_channel(out[1]);
+            pixels[pixel_index + 2] = clamp_channel(out[2]);
+            // Alpha remains the authored projection mask.
+        }
+    }
+
+    morphic::replace_mip_chain(vtex_bytes, &image).context("re-encoding projected prism texture")
 }
 
 /// Yamato Shadow Form's body overlay ignores the particle color-cycle operator in
@@ -1853,6 +2296,14 @@ fn prism_hue_sat(
 }
 
 fn value_floor(source_v: f64, label: &str, gradient: bool) -> (f64, bool, bool) {
+    if label.contains("particles/abilities/bebop/bebop_laser_beam_end_proj_ground") {
+        return (source_v, false, false);
+    }
+    if label.contains("particles/abilities/bebop/bebop_laser_beam_proj_ground") {
+        let floor = 0.62;
+        return (source_v.max(floor), source_v < floor, false);
+    }
+
     if source_v < 0.02 {
         return if gradient && spectral_path(label) {
             (0.30, true, true)
@@ -1938,6 +2389,13 @@ fn prism_color_field(
     );
     if v < 0.02 {
         return rgb;
+    }
+    if entry.contains("particles/abilities/haze/haze_flurry_ground_proj_ring") {
+        return hsv_to_rgb_i64(
+            52.0 + tuning.hue_offset,
+            tuning.saturation.clamp(0.0, 1.0),
+            tuning.brightness.clamp(0.0, 1.0),
+        );
     }
 
     let path_label = path_label(path).to_ascii_lowercase();
@@ -2772,11 +3230,11 @@ mod tests {
         assert!(r.texture_entries.contains(&preview));
         // codename lookup is case-insensitive
         assert!(recipe_for("BOOKWORM").is_some());
-        assert!(recipe_for("hornet").is_none());
+        assert!(recipe_for("not_a_hero").is_none());
     }
 
     #[test]
-    fn celeste_recipe_is_particle_only() {
+    fn celeste_recipe_adds_projected_ground_textures() {
         let r = recipe_for("unicorn").expect("celeste recipe");
         assert_eq!(r.codename, "unicorn");
         assert_eq!(
@@ -2786,10 +3244,20 @@ mod tests {
                 "particles/weapon_fx/unicorn/"
             ]
         );
-        // particle-only: no color textures, no vertex-color models, no swatch
-        assert!(r.texture_entries.is_empty());
+        assert_eq!(r.texture_entries.len(), 6);
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("unicorn_radiant_flare_ground_projected")));
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("unicorn_prismatic_shield_ground_warning")));
         assert!(r.model_entries.is_empty());
-        assert!(r.preview_texture.is_none());
+        assert!(r
+            .preview_texture
+            .as_deref()
+            .is_some_and(|t| r.texture_entries.contains(&t.to_string())));
         // codename lookup is case-insensitive
         assert!(recipe_for("UNICORN").is_some());
     }
@@ -2820,12 +3288,19 @@ mod tests {
 
     #[test]
     fn particle_only_heroes_are_pinned() {
-        // Holliday/Seven/Mina/Wraith: all particle-only, same shape as Celeste, prefixes
-        // derived from the codename. Hue is supplied at recolor time, so the recipe
-        // itself carries no color. (Graves/necro, Infernus, and Yamato are NOT here:
-        // they have their own recipes; audited disabled-mod heroes with chromatic
-        // texture add-ons are covered below.)
-        for code in ["astro", "gigawatt", "vampirebat", "wraith"] {
+        // Particle-only heroes have the standard two particle roots and no texture,
+        // material, or model extras. Hue is supplied at recolor time, so the recipe
+        // itself carries no color.
+        for code in [
+            "astro",
+            "gigawatt",
+            "hornet",
+            "mirage",
+            "punkgoat",
+            "shiv",
+            "vampirebat",
+            "wraith",
+        ] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
             assert_eq!(
@@ -2848,7 +3323,7 @@ mod tests {
         }
         // case-insensitive, and a hero with no pinned recipe still returns None
         assert!(recipe_for("GIGAWATT").is_some());
-        assert!(recipe_for("hornet").is_none());
+        assert!(recipe_for("not_a_hero").is_none());
     }
 
     #[test]
@@ -2888,6 +3363,119 @@ mod tests {
             assert!(r.material_entries.is_empty());
             assert!(r.model_entries.is_empty());
             assert!(recipe_for(&code.to_uppercase()).is_some());
+        }
+    }
+
+    #[test]
+    fn bebop_laser_projected_decals_stay_vanilla_for_prism() {
+        for entry in [
+            "particles/abilities/bebop/bebop_laser_beam_proj_ground.vpcf_c",
+            "particles/abilities/bebop/bebop_laser_beam_end_proj_ground.vpcf_c",
+            "particles/abilities/bebop/bebop_laser_beam_end_proj_surface.vpcf_c",
+        ] {
+            assert!(prism_particle_passthrough("bebop", entry));
+        }
+        assert!(!prism_particle_passthrough(
+            "bebop",
+            "particles/abilities/bebop/bebop_laser_beam.vpcf_c"
+        ));
+        assert!(!prism_particle_passthrough(
+            "dynamo",
+            "particles/abilities/bebop/bebop_laser_beam_proj_ground.vpcf_c"
+        ));
+    }
+
+    #[test]
+    fn roster_texture_recipes_are_pinned() {
+        // Added from the local `pak01` file-tree + ability texture audit. These
+        // cover remaining selectable roster namespaces whose particles reference
+        // hero-specific chromatic textures. Body albedos/shared defaults are
+        // deliberately excluded from the counts.
+        for (code, texture_count, material_count, required_marker) in [
+            ("archer", 6, 0, "archer_guided_arrow_color"),
+            ("digger", 3, 0, "digger_burrow_explode_ground"),
+            ("doorman", 1, 0, "doorman_grenade_debuff_ground"),
+            ("drifter", 1, 0, "drifter_claw_ground_projected"),
+            ("dynamo", 5, 2, "dynamo_void_sphere_projected"),
+            ("familiar", 5, 0, "familiar_spotlight_ground_projected"),
+            ("frank", 3, 1, "frank_painaura_aoe_ground"),
+            ("haze", 1, 0, "haze_tracer_self_illum"),
+            ("kelvin", 3, 0, "kelvin_ice_dome_projected"),
+            ("priest", 3, 0, "priest_snaptrap_ground"),
+            ("tengu", 2, 0, "ivy_entangling_thorns"),
+            ("viper", 1, 0, "viper_petrify_symbol"),
+            ("viscous", 14, 6, "viscous_ball_vmat_g_tcolor"),
+            ("warden", 1, 0, "warden_tech_shield_scanline"),
+            ("werewolf", 3, 0, "werewolf_cripplingslash_ground"),
+        ] {
+            let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
+            assert_eq!(r.codename, code);
+            assert!(r
+                .particle_prefixes
+                .contains(&format!("particles/abilities/{code}/")));
+            assert!(r
+                .particle_prefixes
+                .contains(&format!("particles/weapon_fx/{code}/")));
+            assert_eq!(r.texture_entries.len(), texture_count, "{code} textures");
+            assert!(r
+                .texture_entries
+                .iter()
+                .any(|t| t.contains(required_marker)));
+            let preview = r
+                .preview_texture
+                .unwrap_or_else(|| panic!("{code} has a preview texture"));
+            assert!(r.texture_entries.contains(&preview));
+            assert_eq!(r.material_entries.len(), material_count, "{code} materials");
+            assert!(r.model_entries.is_empty());
+            assert!(recipe_for(&code.to_uppercase()).is_some());
+        }
+    }
+
+    #[test]
+    fn current_selectable_roster_namespaces_are_pinned() {
+        // Current local `scripts/heroes.vdata_c` selectable + not disabled/dev
+        // namespaces, normalized to the particle codename used by the VFX tree.
+        for code in [
+            "abrams",
+            "archer",
+            "astro",
+            "bebop",
+            "bookworm",
+            "chrono",
+            "digger",
+            "doorman",
+            "drifter",
+            "dynamo",
+            "familiar",
+            "fencer",
+            "frank",
+            "ghost",
+            "gigawatt",
+            "haze",
+            "hornet",
+            "inferno",
+            "kelvin",
+            "lash",
+            "magician",
+            "mcginnis",
+            "mirage",
+            "nano",
+            "necro",
+            "pocket",
+            "priest",
+            "punkgoat",
+            "shiv",
+            "tengu",
+            "unicorn",
+            "vampirebat",
+            "viper",
+            "viscous",
+            "warden",
+            "werewolf",
+            "wraith",
+            "yamato",
+        ] {
+            assert!(recipe_for(code).is_some(), "missing recipe for {code}");
         }
     }
 
