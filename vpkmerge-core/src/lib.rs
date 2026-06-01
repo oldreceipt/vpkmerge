@@ -11,7 +11,7 @@
 //! println!("Wrote {} entries", report.total_entries);
 //! ```
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -215,7 +215,7 @@ pub fn merge<P: AsRef<Path>, O: AsRef<Path>>(
             .get_file(path)
             .with_context(|| format!("locating {path} in input {idx}"))?;
         let bytes = vf.read_all().with_context(|| format!("reading {path}"))?;
-        let dst = tmp.path().join(path);
+        let dst = safe_join(tmp.path(), path)?;
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
@@ -257,7 +257,7 @@ pub fn pack<O: AsRef<Path>>(files: &[(&str, &[u8])], output: O) -> Result<()> {
 
     let tmp = tempfile::tempdir().context("creating temp directory")?;
     for (entry, bytes) in files {
-        let dst = tmp.path().join(entry);
+        let dst = safe_join(tmp.path(), entry)?;
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
@@ -404,6 +404,38 @@ fn matches_predicate(pred: &PathPredicate, path: &str) -> bool {
     }
 }
 
+/// Join an untrusted VPK entry path onto `base`, refusing anything that would
+/// escape `base`. A VPK is attacker-controllable input: a hand-crafted archive
+/// can carry entry paths like `../../foo`, `/etc/cron.d/x`, or `C:\Users\x` that
+/// `Path::join` would happily write outside the temp dir (Zip-Slip). Legitimate
+/// Source 2 entries are always relative, forward-slash, and never contain `..`,
+/// so this rejects only tampered inputs.
+fn safe_join(base: &Path, entry: &str) -> Result<PathBuf> {
+    if entry.starts_with('/') || entry.starts_with('\\') {
+        bail!("refusing absolute VPK entry path: {entry}");
+    }
+    let mut out = base.to_path_buf();
+    let mut pushed = false;
+    // Split on both separators: a crafted entry can use either regardless of OS.
+    for seg in entry.split(['/', '\\']) {
+        match seg {
+            "" | "." => {}
+            ".." => bail!("refusing VPK entry with parent-dir component: {entry}"),
+            _ if seg.contains(':') => {
+                bail!("refusing VPK entry with drive/volume component: {entry}")
+            }
+            _ => {
+                out.push(seg);
+                pushed = true;
+            }
+        }
+    }
+    if !pushed {
+        bail!("refusing empty VPK entry path: {entry}");
+    }
+    Ok(out)
+}
+
 fn write_bucket(vpk: &valve_pak::VPK, entries: &[String], output_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("creating temp directory")?;
     for path in entries {
@@ -411,7 +443,7 @@ fn write_bucket(vpk: &valve_pak::VPK, entries: &[String], output_path: &Path) ->
             .get_file(path)
             .with_context(|| format!("locating {path} in input"))?;
         let bytes = vf.read_all().with_context(|| format!("reading {path}"))?;
-        let dst = tmp.path().join(path);
+        let dst = safe_join(tmp.path(), path)?;
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("mkdir {}", parent.display()))?;
@@ -568,6 +600,46 @@ fn reject_output_equals_input<P: AsRef<Path>>(inputs: &[P], output: &Path) -> Re
 mod tests {
     use super::*;
     use tempfile::{tempdir, TempDir};
+
+    #[test]
+    fn safe_join_rejects_path_traversal() {
+        let base = Path::new("/tmp/vpkmerge-work");
+
+        // Parent-dir escapes, with either separator, leading or interior.
+        assert!(safe_join(base, "../escape.txt").is_err());
+        assert!(safe_join(base, "a/b/../../../escape.txt").is_err());
+        assert!(safe_join(base, "..\\escape.txt").is_err());
+        // Absolute paths (POSIX root and UNC).
+        assert!(safe_join(base, "/etc/cron.d/evil.cfg").is_err());
+        assert!(safe_join(base, "\\\\server\\share\\evil").is_err());
+        // Windows drive prefix.
+        assert!(safe_join(base, "C:/Users/me/evil.lnk").is_err());
+        // Nothing usable left.
+        assert!(safe_join(base, "").is_err());
+        assert!(safe_join(base, "/").is_err());
+    }
+
+    #[test]
+    fn safe_join_accepts_legitimate_entries() {
+        let base = Path::new("/tmp/vpkmerge-work");
+
+        // A normal Source 2 asset path stays under base.
+        let nested = safe_join(base, "materials/heroes/foo.vmat_c").unwrap();
+        assert!(nested.starts_with(base));
+        assert_eq!(
+            nested.strip_prefix(base).unwrap(),
+            Path::new("materials/heroes/foo.vmat_c")
+        );
+
+        // A root-level file is fine too.
+        let root = safe_join(base, "readme.txt").unwrap();
+        assert!(root.starts_with(base));
+        assert_eq!(root.strip_prefix(base).unwrap(), Path::new("readme.txt"));
+
+        // Redundant "." / doubled slashes collapse but stay contained.
+        let messy = safe_join(base, "./a//b/c.txt").unwrap();
+        assert_eq!(messy.strip_prefix(base).unwrap(), Path::new("a/b/c.txt"));
+    }
 
     fn make_vpk(path: &Path, files: &[(&str, &[u8])]) -> Result<()> {
         let src = tempdir()?;
