@@ -45,6 +45,8 @@ pub use hero_recolor::{
     HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport, PrismGradient, PrismTuning,
     MAX_GRADIENT_STOPS, PRISM_PRESET_NAMES,
 };
+pub mod trippy;
+
 
 #[derive(Debug, Clone)]
 pub struct ModInfo {

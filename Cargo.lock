@@ -4215,6 +4215,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
  "valve_pak",
  "vpkmerge-core",
 ]
