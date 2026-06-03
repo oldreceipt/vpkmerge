@@ -27,6 +27,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 # Used to tone-map HDR (BC6H) decoder output to LDR u8 for preview.
 half = "2"
+tempfile = "3"
 
 [lints]
 workspace = true

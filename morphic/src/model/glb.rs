@@ -512,10 +512,15 @@ impl Builder {
 
         let mut primitives = Vec::with_capacity(renderable.len());
         for prim in renderable {
-            let attrs = &vb_attrs[prim.vertex_buffer];
+            let Some(attrs) = vb_attrs.get(prim.vertex_buffer) else {
+                continue;
+            };
+            let Some(position) = attrs.position else {
+                continue;
+            };
 
             let mut attributes = BTreeMap::new();
-            attributes.insert(Valid(json::mesh::Semantic::Positions), attrs.position);
+            attributes.insert(Valid(json::mesh::Semantic::Positions), position);
             if let Some(a) = attrs.normal {
                 attributes.insert(Valid(json::mesh::Semantic::Normals), a);
             }
@@ -524,6 +529,20 @@ impl Builder {
             }
             if let Some(a) = attrs.texcoord0 {
                 attributes.insert(Valid(json::mesh::Semantic::TexCoords(0)), a);
+            }
+            if material_uses_vertex_color(&prim.material, files) {
+                let mut colors = Vec::new();
+                for &stream in &prim.vertex_buffers {
+                    if let Some(stream_attrs) = vb_attrs.get(stream) {
+                        colors.extend(stream_attrs.colors.iter().copied());
+                    }
+                }
+                if colors.is_empty() {
+                    colors.extend(attrs.colors.iter().copied());
+                }
+                for (i, a) in colors.into_iter().enumerate() {
+                    attributes.insert(Valid(json::mesh::Semantic::Colors(i as u32)), a);
+                }
             }
             if let Some(a) = attrs.joints0 {
                 attributes.insert(Valid(json::mesh::Semantic::Joints(0)), a);
@@ -555,6 +574,10 @@ impl Builder {
             });
         }
 
+        if primitives.is_empty() {
+            return None;
+        }
+
         Some(self.root.push(json::Mesh {
             primitives,
             weights: None,
@@ -566,6 +589,7 @@ impl Builder {
 
     /// Writes one vertex buffer's attribute accessors. Skinned buffers with
     /// joints but no weights get VRF's default `1/bone_weight_count` spread.
+    #[allow(clippy::too_many_lines)]
     fn add_vertex_buffer(
         &mut self,
         vb: &VertexBuffer,
@@ -573,18 +597,20 @@ impl Builder {
     ) -> VertexAccessors {
         let count = vb.element_count;
 
-        let pos_bytes: Vec<u8> = vb.positions.iter().flat_map(f32x).collect();
-        let pos_view = self.add_view(&pos_bytes, json::buffer::Target::ArrayBuffer);
-        let (min, max) = bounds(&vb.positions);
-        let position = self.add_accessor(
-            pos_view,
-            count,
-            json::accessor::ComponentType::F32,
-            json::accessor::Type::Vec3,
-            Some((min, max)),
-        );
+        let position = (vb.positions.len() == count).then(|| {
+            let pos_bytes: Vec<u8> = vb.positions.iter().flat_map(f32x).collect();
+            let pos_view = self.add_view(&pos_bytes, json::buffer::Target::ArrayBuffer);
+            let (min, max) = bounds(&vb.positions);
+            self.add_accessor(
+                pos_view,
+                count,
+                json::accessor::ComponentType::F32,
+                json::accessor::Type::Vec3,
+                Some((min, max)),
+            )
+        });
 
-        let normal = (!vb.normals.is_empty()).then(|| {
+        let normal = (vb.normals.len() == count).then(|| {
             let bytes: Vec<u8> = vb.normals.iter().flat_map(f32x).collect();
             let view = self.add_view(&bytes, json::buffer::Target::ArrayBuffer);
             self.add_accessor(
@@ -595,7 +621,7 @@ impl Builder {
                 None,
             )
         });
-        let tangent = (!vb.tangents.is_empty()).then(|| {
+        let tangent = (vb.tangents.len() == count).then(|| {
             let bytes: Vec<u8> = vb.tangents.iter().flat_map(f32x).collect();
             let view = self.add_view(&bytes, json::buffer::Target::ArrayBuffer);
             self.add_accessor(
@@ -606,17 +632,37 @@ impl Builder {
                 None,
             )
         });
-        let texcoord0 = vb.texcoords.first().map(|uv| {
-            let bytes: Vec<u8> = uv.iter().flat_map(f32x).collect();
-            let view = self.add_view(&bytes, json::buffer::Target::ArrayBuffer);
-            self.add_accessor(
-                view,
-                count,
-                json::accessor::ComponentType::F32,
-                json::accessor::Type::Vec2,
-                None,
-            )
-        });
+        let texcoord0 = vb
+            .texcoords
+            .first()
+            .filter(|uv| uv.len() == count)
+            .map(|uv| {
+                let bytes: Vec<u8> = uv.iter().flat_map(f32x).collect();
+                let view = self.add_view(&bytes, json::buffer::Target::ArrayBuffer);
+                self.add_accessor(
+                    view,
+                    count,
+                    json::accessor::ComponentType::F32,
+                    json::accessor::Type::Vec2,
+                    None,
+                )
+            });
+        let colors = vb
+            .colors
+            .iter()
+            .filter(|c| c.len() == count)
+            .map(|c| {
+                let bytes: Vec<u8> = c.iter().flat_map(f32x).collect();
+                let view = self.add_view(&bytes, json::buffer::Target::ArrayBuffer);
+                self.add_accessor(
+                    view,
+                    count,
+                    json::accessor::ComponentType::F32,
+                    json::accessor::Type::Vec4,
+                    None,
+                )
+            })
+            .collect();
 
         let (joints0, weights0) = if vb.joints.is_empty() {
             (None, None)
@@ -657,6 +703,7 @@ impl Builder {
             normal,
             tangent,
             texcoord0,
+            colors,
             joints0,
             weights0,
         }
@@ -962,6 +1009,20 @@ fn tex_info(index: json::Index<json::Texture>) -> json::texture::Info {
     }
 }
 
+/// Whether a primitive should carry `COLOR_n` attributes into glTF. When a
+/// resolver is available, follow the Source material flags so vertex colors do
+/// not tint materials that ignore them in-game. Without material bytes, keep the
+/// geometry data rather than silently dropping it.
+fn material_uses_vertex_color(path: &str, files: Option<&dyn FileResolver>) -> bool {
+    let Some(files) = files else {
+        return true;
+    };
+    let Some(vmat) = files.resolve(&compiled(path)) else {
+        return true;
+    };
+    crate::material::parse(&vmat).map_or(true, |m| m.uses_vertex_color())
+}
+
 /// Resolves a `.vtex` slot (+ `_c`), decodes its top mip, and returns
 /// `(width, height, RGBA8)`. Skips HDR textures (no PBR slot we read is HDR).
 /// Tiny `4x4` placeholders are kept here (a flat base color is a real albedo,
@@ -1005,10 +1066,11 @@ fn metal_rough_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 
 /// The accessors written for one vertex buffer, shared across its primitives.
 struct VertexAccessors {
-    position: json::Index<json::Accessor>,
+    position: Option<json::Index<json::Accessor>>,
     normal: Option<json::Index<json::Accessor>>,
     tangent: Option<json::Index<json::Accessor>>,
     texcoord0: Option<json::Index<json::Accessor>>,
+    colors: Vec<json::Index<json::Accessor>>,
     joints0: Option<json::Index<json::Accessor>>,
     weights0: Option<json::Index<json::Accessor>>,
 }

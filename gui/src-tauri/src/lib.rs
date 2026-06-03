@@ -96,6 +96,120 @@ struct HeroPrismReport {
     output_path: String,
 }
 
+#[derive(Serialize)]
+struct HeroRecipeParts {
+    codename: String,
+    label: String,
+    particle_prefixes: Vec<String>,
+    texture_entries: Vec<String>,
+    material_entries: Vec<String>,
+    model_entries: Vec<String>,
+    preview_texture: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SelectOption {
+    key: String,
+    label: String,
+}
+
+#[derive(Serialize)]
+struct TrippyPreview {
+    frames: Vec<String>,
+    width: u32,
+    height: u32,
+    frame_ms: u32,
+}
+
+#[derive(Serialize)]
+struct GuiTrippySkinReport {
+    codename: String,
+    body_textures: usize,
+    weapon_textures: usize,
+    materials_scrolled: usize,
+    texture_placeholders_promoted: usize,
+    skipped_shared_textures: usize,
+    skipped_unreadable: usize,
+    skipped_unpatchable_materials: usize,
+    total_entries: usize,
+}
+
+impl From<vpkmerge_core::trippy::TrippySkinReport> for GuiTrippySkinReport {
+    fn from(report: vpkmerge_core::trippy::TrippySkinReport) -> Self {
+        Self {
+            codename: report.codename,
+            body_textures: report.body_textures,
+            weapon_textures: report.weapon_textures,
+            materials_scrolled: report.materials_scrolled,
+            texture_placeholders_promoted: report.texture_placeholders_promoted,
+            skipped_shared_textures: report.skipped_shared_textures,
+            skipped_unreadable: report.skipped_unreadable,
+            skipped_unpatchable_materials: report.skipped_unpatchable_materials,
+            total_entries: report.total_entries,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct GuiTrippyAbilityReport {
+    codename: String,
+    particles_total: usize,
+    particles_recolored: usize,
+    particles_animated: usize,
+    particles_no_color: usize,
+    particles_unpatchable: usize,
+    texture_age_inputs: usize,
+    texture_offset_multipliers: usize,
+    gradient_timing_edits: usize,
+    color_gradient_loops: usize,
+    color_cycle_operators: usize,
+    textures_painted: usize,
+    textures_skipped: usize,
+    materials_recolored: usize,
+    materials_scrolled: usize,
+    materials_unpatchable: usize,
+    models_recolored: usize,
+    model_vertices: usize,
+    missing_entries: usize,
+    total_entries: usize,
+}
+
+impl From<vpkmerge_core::trippy::TrippyAbilityReport> for GuiTrippyAbilityReport {
+    fn from(report: vpkmerge_core::trippy::TrippyAbilityReport) -> Self {
+        Self {
+            codename: report.codename,
+            particles_total: report.particles_total,
+            particles_recolored: report.particles_recolored,
+            particles_animated: report.particles_animated,
+            particles_no_color: report.particles_no_color,
+            particles_unpatchable: report.particles_unpatchable,
+            texture_age_inputs: report.texture_age_inputs,
+            texture_offset_multipliers: report.texture_offset_multipliers,
+            gradient_timing_edits: report.gradient_timing_edits,
+            color_gradient_loops: report.color_gradient_loops,
+            color_cycle_operators: report.color_cycle_operators,
+            textures_painted: report.textures_painted,
+            textures_skipped: report.textures_skipped,
+            materials_recolored: report.materials_recolored,
+            materials_scrolled: report.materials_scrolled,
+            materials_unpatchable: report.materials_unpatchable,
+            models_recolored: report.models_recolored,
+            model_vertices: report.model_vertices,
+            missing_entries: report.missing_entries,
+            total_entries: report.total_entries,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TrippyLockerReport {
+    codename: String,
+    output_path: String,
+    total_entries: usize,
+    skin: Option<GuiTrippySkinReport>,
+    ability: Option<GuiTrippyAbilityReport>,
+}
+
 impl HeroPrismReport {
     fn from_core(report: vpkmerge_core::HeroPrismRecolorReport, output_path: String) -> Self {
         Self {
@@ -276,6 +390,202 @@ async fn supported_hero_options() -> Vec<HeroOption> {
         .collect()
 }
 
+#[tauri::command]
+async fn hero_recipe_parts(hero: String) -> Result<HeroRecipeParts, String> {
+    let recipe = vpkmerge_core::recipe_for(&hero).ok_or_else(|| {
+        format!(
+            "no built-in ability-VFX recipe for hero codename {hero:?} (pinned: {})",
+            vpkmerge_core::pinned_hero_codenames().join(", ")
+        )
+    })?;
+    Ok(HeroRecipeParts {
+        label: hero_label(&recipe.codename).to_string(),
+        codename: recipe.codename,
+        particle_prefixes: recipe.particle_prefixes,
+        texture_entries: recipe.texture_entries,
+        material_entries: recipe.material_entries,
+        model_entries: recipe.model_entries,
+        preview_texture: recipe.preview_texture,
+    })
+}
+
+#[tauri::command]
+async fn trippy_style_options() -> Vec<SelectOption> {
+    vpkmerge_core::trippy::TRIPPY_STYLE_NAMES
+        .iter()
+        .map(|key| SelectOption {
+            key: (*key).to_string(),
+            label: title_label(key),
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn trippy_animation_options() -> Vec<SelectOption> {
+    ["off", "sweep", "loop", "cycle"]
+        .into_iter()
+        .map(|key| SelectOption {
+            key: key.to_string(),
+            label: title_label(key),
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn trippy_preview(
+    style: String,
+    phase: Option<f32>,
+    scroll: Option<f32>,
+    intensity: Option<f32>,
+    frames: Option<usize>,
+    size: Option<u32>,
+) -> Result<TrippyPreview, String> {
+    let style =
+        vpkmerge_core::trippy::TrippyStyle::from_name(&style).map_err(|e| format!("{e:#}"))?;
+    let size = size.unwrap_or(192).clamp(16, 512);
+    let frame_bytes = vpkmerge_core::trippy::trippy_preview_frames(
+        style,
+        phase.unwrap_or(0.0),
+        scroll.unwrap_or(1.0),
+        intensity.unwrap_or(1.0),
+        frames.unwrap_or(18),
+        size,
+    )
+    .map_err(|e| format!("{e:#}"))?;
+    let frames = frame_bytes
+        .into_iter()
+        .map(|bytes| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            format!("data:image/png;base64,{b64}")
+        })
+        .collect();
+    Ok(TrippyPreview {
+        frames,
+        width: size,
+        height: size,
+        frame_ms: 90,
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[tauri::command]
+async fn build_trippy_addon(
+    vpk_path: String,
+    base_path: Option<String>,
+    hero: String,
+    style: String,
+    intensity: Option<f32>,
+    phase: Option<f32>,
+    scroll: Option<f64>,
+    animation_style: String,
+    animation_intensity: Option<f64>,
+    include_body: bool,
+    include_skin_weapons: bool,
+    include_abilities: bool,
+    include_vfx_weapons: bool,
+    output_path: String,
+) -> Result<TrippyLockerReport, String> {
+    let style =
+        vpkmerge_core::trippy::TrippyStyle::from_name(&style).map_err(|e| format!("{e:#}"))?;
+    let (animation_style, animation_intensity) =
+        parse_trippy_animation(&animation_style, animation_intensity.unwrap_or(1.0))?;
+    let base = base_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let wants_skin = include_body || include_skin_weapons;
+    let wants_ability = include_abilities || include_vfx_weapons;
+    if !wants_skin && !wants_ability {
+        return Err("select at least one skin or VFX target".to_string());
+    }
+
+    let skin_options = vpkmerge_core::trippy::TrippySkinOptions {
+        style,
+        intensity: intensity.unwrap_or(1.0),
+        phase: phase.unwrap_or(0.0),
+        scroll: scroll.unwrap_or(1.0),
+        include_body,
+        include_weapons: include_skin_weapons,
+    };
+    let ability_options = vpkmerge_core::trippy::TrippyAbilityOptions {
+        style,
+        intensity: intensity.unwrap_or(1.0),
+        phase: phase.unwrap_or(0.0),
+        animation_intensity,
+        animation_style,
+        include_abilities,
+        include_weapons: include_vfx_weapons,
+    };
+
+    let mut skin = None;
+    let mut ability = None;
+    let total_entries;
+
+    if wants_skin && wants_ability {
+        let tmp = tempfile::tempdir().map_err(|e| format!("create temp dir: {e}"))?;
+        let skin_vpk = tmp.path().join("trippy_skin_dir.vpk");
+        let ability_vpk = tmp.path().join("trippy_vfx_dir.vpk");
+        let skin_report = vpkmerge_core::trippy::trippy_skin_to_addon(
+            &vpk_path,
+            base.as_deref(),
+            &hero,
+            &skin_options,
+            &skin_vpk,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        let ability_report = vpkmerge_core::trippy::trippy_ability_vfx_to_addon(
+            &vpk_path,
+            base.as_deref(),
+            &hero,
+            &ability_options,
+            &ability_vpk,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        let report = vpkmerge_core::merge(
+            &[skin_vpk.as_path(), ability_vpk.as_path()],
+            &output_path,
+            &vpkmerge_core::MergeOptions {
+                collision_policy: vpkmerge_core::CollisionPolicy::LastWins,
+                overrides: HashMap::new(),
+            },
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        total_entries = report.total_entries;
+        skin = Some(skin_report.into());
+        ability = Some(ability_report.into());
+    } else if wants_skin {
+        let skin_report = vpkmerge_core::trippy::trippy_skin_to_addon(
+            &vpk_path,
+            base.as_deref(),
+            &hero,
+            &skin_options,
+            &output_path,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        total_entries = skin_report.total_entries;
+        skin = Some(skin_report.into());
+    } else {
+        let ability_report = vpkmerge_core::trippy::trippy_ability_vfx_to_addon(
+            &vpk_path,
+            base.as_deref(),
+            &hero,
+            &ability_options,
+            &output_path,
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        total_entries = ability_report.total_entries;
+        ability = Some(ability_report.into());
+    }
+
+    Ok(TrippyLockerReport {
+        codename: hero,
+        output_path,
+        total_entries,
+        skin,
+        ability,
+    })
+}
+
 fn hero_label(codename: &str) -> &str {
     match codename {
         "bookworm" => "Paige",
@@ -316,6 +626,29 @@ fn hero_label(codename: &str) -> &str {
         "werewolf" => "Werewolf",
         "wraith" => "Wraith",
         _ => codename,
+    }
+}
+
+fn title_label(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn parse_trippy_animation(
+    style: &str,
+    intensity: f64,
+) -> Result<(vpkmerge_core::PrismAnimationStyle, f64), String> {
+    match style.to_ascii_lowercase().as_str() {
+        "off" | "none" | "static" => Ok((vpkmerge_core::PrismAnimationStyle::Sweep, 0.0)),
+        "sweep" => Ok((vpkmerge_core::PrismAnimationStyle::Sweep, intensity)),
+        "loop" | "loops" => Ok((vpkmerge_core::PrismAnimationStyle::Loop, intensity)),
+        "cycle" | "cycles" => Ok((vpkmerge_core::PrismAnimationStyle::Cycle, intensity)),
+        other => Err(format!(
+            "animation style must be off, sweep, loop, or cycle (got {other:?})"
+        )),
     }
 }
 
@@ -578,7 +911,12 @@ pub fn run() {
             default_deadlock_vpk_path,
             default_addon_output_path,
             supported_hero_options,
-            build_hero_prism_vpk
+            hero_recipe_parts,
+            trippy_style_options,
+            trippy_animation_options,
+            trippy_preview,
+            build_hero_prism_vpk,
+            build_trippy_addon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -13,6 +13,7 @@
 //            the in-place KV3 edits, since morphic's own reader is lenient)
 
 using System.Globalization;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +24,7 @@ using SteamDatabase.ValvePak;
 using ValveKeyValue;
 using ValveResourceFormat;
 using ValveResourceFormat.Blocks;
+using ValveResourceFormat.CompiledShader;
 using ValveResourceFormat.IO;
 using ValveResourceFormat.ResourceTypes;
 using ValveResourceFormat.ResourceTypes.ModelAnimation;
@@ -60,6 +62,7 @@ internal static class Program
                 "model-meta" => ModelMeta(args[1..]),
                 "anim-meta" => AnimMeta(args[1..]),
                 "material-meta" => MaterialMeta(args[1..]),
+                "shader-dump" => ShaderDump(args[1..]),
                 "validate" => Validate(args[1..]),
                 "--help" or "-h" => PrintUsage(),
                 _ => Fail($"unknown subcommand: {args[0]}"),
@@ -1137,6 +1140,85 @@ internal static class Program
         };
     }
 
+    // Dumps a compiled shader's (.vcs) material-parameter vocabulary: every
+    // VfxVariableDescription (name + type + UI group + default string) plus the
+    // static-combo feature flags (F_*). The features file is the authoritative
+    // list of what a .vmat_c can set -- so this answers "does pbr.vfx expose a
+    // world-aligned/triplanar/screen-space texcoord knob?" definitively.
+    //   shader-dump --vpk shaders_pc_dir.vpk --list [--filter pbr]
+    //   shader-dump --vpk shaders_pc_dir.vpk --entry shaders/vfx/pbr_pc_50_features.vcs
+    private static int ShaderDump(string[] args)
+    {
+        string? vpk = null, entry = null, filter = null;
+        bool list = false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--vpk":    vpk = args[++i]; break;
+                case "--entry":  entry = args[++i]; break;
+                case "--filter": filter = args[++i]; break;
+                case "--list":   list = true; break;
+                default: return Fail($"shader-dump: unknown arg {args[i]}");
+            }
+        }
+        if (vpk is null) return Fail("shader-dump: --vpk required");
+
+        using var pak = new Package();
+        pak.Read(vpk);
+
+        if (list || entry is null)
+        {
+            var vlist = pak.Entries.TryGetValue("vcs", out var l) ? l : new List<PackageEntry>();
+            foreach (var p in vlist.Select(e => e.GetFullPath())
+                                   .Where(p => filter is null || p.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                                   .OrderBy(p => p, StringComparer.Ordinal))
+                Console.WriteLine(p);
+            return 0;
+        }
+
+        var pe = pak.FindEntry(entry) ?? throw new FileNotFoundException(entry);
+        pak.ReadEntry(pe, out var data);
+
+        object program;
+        try
+        {
+            program = Activator.CreateInstance(typeof(VfxProgramData), nonPublic: true)!;
+            var read = typeof(VfxProgramData).GetMethod("Read", new[] { typeof(string), typeof(Stream) });
+            if (read is null) throw new MissingMethodException("VfxProgramData.Read(string,Stream)");
+            using var ms = new MemoryStream(data);
+            read.Invoke(program, new object[] { entry, ms });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"parse failed: {ex.GetBaseException().Message}");
+            Console.Error.WriteLine("VfxProgramData ctors:");
+            foreach (var c in typeof(VfxProgramData).GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                Console.Error.WriteLine("  " + c);
+            Console.Error.WriteLine("VfxProgramData Read/Unserialize methods:");
+            foreach (var m in typeof(VfxProgramData).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                              .Where(m => m.Name.Contains("Read") || m.Name.Contains("Unserialize")))
+                Console.Error.WriteLine("  " + m);
+            return 2;
+        }
+
+        var pdata = (VfxProgramData)program;
+        var vars = pdata.VariableDescriptions.ToList();
+        Console.WriteLine($"# shader {entry}");
+        Console.WriteLine($"# {vars.Count} variable descriptions (material params):");
+        foreach (var v in vars.OrderBy(v => v.Name, StringComparer.Ordinal))
+            Console.WriteLine($"  {v.Name,-44} vfxType={v.VfxType} src={v.VariableSource} ui=[{v.UiGroup}] str=\"{Trunc(v.StringData, 56)}\"");
+
+        var combos = pdata.StaticComboArray.ToList();
+        Console.WriteLine($"# {combos.Count} static combos (feature flags):");
+        foreach (var c in combos.OrderBy(c => c.Name, StringComparer.Ordinal))
+            Console.WriteLine($"  [SF] {c.Name}");
+        return 0;
+    }
+
+    private static string Trunc(string? s, int n) =>
+        string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s[..n] + "...");
+
     private static int PrintUsage()
     {
         Console.WriteLine("usage:");
@@ -1150,6 +1232,7 @@ internal static class Program
         Console.WriteLine("  morphic-oracle model-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle anim-meta --vpk PATH --entry NAME --out JSON");
         Console.WriteLine("  morphic-oracle material-meta --vpk PATH --entry NAME --out JSON");
+        Console.WriteLine("  morphic-oracle shader-dump --vpk PATH (--list [--filter STR] | --entry VCS)");
         Console.WriteLine("  morphic-oracle validate --file PATH  (strict VRF load of a loose resource file)");
         return 0;
     }

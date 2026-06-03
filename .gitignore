@@ -26,3 +26,16 @@ morphic/fixtures/_local/
 # .NET (morphic-oracle dev tool)
 tools/morphic-oracle/bin/
 tools/morphic-oracle/obj/
+
+# Local agent / session state (Claude Code worktrees, transcripts, caches)
+.claude/
+
+# Local Blender renders, bakes, and GLB exports (large, not source)
+blender-work/
+
+# Branding concept dump (kept local, not part of the published tool)
+logo-concepts/
+
+# Repository paper, kept local for now (LaTeX source + built PDF)
+docs/vpkmerge-repository-paper.tex
+docs/vpkmerge-repository-paper.pdf
