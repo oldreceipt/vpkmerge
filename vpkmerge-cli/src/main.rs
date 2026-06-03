@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use vpkmerge_core::{
     edit_model_geometry, export_hero_model, export_model, extract_portraits, inspect_models, merge,
     model_draw_call_targets, model_vertex_targets, split, AnimOptions, CollisionPolicy,
-    GeometryEdit, MergeOptions, OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection,
-    SoundEvents, SplitOptions, SplitOutput,
+    GeometryEdit, MergeOptions, ModelPartSelector, OverlapPolicy, PathPredicate, PortraitInfo,
+    PoseSelection, SoundEvents, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -44,6 +44,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Route entries from one VPK into N output VPKs by path predicate.
     Split(SplitCmd),
@@ -80,6 +81,14 @@ enum Command {
     /// `recolor-hero`; run `rainbow-scan` first to see which carry the richest
     /// spectrum.
     Prism(PrismCmd),
+
+    /// Paint a hero skin with procedural trippy patterns and VMAT scroll, including
+    /// hero-specific weapons when requested.
+    TrippySkin(TrippySkinCmd),
+
+    /// Paint and animate a hero's ability/weapon VFX with procedural trippy color
+    /// themes, using the same pinned recipes as prism/recolor.
+    TrippyVfx(TrippyVfxCmd),
 
     /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
     RainbowScan(RainbowScanCmd),
@@ -252,6 +261,25 @@ struct PrismCmd {
     #[arg(long)]
     animated: bool,
 
+    /// Strength of the animated pass (1.0 = default, 2.0 = harder/faster,
+    /// 0.5 = softer). Has no effect unless --animated is set.
+    #[arg(
+        long = "animation-intensity",
+        value_name = "SCALE",
+        default_value_t = 1.0
+    )]
+    animation_intensity: f64,
+
+    /// Animated pass depth: sweep = texture-scroll and timing edits, loop = also
+    /// loop age-driven color gradients, cycle = also insert color-cycle operators
+    /// for simple constant-color particles.
+    #[arg(
+        long = "animation-style",
+        value_name = "STYLE",
+        default_value = "sweep"
+    )]
+    animation_style: String,
+
     /// Rotate the whole rainbow's start hue by this many degrees. The per-effect
     /// spectrum spread is unchanged; this just shifts where it begins, so the same
     /// effect reads (say) blue->violet instead of red->orange. Default 0 (no shift).
@@ -279,6 +307,101 @@ struct PrismCmd {
     /// rotation / saturation / brightness above still apply on top.
     #[arg(long, value_name = "SPEC")]
     gradient: Option<String>,
+}
+
+#[derive(Args)]
+struct TrippySkinCmd {
+    /// Hero model/material codename to repaint (e.g. `chrono` for Paradox).
+    #[arg(long, value_name = "CODENAME")]
+    hero: String,
+
+    /// VPK to read the hero skin/materials from (a skin VPK, or the base pak).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for materials/textures not in `--vpk`.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Pack the generated skin into this addon VPK.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
+
+    /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
+    /// or gradient.
+    #[arg(long, value_name = "STYLE", default_value = "confetti")]
+    style: String,
+
+    /// Texture blend strength (0 = original texture, 1 = full generated pattern).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    intensity: f32,
+
+    /// Runtime VMAT UV-scroll speed scale (1 = Paradox prototype speed).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    scroll: f64,
+
+    /// Pattern phase / hue offset, normalized 0..1.
+    #[arg(long, value_name = "T", default_value_t = 0.0)]
+    phase: f32,
+
+    /// Target set: all, body, or weapons.
+    #[arg(long, value_name = "TARGETS", default_value = "all")]
+    targets: String,
+}
+
+#[derive(Args)]
+struct TrippyVfxCmd {
+    /// Hero particle/VFX codename to repaint (e.g. `chrono` for Paradox).
+    #[arg(long, value_name = "CODENAME")]
+    hero: String,
+
+    /// VPK to read the hero's VFX from (a skin VPK, or the base pak).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for entries not in `--vpk`.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Pack the generated ability/weapon VFX into this addon VPK.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
+
+    /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
+    /// or gradient.
+    #[arg(long, value_name = "STYLE", default_value = "confetti")]
+    style: String,
+
+    /// Texture blend / particle emphasis strength.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    intensity: f32,
+
+    /// Pattern phase / hue offset, normalized 0..1.
+    #[arg(long, value_name = "T", default_value_t = 0.0)]
+    phase: f32,
+
+    /// Particle animation strength (1.0 = default, 2.0 = harder/faster,
+    /// 0.5 = softer). Use 0 or --animation-style off for static color-only VFX.
+    #[arg(
+        long = "animation-intensity",
+        value_name = "SCALE",
+        default_value_t = 1.0
+    )]
+    animation_intensity: f64,
+
+    /// Animation depth: off, sweep, loop, or cycle. sweep retimes safe texture
+    /// scroll/gradient fields; loop also loops color gradients; cycle also inserts
+    /// runtime color-cycle operators where safe.
+    #[arg(
+        long = "animation-style",
+        value_name = "STYLE",
+        default_value = "cycle"
+    )]
+    animation_style: String,
+
+    /// Target set: all, abilities, or weapons.
+    #[arg(long, value_name = "TARGETS", default_value = "all")]
+    targets: String,
 }
 
 #[derive(Args)]
@@ -326,6 +449,7 @@ struct ModelCmd {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum ModelAction {
     /// Export a model entry to a textured binary glTF (`.glb`).
     Export(ModelExportArgs),
@@ -452,6 +576,7 @@ struct ModelExportArgs {
 }
 
 #[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct ModelEditArgs {
     /// VPK containing the `.vmdl_c` to edit (a mesh skin, or the base pak itself).
     #[arg(long, value_name = "VPK")]
@@ -477,6 +602,10 @@ struct ModelEditArgs {
     #[arg(long = "list-drawcalls")]
     list_drawcalls: bool,
 
+    /// Emit machine-readable JSON for `--list-drawcalls`.
+    #[arg(long)]
+    json: bool,
+
     /// Remove every draw call whose material contains this string
     /// (case-insensitive), so that part stops rendering, then pack an addon VPK
     /// (needs `--encode-vpk`). E.g. `--remove-material vindicta_dress`. This is a
@@ -496,6 +625,15 @@ struct ModelEditArgs {
     #[arg(long, value_name = "NAME")]
     part: Option<String>,
 
+    /// Select draw calls whose material path contains this substring. Repeat for
+    /// grouped GLB export/replacement.
+    #[arg(long = "material", value_name = "SUBSTRING")]
+    material: Vec<String>,
+
+    /// Select a suggested semantic group, e.g. gun, hair, dress, body, hands, legs.
+    #[arg(long = "group", value_name = "NAME")]
+    group: Option<String>,
+
     /// Target a specific vertex buffer by its block index (see `--list`).
     /// Disambiguates a multi-buffer part for `--export-glb` / `--from-glb`.
     #[arg(long, value_name = "INDEX")]
@@ -506,6 +644,14 @@ struct ModelEditArgs {
     /// (single-buffer) or `--block`.
     #[arg(long = "export-glb", value_name = "FILE", conflicts_with_all = ["from_glb", "list"])]
     export_glb: Option<PathBuf>,
+
+    /// Export selected draw calls/materials as one isolated `.glb`.
+    #[arg(
+        long = "export-group-glb",
+        value_name = "FILE",
+        conflicts_with_all = ["from_glb", "export_glb", "list"]
+    )]
+    export_group_glb: Option<PathBuf>,
 
     /// Apply a Blender-reshaped `.glb` (from `--export-glb`) back onto the buffer
     /// and pack an addon VPK (needs `--encode-vpk`). Topology must be preserved.
@@ -522,6 +668,16 @@ struct ModelEditArgs {
         conflicts_with_all = ["export_glb", "list", "list_drawcalls", "remove_material", "reencode_mdat"]
     )]
     replace_part: Option<String>,
+
+    /// Replace a semantic/multi-draw-call group from `--from-glb`, then pack an
+    /// addon VPK. The value is interpreted as a suggested group name first, then
+    /// as a material/mesh substring fallback.
+    #[arg(
+        long = "replace-group",
+        value_name = "GROUP",
+        conflicts_with_all = ["export_glb", "export_group_glb", "list", "list_drawcalls", "remove_material", "reencode_mdat", "replace_part"]
+    )]
+    replace_group: Option<String>,
 
     /// Disambiguates which primitive `--from-glb` provides when replacing a part
     /// from a multi-mesh `.glb` (defaults to the only primitive).
@@ -630,6 +786,8 @@ fn main() -> Result<()> {
         Some(Command::Texture(args)) => run_texture(args),
         Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
         Some(Command::Prism(args)) => run_prism(&args),
+        Some(Command::TrippySkin(args)) => run_trippy_skin(&args),
+        Some(Command::TrippyVfx(args)) => run_trippy_vfx(&args),
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         None => run_merge(cli),
     }
@@ -729,6 +887,7 @@ fn run_model_export(e: &ModelExportArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_model_edit(e: ModelEditArgs) -> Result<()> {
     // --list: enumerate vertex buffers and exit.
     if e.list {
@@ -750,6 +909,26 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
         return run_model_reencode_mdat(&e);
     }
 
+    // --export-group-glb: write selected draw calls/materials to an isolated glb.
+    if let Some(out_glb) = &e.export_group_glb {
+        let selector = group_selector(&e, e.group.as_deref());
+        let count = vpkmerge_core::export_model_group_glb(
+            &e.vpk,
+            &e.entry,
+            e.base.as_deref(),
+            &selector,
+            out_glb,
+        )
+        .with_context(|| format!("exporting selected group of {}", e.entry))?;
+        println!(
+            "wrote {} ({} draw call(s) from {})",
+            out_glb.display(),
+            count,
+            e.entry
+        );
+        return Ok(());
+    }
+
     // --export-glb: write the chosen buffer to a glb for Blender editing.
     if let Some(out_glb) = &e.export_glb {
         let block = resolve_edit_block(&e)?;
@@ -762,6 +941,11 @@ fn run_model_edit(e: ModelEditArgs) -> Result<()> {
     // --replace-part: splice a new mesh (from --from-glb) over a part and pack.
     if let Some(mesh_name) = &e.replace_part {
         return run_model_replace_part(&e, mesh_name);
+    }
+
+    // --replace-group: splice donor primitives over selected draw calls.
+    if let Some(group) = &e.replace_group {
+        return run_model_replace_group(&e, group);
     }
 
     // --from-glb: apply a Blender-reshaped glb back and pack an addon VPK.
@@ -862,6 +1046,15 @@ fn run_model_list_targets(e: &ModelEditArgs) -> Result<()> {
 /// `model edit --list-drawcalls`: print the renderable draw calls (mesh part,
 /// material, vertex/index counts) so a user can find a `--remove-material` target.
 fn run_model_list_drawcalls(e: &ModelEditArgs) -> Result<()> {
+    if e.json {
+        let inspection = vpkmerge_core::inspect_model_parts(&e.vpk, &e.entry, e.base.as_deref())
+            .with_context(|| format!("listing draw calls for {}", e.entry))?;
+        let json = serde_json::to_string_pretty(&inspection_json(&inspection))
+            .context("serializing JSON")?;
+        println!("{json}");
+        return Ok(());
+    }
+
     let calls = model_draw_call_targets(&e.vpk, &e.entry, e.base.as_deref())
         .with_context(|| format!("listing draw calls for {}", e.entry))?;
     println!("{}: {} renderable draw call(s)", e.entry, calls.len());
@@ -872,6 +1065,70 @@ fn run_model_list_drawcalls(e: &ModelEditArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn inspection_json(i: &vpkmerge_core::ModelPartInspection) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "entry": &i.entry,
+        "model_source": {
+            "path": &i.model_source.path,
+            "compiled_path": &i.model_source.compiled_path,
+            "source": &i.model_source.source,
+        },
+        "draw_calls": i.draw_calls.iter().map(|c| json!({
+            "id": &c.id,
+            "mesh_part_name": &c.mesh_name,
+            "mesh_index": c.mesh_index,
+            "primitive_index": c.primitive_index,
+            "data_block": c.data_block,
+            "scene_object": c.scene_object,
+            "draw_call": c.draw_call,
+            "vertex_buffers": &c.vertex_buffers,
+            "vertex_buffer": c.vertex_buffer,
+            "index_buffer": c.index_buffer,
+            "vertex_blocks": &c.vertex_blocks,
+            "vertex_block": c.vertex_block,
+            "index_block": c.index_block,
+            "material": &c.material,
+            "material_source": &c.material_source,
+            "textures": c.textures.iter().map(|t| json!({
+                "slot": &t.slot,
+                "path": &t.path,
+                "compiled_path": &t.compiled_path,
+                "source": &t.source,
+            })).collect::<Vec<_>>(),
+            "vertex_count": c.vertex_count,
+            "index_count": c.index_count,
+            "start_index": c.start_index,
+            "base_vertex": c.base_vertex,
+            "primitive_type": &c.primitive_type,
+            "primitive_identifier": &c.id,
+            "geometry_source": &c.geometry_source,
+            "skin": {
+                "skinned": c.skin.skinned,
+                "bone_weight_count": c.skin.bone_weight_count,
+                "used_bone_count": c.skin.used_bone_count,
+                "used_bones": &c.skin.used_bones,
+            },
+        })).collect::<Vec<_>>(),
+        "suggested_groups": i.suggested_groups.iter().map(|g| json!({
+            "name": &g.name,
+            "label": &g.label,
+            "aliases": &g.aliases,
+            "draw_call_ids": &g.draw_call_ids,
+            "mesh_part_names": &g.mesh_names,
+            "materials": &g.materials,
+            "vertex_count": g.vertex_count,
+            "index_count": g.index_count,
+            "confidence": g.confidence,
+            "selector": {
+                "group": &g.name,
+                "materials": &g.materials,
+                "mesh_parts": &g.mesh_names,
+            },
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// `model edit --remove-material`: drop every draw call whose material matches,
@@ -954,6 +1211,69 @@ fn run_model_replace_part(e: &ModelEditArgs, mesh_name: &str) -> Result<()> {
         r.mesh_name,
     );
     Ok(())
+}
+
+/// `model edit --replace-group`: splice donor primitives over a semantic group
+/// and pack the edited model into the `--encode-vpk` addon VPK.
+fn run_model_replace_group(e: &ModelEditArgs, group: &str) -> Result<()> {
+    let in_glb = e
+        .from_glb
+        .as_ref()
+        .context("model edit --replace-group: provide --from-glb <FILE.glb> with donor geometry")?;
+    let out = e.encode_vpk.as_ref().context(
+        "model edit --replace-group: provide --encode-vpk <OUT_dir.vpk> for the edited model",
+    )?;
+    let glb_bytes =
+        std::fs::read(in_glb).with_context(|| format!("reading {}", in_glb.display()))?;
+    let selector = group_selector(e, Some(group));
+
+    let (vpk_entry, report) = vpkmerge_core::replace_model_group(
+        &e.vpk,
+        &e.entry,
+        e.base.as_deref(),
+        &selector,
+        &glb_bytes,
+        out,
+        e.vpk_entry.as_deref(),
+    )
+    .with_context(|| format!("replacing group {group:?} in {}", e.entry))?;
+
+    eprintln!(
+        "replaced {} draw call(s) across {} mesh part(s):",
+        report.replaced_draw_calls,
+        report.replaced_parts.len()
+    );
+    for r in &report.replaced_parts {
+        eprintln!(
+            "  {:<16} {} -> {} verts, {} -> {} idx (stride {}, idx width {})",
+            r.mesh_name,
+            r.old_vertex_count,
+            r.new_vertex_count,
+            r.old_index_count,
+            r.new_index_count,
+            r.stride,
+            r.index_size,
+        );
+    }
+    println!(
+        "wrote {}: 1 entry ({}) with group {:?} replaced",
+        out.display(),
+        vpk_entry,
+        group,
+    );
+    Ok(())
+}
+
+fn group_selector(e: &ModelEditArgs, group: Option<&str>) -> ModelPartSelector {
+    let mut mesh_parts = Vec::new();
+    if let Some(part) = &e.part {
+        mesh_parts.push(part.clone());
+    }
+    ModelPartSelector {
+        group: group.map(str::to_string),
+        materials: e.material.clone(),
+        mesh_parts,
+    }
 }
 
 /// `model edit --reencode-mdat`: diagnostic identity re-encode of every MDAT block
@@ -1551,10 +1871,18 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
         ),
         None => None,
     };
+    let animation_style = match args.animation_style.to_ascii_lowercase().as_str() {
+        "sweep" => vpkmerge_core::PrismAnimationStyle::Sweep,
+        "loop" | "loops" => vpkmerge_core::PrismAnimationStyle::Loop,
+        "cycle" | "cycles" => vpkmerge_core::PrismAnimationStyle::Cycle,
+        other => anyhow::bail!("--animation-style must be sweep, loop, or cycle (got {other:?})"),
+    };
     let tuning = vpkmerge_core::PrismTuning {
         hue_offset: args.hue_offset,
         saturation: args.saturation,
         brightness: args.brightness,
+        animation_intensity: args.animation_intensity,
+        animation_style,
         gradient,
     };
     let report = vpkmerge_core::prism_recolor_hero_to_addon_tuned(
@@ -1587,11 +1915,13 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
     );
     if args.animated {
         eprintln!(
-            "  animated: {} high-visibility particle(s) retimed ({} texture-age input(s), {} scroll multiplier(s), {} gradient timing edit(s))",
+            "  animated: {} high-visibility particle(s) retimed ({} texture-age input(s), {} scroll multiplier(s), {} gradient timing edit(s), {} color-gradient loop(s), {} color-cycle operator(s))",
             report.particles_animated,
             report.texture_age_inputs,
             report.texture_offset_multipliers,
             report.gradient_timing_edits,
+            report.color_gradient_loops,
+            report.color_cycle_operators,
         );
     }
     if report.particles_unpatchable > 0 || report.materials_unpatchable > 0 {
@@ -1609,6 +1939,145 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
         report.codename,
     );
     Ok(())
+}
+
+fn run_trippy_skin(args: &TrippySkinCmd) -> Result<()> {
+    let style = vpkmerge_core::TrippyStyle::from_name(&args.style)
+        .map_err(|e| anyhow::anyhow!("--style: {e:#}"))?;
+    let targets = args.targets.to_ascii_lowercase();
+    let (include_body, include_weapons) = match targets.as_str() {
+        "all" | "body,weapons" | "body,weapon" | "weapons,body" | "weapon,body" => (true, true),
+        "body" | "skin" => (true, false),
+        "weapon" | "weapons" => (false, true),
+        other => anyhow::bail!("--targets must be all, body, or weapons (got {other:?})"),
+    };
+    let options = vpkmerge_core::TrippySkinOptions {
+        style,
+        intensity: args.intensity,
+        phase: args.phase,
+        scroll: args.scroll,
+        include_body,
+        include_weapons,
+    };
+    let report = vpkmerge_core::trippy_skin_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &args.hero,
+        &options,
+        &args.encode_vpk,
+    )
+    .with_context(|| format!("building trippy skin for {}", args.hero))?;
+
+    eprintln!(
+        "{}: {} body texture(s), {} weapon texture(s), {} material(s) scrolled, {} placeholder texture(s) promoted",
+        report.codename,
+        report.body_textures,
+        report.weapon_textures,
+        report.materials_scrolled,
+        report.texture_placeholders_promoted,
+    );
+    if report.skipped_unreadable > 0 || report.skipped_unpatchable_materials > 0 {
+        eprintln!(
+            "  warning: {} unreadable target(s), {} unpatchable material(s) skipped",
+            report.skipped_unreadable, report.skipped_unpatchable_materials,
+        );
+    }
+    println!(
+        "wrote {}: {} entries, hero {} painted with {} trippy skin",
+        args.encode_vpk.display(),
+        report.total_entries,
+        report.codename,
+        style.as_str(),
+    );
+    Ok(())
+}
+
+fn run_trippy_vfx(args: &TrippyVfxCmd) -> Result<()> {
+    let style = vpkmerge_core::TrippyStyle::from_name(&args.style)
+        .map_err(|e| anyhow::anyhow!("--style: {e:#}"))?;
+    let targets = args.targets.to_ascii_lowercase();
+    let (include_abilities, include_weapons) = match targets.as_str() {
+        "all" | "abilities,weapons" | "ability,weapon" | "weapons,abilities" | "weapon,ability" => {
+            (true, true)
+        }
+        "ability" | "abilities" | "vfx" => (true, false),
+        "weapon" | "weapons" => (false, true),
+        other => anyhow::bail!("--targets must be all, abilities, or weapons (got {other:?})"),
+    };
+    let (animation_style, animation_intensity) =
+        parse_trippy_vfx_animation(&args.animation_style, args.animation_intensity)?;
+    let options = vpkmerge_core::TrippyAbilityOptions {
+        style,
+        intensity: args.intensity,
+        phase: args.phase,
+        animation_intensity,
+        animation_style,
+        include_abilities,
+        include_weapons,
+    };
+    let report = vpkmerge_core::trippy_ability_vfx_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &args.hero,
+        &options,
+        &args.encode_vpk,
+    )
+    .with_context(|| format!("building trippy ability VFX for {}", args.hero))?;
+
+    eprintln!(
+        "{}: {}/{} particle(s) trippy-recolored ({} color-free, {} unpatchable), {} texture(s) painted, {} material tint(s), {} material scroll(s), {} model(s) ({} verts)",
+        report.codename,
+        report.particles_recolored,
+        report.particles_total,
+        report.particles_no_color,
+        report.particles_unpatchable,
+        report.textures_painted,
+        report.materials_recolored,
+        report.materials_scrolled,
+        report.models_recolored,
+        report.model_vertices,
+    );
+    if animation_intensity > 0.0 {
+        eprintln!(
+            "  animated: {} particle(s) ({} texture-age input(s), {} scroll multiplier(s), {} gradient timing edit(s), {} color-gradient loop(s), {} color-cycle operator(s))",
+            report.particles_animated,
+            report.texture_age_inputs,
+            report.texture_offset_multipliers,
+            report.gradient_timing_edits,
+            report.color_gradient_loops,
+            report.color_cycle_operators,
+        );
+    }
+    if report.textures_skipped > 0 || report.materials_unpatchable > 0 {
+        eprintln!(
+            "  warning: {} texture(s) and {} material(s) could not be patched and were skipped",
+            report.textures_skipped, report.materials_unpatchable,
+        );
+    }
+    println!(
+        "wrote {}: {} entries, hero {} painted with {} trippy ability VFX",
+        args.encode_vpk.display(),
+        report.total_entries,
+        report.codename,
+        style.as_str(),
+    );
+    Ok(())
+}
+
+fn parse_trippy_vfx_animation(
+    style: &str,
+    intensity: f64,
+) -> Result<(vpkmerge_core::PrismAnimationStyle, f64)> {
+    let style = style.to_ascii_lowercase();
+    match style.as_str() {
+        "off" | "none" | "static" => Ok((vpkmerge_core::PrismAnimationStyle::Sweep, 0.0)),
+        "sweep" => Ok((vpkmerge_core::PrismAnimationStyle::Sweep, intensity)),
+        "loop" | "loops" => Ok((vpkmerge_core::PrismAnimationStyle::Loop, intensity)),
+        "cycle" | "cycles" => Ok((vpkmerge_core::PrismAnimationStyle::Cycle, intensity)),
+        other => {
+            anyhow::bail!("--animation-style must be off, sweep, loop, or cycle (got {other:?})")
+        }
+    }
 }
 
 fn run_rainbow_scan(args: &RainbowScanCmd) -> Result<()> {

@@ -112,6 +112,11 @@ pub fn lod0_indices(data: &Value, embedded: &[EmbeddedMesh]) -> Result<Vec<usize
 /// vertex buffer, with its material.
 #[derive(Debug, Clone)]
 pub struct DrawCall {
+    /// Every vertex-buffer stream referenced by the draw call. The first stream
+    /// carries positions for the shipped hero models; later streams can carry
+    /// attributes such as vertex color.
+    pub vertex_buffers: Vec<usize>,
+    /// Primary vertex-buffer stream, kept as a convenience for older callers.
     pub vertex_buffer: usize,
     pub index_buffer: usize,
     pub vertex_count: usize,
@@ -124,13 +129,19 @@ pub struct DrawCall {
 
 impl DrawCall {
     fn parse(dc: &Value) -> Result<DrawCall, DecodeError> {
-        let vertex_buffer = dc
+        let vertex_buffers: Vec<usize> = dc
             .get("m_vertexBuffers")
             .and_then(Value::as_array)
-            .and_then(|a| a.first())
-            .and_then(|b| b.get("m_hBuffer"))
-            .and_then(Value::as_int)
-            .and_then(|v| usize::try_from(v).ok())
+            .ok_or(DecodeError::Model("draw call missing vertex buffers"))?
+            .iter()
+            .filter_map(|b| {
+                b.get("m_hBuffer")
+                    .and_then(Value::as_int)
+                    .and_then(|v| usize::try_from(v).ok())
+            })
+            .collect();
+        let vertex_buffer = *vertex_buffers
+            .first()
             .ok_or(DecodeError::Model("draw call missing vertex buffer handle"))?;
         let index_buffer = dc
             .get("m_indexBuffer")
@@ -151,6 +162,7 @@ impl DrawCall {
             .to_owned();
 
         Ok(DrawCall {
+            vertex_buffers,
             vertex_buffer,
             index_buffer,
             vertex_count: int_field(dc, "m_nVertexCount")?,
@@ -220,6 +232,7 @@ pub struct VertexBuffer {
     pub normals: Vec<[f32; 3]>,
     pub tangents: Vec<[f32; 4]>,
     pub texcoords: Vec<Vec<[f32; 2]>>,
+    pub colors: Vec<Vec<[f32; 4]>>,
     pub joints: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
     pub layout: Vec<InputLayoutField>,
@@ -230,6 +243,8 @@ pub struct VertexBuffer {
 pub struct Primitive {
     /// Index into the owning [`MeshPart::vertex_buffers`].
     pub vertex_buffer: usize,
+    /// All vertex-buffer streams referenced by the source draw call.
+    pub vertex_buffers: Vec<usize>,
     pub material: String,
     pub vertex_count: usize,
     /// Global indices into the vertex buffer (base vertex already applied).
@@ -314,6 +329,7 @@ pub fn assemble(
             let indices = ib.read_indices(dc.start_index, dc.index_count, dc.base_vertex)?;
             primitives.push(Primitive {
                 vertex_buffer: dc.vertex_buffer,
+                vertex_buffers: dc.vertex_buffers.clone(),
                 material: dc.material.clone(),
                 vertex_count: dc.vertex_count,
                 indices,
@@ -369,6 +385,13 @@ fn deinterleave(buf: &OnDiskBuffer, remap: Option<&[usize]>) -> Result<VertexBuf
             }
             "TANGENT" => standalone_tangent = Some(buf.vector4(f)?),
             "TEXCOORD" => out.texcoords.push(buf.vector2(f)?),
+            "COLOR" => {
+                let index = usize::try_from(f.semantic_index).unwrap_or(out.colors.len());
+                if out.colors.len() <= index {
+                    out.colors.resize_with(index + 1, Vec::new);
+                }
+                out.colors[index] = buf.vector4(f)?;
+            }
             // BLENDINDICES + BLENDWEIGHT are reconciled together after the loop.
             _ => {}
         }
@@ -628,7 +651,15 @@ pub fn assemble_to_layout(
                     };
                     data[o..o + 4].copy_from_slice(&w);
                 }
-                "COLOR" => data[o..o + 4].copy_from_slice(&[255, 255, 255, 255]),
+                "COLOR" => {
+                    let s = usize::try_from(f.semantic_index).unwrap_or(0);
+                    let color = vb
+                        .colors
+                        .get(s)
+                        .filter(|c| c.len() == count)
+                        .map_or([1.0, 1.0, 1.0, 1.0], |c| c[i]);
+                    data[o..o + 4].copy_from_slice(&quantize_color_u8(color));
+                }
                 other => {
                     return Err(unsupported_target_semantic(other));
                 }
@@ -730,6 +761,11 @@ fn quantize_weights_u8(w: [f32; 4]) -> [u8; 4] {
     }
     q[largest] = (q[largest] + (255 - sum)).clamp(0, 255);
     [q[0] as u8, q[1] as u8, q[2] as u8, q[3] as u8]
+}
+
+#[allow(clippy::cast_sign_loss)]
+fn quantize_color_u8(c: [f32; 4]) -> [u8; 4] {
+    c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
 /// Per-vertex skin influences reduced to glTF's 4-bone shape: joints paired

@@ -19,11 +19,14 @@ pub mod model;
 pub mod portrait;
 pub use model::{
     apply_model_edit_glb, edit_model_geometry, export_hero_model, export_model,
-    export_model_buffer_glb, inspect_models, model_draw_call_targets, model_vertex_targets,
-    recolor_models_to_addon, reencode_model_mdat, remove_model_material, replace_model_part,
-    AnimOptions, DrawCallInfo, GeometryEdit, GeometryEditReport, MaterialRemovalReport, ModelEntry,
-    ModelInfo, ModelRecolorEntry, PartReplacementReport, PoseSelection, RemovedDrawCall,
-    ReplacedMeshPart, VertexTarget, DEFAULT_POSE_CLIPS,
+    export_model_buffer_glb, export_model_group_glb, inspect_model_parts, inspect_models,
+    model_draw_call_targets, model_vertex_targets, recolor_models_to_addon, reencode_model_mdat,
+    remove_model_material, replace_model_group, replace_model_part, AnimOptions, DrawCallInfo,
+    DrawCallSkinInfo, GeometryEdit, GeometryEditReport, MaterialRemovalReport,
+    ModelDrawCallInspection, ModelEntry, ModelInfo, ModelPartInspection, ModelPartSelector,
+    ModelRecolorEntry, PartReplacementReport, PoseSelection, RemovedDrawCall, ReplacedMeshGroup,
+    ReplacedMeshPart, ResolvedResource, ResolvedTextureParam, SuggestedPartGroup, VertexTarget,
+    DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
@@ -38,15 +41,21 @@ pub use recolor::{
 
 pub mod hero_recolor;
 pub use hero_recolor::{
-    insert_color_cycle_operator, is_tiling_particle_texture, loop_animate_particle_bytes,
-    non_tiling_texture_inputs, pinned_hero_codenames, prism_recolor_hero_to_addon,
-    prism_recolor_hero_to_addon_tuned, recipe_for, recolor_hero_preview_png, recolor_hero_to_addon,
-    recolor_particle_bytes, scan_hero_rainbow_support, GradientStop, HeroPrismRecolorReport,
-    HeroRainbowSupportReport, HeroRecolorRecipe, HeroRecolorReport, PrismGradient, PrismTuning,
-    MAX_GRADIENT_STOPS, PRISM_PRESET_NAMES,
+    animate_particle_timing_bytes, insert_color_cycle_operator,
+    insert_color_cycle_operator_with_tuning, is_tiling_particle_texture,
+    loop_animate_particle_bytes, non_tiling_texture_inputs, pinned_hero_codenames,
+    prism_recolor_hero_to_addon, prism_recolor_hero_to_addon_tuned, recipe_for,
+    recolor_hero_preview_png, recolor_hero_to_addon, recolor_particle_bytes,
+    scan_hero_rainbow_support, GradientStop, HeroPrismRecolorReport, HeroRainbowSupportReport,
+    HeroRecolorRecipe, HeroRecolorReport, ParticleTimingAnimationStats, PrismAnimationStyle,
+    PrismGradient, PrismTuning, MAX_GRADIENT_STOPS, PRISM_PRESET_NAMES,
 };
-pub mod trippy;
 
+pub mod trippy;
+pub use trippy::{
+    trippy_ability_vfx_to_addon, trippy_preview_frames, trippy_skin_to_addon, TrippyAbilityOptions,
+    TrippyAbilityReport, TrippySkinOptions, TrippySkinReport, TrippyStyle, TRIPPY_STYLE_NAMES,
+};
 
 #[derive(Debug, Clone)]
 pub struct ModInfo {

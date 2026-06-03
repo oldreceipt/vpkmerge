@@ -519,6 +519,11 @@ fn synthetic_model() -> Model {
         normals: vec![[0.0, 0.0, 1.0]; 3],
         tangents: Vec::new(),
         texcoords: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+        colors: vec![vec![
+            [0.8, 0.3, 0.2, 1.0],
+            [0.7, 0.25, 0.2, 1.0],
+            [0.9, 0.35, 0.25, 1.0],
+        ]],
         joints: vec![[0, 0, 0, 0]; 3],
         weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
         layout: Vec::new(),
@@ -529,6 +534,7 @@ fn synthetic_model() -> Model {
         vertex_buffers: vec![vb],
         primitives: vec![Primitive {
             vertex_buffer: 0,
+            vertex_buffers: vec![0],
             material: "test/mat.vmat".to_owned(),
             vertex_count: 3,
             indices: vec![0, 1, 2],
@@ -579,6 +585,7 @@ fn glb_writes_and_reloads() {
 
     let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
     assert!(prim.get(&gltf::Semantic::Positions).is_some(), "POSITION");
+    assert!(prim.get(&gltf::Semantic::Colors(0)).is_some(), "COLOR_0");
     assert!(prim.get(&gltf::Semantic::Joints(0)).is_some(), "JOINTS_0");
     assert!(prim.get(&gltf::Semantic::Weights(0)).is_some(), "WEIGHTS_0");
     assert!(prim.indices().is_some(), "indices");
@@ -784,6 +791,7 @@ mod pose_bake {
             normals: vec![[0.0, 1.0, 0.0]],
             tangents: vec![],
             texcoords: vec![],
+            colors: vec![],
             joints: vec![[0, 0, 0, 0]],
             weights: vec![[1.0, 0.0, 0.0, 0.0]],
             layout: vec![],
@@ -796,6 +804,7 @@ mod pose_bake {
             mesh_index: 0,
             primitives: vec![Primitive {
                 vertex_buffer: 0,
+                vertex_buffers: vec![0],
                 material: "body".into(),
                 vertex_count: vb.element_count,
                 indices: vec![0],

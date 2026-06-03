@@ -143,6 +143,32 @@ impl Material {
         self.float_params.get("g_flAlphaTestReference").copied()
     }
 
+    /// True when this material's shader params say to multiply/use mesh vertex
+    /// `COLOR` data. Deadlock uses this path for skin tone and some colored
+    /// ability meshes whose albedo texture is neutral.
+    #[must_use]
+    pub fn uses_vertex_color(&self) -> bool {
+        self.int_params.get("F_VERTEX_COLOR").copied().unwrap_or(0) > 0
+            || self
+                .int_params
+                .get("F_PAINT_VERTEX_COLORS")
+                .copied()
+                .unwrap_or(0)
+                > 0
+            || self
+                .int_params
+                .get("g_bMaskVertexColorTint1")
+                .copied()
+                .unwrap_or(0)
+                > 0
+            || self
+                .int_params
+                .get("g_bApplyTintToVertexColors")
+                .copied()
+                .unwrap_or(0)
+                > 0
+    }
+
     fn first_texture(&self, slots: &[&str]) -> Option<&str> {
         slots.iter().find_map(|s| self.texture(s))
     }

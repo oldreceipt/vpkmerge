@@ -541,6 +541,15 @@ pub struct EncodedMesh {
     pub fields: Vec<InputLayoutField>,
 }
 
+/// One mesh primitive read from a donor `.glb` for topology replacement.
+#[derive(Debug, Clone)]
+pub struct EditedPrimitive {
+    pub mesh_name: Option<String>,
+    pub material_name: Option<String>,
+    pub vertex_buffer: VertexBuffer,
+    pub indices: Vec<u32>,
+}
+
 /// Reads one new mesh part from an edited `.glb`: its positions, normals, UV0,
 /// joints, weights, and triangle indices. Takes a single primitive (the
 /// add-one-mesh-part contract); pass `mesh_name` to pick it out of a multi-mesh
@@ -554,28 +563,52 @@ pub fn read_edited_mesh(
     glb_bytes: &[u8],
     mesh_name: Option<&str>,
 ) -> Result<(VertexBuffer, Vec<u32>), DecodeError> {
-    let (doc, buffers, _images) = gltf::import_slice(glb_bytes)
-        .map_err(|_| DecodeError::Model("failed to parse edited glb"))?;
-
+    let primitives = read_edited_primitives(glb_bytes)?;
     let mut chosen = None;
-    for node in doc.nodes() {
-        let Some(mesh) = node.mesh() else { continue };
+    for prim in primitives {
         if let Some(want) = mesh_name {
-            if mesh.name() != Some(want) {
+            if prim.mesh_name.as_deref() != Some(want) {
                 continue;
             }
         }
-        for prim in mesh.primitives() {
-            if chosen.is_some() {
-                return Err(DecodeError::Model(
-                    "edited glb has more than one primitive; T1c assembles one mesh part at a \
-                     time (pass a mesh name, or split the export)",
-                ));
-            }
-            chosen = Some(prim);
+        if chosen.is_some() {
+            return Err(DecodeError::Model(
+                "edited glb has more than one primitive; T1c assembles one mesh part at a \
+                 time (pass a mesh name, or split the export)",
+            ));
         }
+        chosen = Some(prim);
     }
     let prim = chosen.ok_or(DecodeError::Model("edited glb has no mesh primitive"))?;
+    Ok((prim.vertex_buffer, prim.indices))
+}
+
+/// Reads every primitive from an edited `.glb`, preserving its mesh/material
+/// names when present. Positions are taken in accessor space, matching
+/// [`read_edited_mesh`].
+pub fn read_edited_primitives(glb_bytes: &[u8]) -> Result<Vec<EditedPrimitive>, DecodeError> {
+    let (doc, buffers, _images) = gltf::import_slice(glb_bytes)
+        .map_err(|_| DecodeError::Model("failed to parse edited glb"))?;
+
+    let mut out = Vec::new();
+    for node in doc.nodes() {
+        let Some(mesh) = node.mesh() else { continue };
+        let mesh_name = mesh.name().or_else(|| node.name()).map(str::to_owned);
+        for prim in mesh.primitives() {
+            out.push(read_primitive(&buffers, mesh_name.clone(), &prim)?);
+        }
+    }
+    if out.is_empty() {
+        return Err(DecodeError::Model("edited glb has no mesh primitive"));
+    }
+    Ok(out)
+}
+
+fn read_primitive(
+    buffers: &[gltf::buffer::Data],
+    mesh_name: Option<String>,
+    prim: &gltf::Primitive<'_>,
+) -> Result<EditedPrimitive, DecodeError> {
     let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
 
     let positions: Vec<[f32; 3]> = reader
@@ -586,9 +619,17 @@ pub fn read_edited_mesh(
         .read_normals()
         .map(Iterator::collect)
         .unwrap_or_default();
+    let tangents: Vec<[f32; 4]> = reader
+        .read_tangents()
+        .map(Iterator::collect)
+        .unwrap_or_default();
     let uv: Vec<[f32; 2]> = reader
         .read_tex_coords(0)
         .map(|t| t.into_f32().collect())
+        .unwrap_or_default();
+    let colors0: Vec<[f32; 4]> = reader
+        .read_colors(0)
+        .map(|c| c.into_rgba_f32().collect())
         .unwrap_or_default();
     let joints: Vec<[u16; 4]> = reader
         .read_joints(0)
@@ -605,16 +646,28 @@ pub fn read_edited_mesh(
         .collect();
 
     let texcoords = if uv.is_empty() { Vec::new() } else { vec![uv] };
+    let colors = if colors0.is_empty() {
+        Vec::new()
+    } else {
+        vec![colors0]
+    };
     let vb = VertexBuffer {
         element_count: positions.len(),
         positions,
         normals,
+        tangents,
         texcoords,
+        colors,
         joints,
         weights,
         ..VertexBuffer::default()
     };
-    Ok((vb, indices))
+    Ok(EditedPrimitive {
+        mesh_name,
+        material_name: prim.material().name().map(str::to_owned),
+        vertex_buffer: vb,
+        indices,
+    })
 }
 
 /// Assembles a [`VertexBuffer`] + triangle indices into encoded `MVTX`/`MIDX`

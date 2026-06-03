@@ -95,4 +95,5 @@ fn pbr_slots_map_by_name() {
 
     // No F_TRANSLUCENT / F_ALPHA_TEST on this material.
     assert_eq!(mat.alpha_mode(), AlphaMode::Opaque, "alpha mode");
+    assert!(mat.uses_vertex_color(), "skin material uses vertex color");
 }

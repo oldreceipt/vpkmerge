@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub use morphic::model::{
-    BlockSummary, DrawCallInfo, ModelInfo, RemovedDrawCall, ReplacedMeshPart, VertexTarget,
+    BlockSummary, DrawCallInfo, ModelInfo, PrimitiveSelection, RemovedDrawCall, ReplacedMeshGroup,
+    ReplacedMeshPart, VertexTarget,
 };
 
 /// Default candidate clips for a bare `--pose`, in priority order. Menu-pose
@@ -312,6 +313,92 @@ pub struct GeometryEditReport {
     pub edited_vertices: usize,
 }
 
+/// Which VPK supplied a resolved model/material/texture entry.
+#[derive(Debug, Clone)]
+pub struct ResolvedResource {
+    pub path: String,
+    pub compiled_path: String,
+    /// `mod`, `base`, or `input` when no separate base pak was supplied.
+    pub source: String,
+}
+
+/// A resolved material texture parameter.
+#[derive(Debug, Clone)]
+pub struct ResolvedTextureParam {
+    pub slot: String,
+    pub path: String,
+    pub compiled_path: String,
+    pub source: Option<String>,
+}
+
+/// Bone/skin summary for one draw call.
+#[derive(Debug, Clone, Default)]
+pub struct DrawCallSkinInfo {
+    pub skinned: bool,
+    pub bone_weight_count: usize,
+    pub used_bone_count: usize,
+    pub used_bones: Vec<String>,
+}
+
+/// Machine-readable model draw-call inspection record.
+#[derive(Debug, Clone)]
+pub struct ModelDrawCallInspection {
+    pub id: String,
+    pub mesh_name: String,
+    pub mesh_index: usize,
+    pub primitive_index: usize,
+    pub data_block: usize,
+    pub scene_object: usize,
+    pub draw_call: usize,
+    pub vertex_buffers: Vec<usize>,
+    pub vertex_buffer: usize,
+    pub index_buffer: usize,
+    pub vertex_blocks: Vec<usize>,
+    pub vertex_block: usize,
+    pub index_block: usize,
+    pub material: String,
+    pub material_source: Option<String>,
+    pub textures: Vec<ResolvedTextureParam>,
+    pub vertex_count: usize,
+    pub index_count: usize,
+    pub start_index: usize,
+    pub base_vertex: u32,
+    pub primitive_type: String,
+    pub geometry_source: String,
+    pub skin: DrawCallSkinInfo,
+}
+
+/// A heuristic semantic group Grimoire can display as one candidate card.
+#[derive(Debug, Clone)]
+pub struct SuggestedPartGroup {
+    pub name: String,
+    pub label: String,
+    pub aliases: Vec<String>,
+    pub draw_call_ids: Vec<String>,
+    pub mesh_names: Vec<String>,
+    pub materials: Vec<String>,
+    pub vertex_count: usize,
+    pub index_count: usize,
+    pub confidence: f32,
+}
+
+/// Full model-part inspection payload for JSON consumers.
+#[derive(Debug, Clone)]
+pub struct ModelPartInspection {
+    pub entry: String,
+    pub model_source: ResolvedResource,
+    pub draw_calls: Vec<ModelDrawCallInspection>,
+    pub suggested_groups: Vec<SuggestedPartGroup>,
+}
+
+/// Selector shared by grouped export/replacement.
+#[derive(Debug, Clone, Default)]
+pub struct ModelPartSelector {
+    pub group: Option<String>,
+    pub materials: Vec<String>,
+    pub mesh_parts: Vec<String>,
+}
+
 /// Lists the vertex buffers in a model entry (which mesh parts can be edited, and
 /// the block index / vertex count of each). The CLI uses this for `--list` and to
 /// resolve a `--part` name to a block index.
@@ -324,6 +411,138 @@ pub fn model_vertex_targets(
     let bytes =
         read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
     morphic::model::vertex_targets(&bytes).with_context(|| format!("reading targets for {entry}"))
+}
+
+/// Machine-readable draw-call/material/group inspection for `model edit
+/// --list-drawcalls --json`.
+pub fn inspect_model_parts(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+) -> Result<ModelPartInspection> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let has_base = base.is_some();
+    let (bytes, source_index) = read_entry_with_source(&vpks, entry)
+        .with_context(|| format!("model entry {entry} not found"))?;
+    let model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
+    let calls = morphic::model::draw_call_targets(&bytes)
+        .with_context(|| format!("reading draw calls for {entry}"))?;
+    let geometry_source = source_label(source_index, has_base);
+
+    let mut draw_calls = Vec::with_capacity(calls.len());
+    for c in calls {
+        let (material_source, textures) = inspect_material_refs(&vpks, has_base, &c.material);
+        let skin = skin_info_for(&model, &c);
+        draw_calls.push(ModelDrawCallInspection {
+            id: draw_call_id(&c),
+            mesh_name: c.mesh_name,
+            mesh_index: c.mesh_index,
+            primitive_index: c.primitive_index,
+            data_block: c.data_block,
+            scene_object: c.scene_object,
+            draw_call: c.draw_call,
+            vertex_buffers: c.vertex_buffers,
+            vertex_buffer: c.vertex_buffer,
+            index_buffer: c.index_buffer,
+            vertex_blocks: c.vertex_blocks,
+            vertex_block: c.vertex_block,
+            index_block: c.index_block,
+            material: c.material,
+            material_source,
+            textures,
+            vertex_count: c.vertex_count,
+            index_count: c.index_count,
+            start_index: c.start_index,
+            base_vertex: c.base_vertex,
+            primitive_type: c.primitive_type,
+            geometry_source: geometry_source.clone(),
+            skin,
+        });
+    }
+    let suggested_groups = suggest_part_groups(&draw_calls);
+
+    Ok(ModelPartInspection {
+        entry: entry.to_string(),
+        model_source: ResolvedResource {
+            path: entry.to_string(),
+            compiled_path: entry.to_string(),
+            source: geometry_source,
+        },
+        draw_calls,
+        suggested_groups,
+    })
+}
+
+/// Exports selected draw calls as an isolated textured GLB. The model skeleton is
+/// retained so skinned parts still have valid `JOINTS_0`; animations are dropped
+/// to keep preview assets small.
+pub fn export_model_group_glb(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    selector: &ModelPartSelector,
+    out_glb: impl AsRef<Path>,
+) -> Result<usize> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let mut model = morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))?;
+    let calls = inspect_model_parts(vpk, entry, base)?.draw_calls;
+    let selected = select_draw_calls(&calls, selector)?;
+    let selected_keys: std::collections::BTreeSet<(usize, usize)> = selected
+        .iter()
+        .map(|c| (c.mesh_index, c.primitive_index))
+        .collect();
+    let selected_count = selected_keys.len();
+    filter_model_to_primitives(&mut model, &selected_keys);
+    model.animations.clear();
+    if model.meshes.is_empty() {
+        anyhow::bail!("group selector matched no exportable geometry");
+    }
+
+    let resolver = VpkResolver { vpks };
+    let glb = morphic::model::to_glb_textured(&model, &resolver)
+        .with_context(|| format!("writing group glb for {entry}"))?;
+    let out = out_glb.as_ref();
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(out, &glb).with_context(|| format!("writing {}", out.display()))?;
+    Ok(selected_count)
+}
+
+/// Replaces the selected semantic group from a donor GLB and packs an addon VPK.
+pub fn replace_model_group(
+    vpk: impl AsRef<Path>,
+    entry: &str,
+    base: Option<&Path>,
+    selector: &ModelPartSelector,
+    glb_bytes: &[u8],
+    out_vpk: impl AsRef<Path>,
+    vpk_entry: Option<&str>,
+) -> Result<(String, ReplacedMeshGroup)> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let calls = inspect_model_parts(vpk, entry, base)?.draw_calls;
+    let selected = select_draw_calls(&calls, selector)?;
+    let selections: Vec<PrimitiveSelection> = selected
+        .iter()
+        .map(|c| PrimitiveSelection {
+            mesh_index: c.mesh_index,
+            primitive_index: c.primitive_index,
+        })
+        .collect();
+    let donors = morphic::model::read_edited_primitives(glb_bytes)
+        .with_context(|| "reading donor primitives from glb".to_string())?;
+    let (edited, report) = morphic::model::replace_mesh_group(&bytes, &selections, &donors)
+        .with_context(|| format!("replacing selected group in {entry}"))?;
+
+    let vpk_entry = vpk_entry.unwrap_or(entry).to_string();
+    crate::pack(&[(vpk_entry.as_str(), edited.as_slice())], out_vpk.as_ref())
+        .with_context(|| format!("packing edited model into {}", out_vpk.as_ref().display()))?;
+    Ok((vpk_entry, report))
 }
 
 /// Applies a geometric transform to a model's editable vertex buffers and packs
@@ -692,12 +911,287 @@ fn part_list(targets: &[VertexTarget]) -> String {
     names.join(", ")
 }
 
+fn inspect_material_refs(
+    vpks: &[valve_pak::VPK],
+    has_base: bool,
+    material: &str,
+) -> (Option<String>, Vec<ResolvedTextureParam>) {
+    let compiled = compiled_resource_path(material);
+    let Some((bytes, source)) = read_entry_with_source(vpks, &compiled) else {
+        return (None, Vec::new());
+    };
+    let material_source = Some(source_label(source, has_base));
+    let Ok(mat) = morphic::material::parse(&bytes) else {
+        return (material_source, Vec::new());
+    };
+    let mut textures = Vec::new();
+    for (slot, path) in mat.texture_params {
+        let compiled_path = compiled_resource_path(&path);
+        let source =
+            read_entry_with_source(vpks, &compiled_path).map(|(_, i)| source_label(i, has_base));
+        textures.push(ResolvedTextureParam {
+            slot,
+            path,
+            compiled_path,
+            source,
+        });
+    }
+    textures.sort_by(|a, b| a.slot.cmp(&b.slot));
+    (material_source, textures)
+}
+
+fn skin_info_for(model: &morphic::model::Model, call: &DrawCallInfo) -> DrawCallSkinInfo {
+    let Some(part) = model
+        .meshes
+        .iter()
+        .find(|m| m.mesh_index == call.mesh_index)
+    else {
+        return DrawCallSkinInfo::default();
+    };
+    let mut used = std::collections::BTreeSet::new();
+    for &vb_i in &call.vertex_buffers {
+        let Some(vb) = part.vertex_buffers.get(vb_i) else {
+            continue;
+        };
+        let weights = (vb.weights.len() == vb.element_count).then_some(vb.weights.as_slice());
+        for (row, joints) in vb.joints.iter().enumerate() {
+            for (lane, &bone) in joints.iter().enumerate() {
+                let significant = weights.map_or(lane == 0, |w| w[row][lane] > 0.0);
+                if significant {
+                    used.insert(usize::from(bone));
+                }
+            }
+        }
+    }
+    let used_bones: Vec<String> = used
+        .iter()
+        .filter_map(|&i| model.skeleton.bones.get(i).map(|b| b.name.clone()))
+        .collect();
+    DrawCallSkinInfo {
+        skinned: part.bone_weight_count > 0 || !used_bones.is_empty(),
+        bone_weight_count: part.bone_weight_count,
+        used_bone_count: used_bones.len(),
+        used_bones,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn suggest_part_groups(calls: &[ModelDrawCallInspection]) -> Vec<SuggestedPartGroup> {
+    const GROUPS: &[(&str, &str, &[&str], &[&str])] = &[
+        (
+            "gun",
+            "Gun / weapon",
+            &["weapon"],
+            &[
+                "gun", "weapon", "rifle", "pistol", "revolver", "shotgun", "smg", "bow",
+                "crossbow", "sword", "knife", "blade",
+            ],
+        ),
+        (
+            "hair",
+            "Hair",
+            &[],
+            &["hair", "bang", "pony", "braid", "beard"],
+        ),
+        (
+            "dress",
+            "Dress / skirt",
+            &["skirt"],
+            &["dress", "skirt", "robe", "coat", "cape", "cloth"],
+        ),
+        (
+            "body",
+            "Body / outfit",
+            &["outfit"],
+            &[
+                "body",
+                "torso",
+                "chest",
+                "outfit",
+                "suit",
+                "uniform",
+                "armor",
+                "skinmaterial",
+            ],
+        ),
+        (
+            "gloves",
+            "Gloves / hands",
+            &["hands"],
+            &["glove", "hand", "arm", "sleeve"],
+        ),
+        (
+            "shoes",
+            "Shoes / legs",
+            &["legs"],
+            &["shoe", "boot", "leg", "foot", "pants", "heel"],
+        ),
+        (
+            "accessories",
+            "Accessories",
+            &["accessory"],
+            &[
+                "accessory",
+                "accessories",
+                "acc",
+                "hat",
+                "mask",
+                "belt",
+                "bag",
+                "ring",
+                "ear",
+                "neck",
+                "glasses",
+                "prop",
+            ],
+        ),
+    ];
+
+    let mut groups = Vec::new();
+    for (name, label, aliases, tokens) in GROUPS {
+        let mut matched: Vec<&ModelDrawCallInspection> = calls
+            .iter()
+            .filter(|c| {
+                let hay = format!("{} {}", c.mesh_name, c.material).to_ascii_lowercase();
+                tokens.iter().any(|t| hay.contains(t))
+            })
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        matched.sort_by(|a, b| a.id.cmp(&b.id));
+        matched.dedup_by(|a, b| a.id == b.id);
+        let mut mesh_names: Vec<String> = matched.iter().map(|c| c.mesh_name.clone()).collect();
+        mesh_names.sort();
+        mesh_names.dedup();
+        let mut materials: Vec<String> = matched.iter().map(|c| c.material.clone()).collect();
+        materials.sort();
+        materials.dedup();
+        groups.push(SuggestedPartGroup {
+            name: (*name).to_string(),
+            label: (*label).to_string(),
+            aliases: aliases.iter().map(|a| (*a).to_string()).collect(),
+            draw_call_ids: matched.iter().map(|c| c.id.clone()).collect(),
+            mesh_names,
+            materials,
+            vertex_count: matched.iter().map(|c| c.vertex_count).sum(),
+            index_count: matched.iter().map(|c| c.index_count).sum(),
+            confidence: 0.7,
+        });
+    }
+    groups
+}
+
+fn select_draw_calls<'a>(
+    calls: &'a [ModelDrawCallInspection],
+    selector: &ModelPartSelector,
+) -> Result<Vec<&'a ModelDrawCallInspection>> {
+    let group = selector.group.as_deref().map(normalize_selector);
+    let materials: Vec<String> = selector
+        .materials
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let mesh_parts: Vec<String> = selector
+        .mesh_parts
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    if group.is_none() && materials.is_empty() && mesh_parts.is_empty() {
+        anyhow::bail!("provide --group, --material, or --part for grouped model selection");
+    }
+
+    let groups = suggest_part_groups(calls);
+    let mut ids = std::collections::BTreeSet::new();
+    if let Some(group) = &group {
+        for g in &groups {
+            let matches_name = normalize_selector(&g.name) == *group
+                || g.aliases.iter().any(|a| normalize_selector(a) == *group);
+            if matches_name {
+                ids.extend(g.draw_call_ids.iter().cloned());
+            }
+        }
+    }
+
+    let mut selected: Vec<&ModelDrawCallInspection> = calls
+        .iter()
+        .filter(|c| {
+            ids.contains(&c.id)
+                || materials
+                    .iter()
+                    .any(|m| c.material.to_ascii_lowercase().contains(m))
+                || mesh_parts
+                    .iter()
+                    .any(|p| c.mesh_name.to_ascii_lowercase().contains(p))
+                || group.as_ref().is_some_and(|g| {
+                    let hay = format!("{} {}", c.mesh_name, c.material).to_ascii_lowercase();
+                    hay.contains(g)
+                })
+        })
+        .collect();
+    selected.sort_by(|a, b| a.id.cmp(&b.id));
+    selected.dedup_by(|a, b| a.id == b.id);
+    if selected.is_empty() {
+        anyhow::bail!("group selector matched no draw calls");
+    }
+    Ok(selected)
+}
+
+fn normalize_selector(s: &str) -> String {
+    s.to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
+fn filter_model_to_primitives(
+    model: &mut morphic::model::Model,
+    selected: &std::collections::BTreeSet<(usize, usize)>,
+) {
+    for part in &mut model.meshes {
+        let mut primitive_index = 0usize;
+        part.primitives.retain(|_| {
+            let keep = selected.contains(&(part.mesh_index, primitive_index));
+            primitive_index += 1;
+            keep
+        });
+    }
+    model.meshes.retain(|m| !m.primitives.is_empty());
+}
+
+fn draw_call_id(c: &DrawCallInfo) -> String {
+    format!(
+        "mesh{}:prim{}:mdat{}:so{}:dc{}",
+        c.mesh_index, c.primitive_index, c.data_block, c.scene_object, c.draw_call
+    )
+}
+
+fn compiled_resource_path(path: &str) -> String {
+    if path.ends_with("_c") {
+        path.to_string()
+    } else {
+        format!("{path}_c")
+    }
+}
+
+fn source_label(index: usize, has_base: bool) -> String {
+    match (index, has_base) {
+        (0, true) => "mod".to_string(),
+        (0, false) => "input".to_string(),
+        _ => "base".to_string(),
+    }
+}
+
 /// Reads a VPK entry from the first of `vpks` that contains it.
 fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
-    for vpk in vpks {
+    read_entry_with_source(vpks, entry).map(|(bytes, _)| bytes)
+}
+
+fn read_entry_with_source(vpks: &[valve_pak::VPK], entry: &str) -> Option<(Vec<u8>, usize)> {
+    for (index, vpk) in vpks.iter().enumerate() {
         if let Ok(mut vf) = vpk.get_file(entry) {
             if let Ok(bytes) = vf.read_all() {
-                return Some(bytes);
+                return Some((bytes, index));
             }
         }
     }

@@ -19,7 +19,7 @@ use crate::error::DecodeError;
 use crate::kv3::{self, Seg, Value};
 use crate::resource::Resource;
 
-use super::edit::{build_mesh_buffers_to_layout, parse_embedded, EncodedMesh};
+use super::edit::{build_mesh_buffers_to_layout, parse_embedded, EditedPrimitive, EncodedMesh};
 use super::mesh::{self, VertexBuffer};
 use super::skeleton;
 use super::vbib::BufferDesc;
@@ -30,12 +30,29 @@ pub struct DrawCallInfo {
     /// Owning embedded mesh name (e.g. `body`, `gun`).
     pub mesh_name: String,
     pub mesh_index: usize,
+    /// Primitive ordinal within the owning mesh part's LOD0 draw-call list.
+    pub primitive_index: usize,
     /// Global block index of the `MDAT` this draw call lives in.
     pub data_block: usize,
     /// Index into `MDAT.m_sceneObjects`.
     pub scene_object: usize,
     /// Index into that scene object's `m_drawCalls`.
     pub draw_call: usize,
+    /// Every local vertex-buffer stream handle referenced by this draw call.
+    pub vertex_buffers: Vec<usize>,
+    /// Primary local vertex-buffer stream handle.
+    pub vertex_buffer: usize,
+    /// Local index-buffer handle.
+    pub index_buffer: usize,
+    /// Global `MVTX` block indices for [`DrawCallInfo::vertex_buffers`].
+    pub vertex_blocks: Vec<usize>,
+    /// Global primary `MVTX` block index.
+    pub vertex_block: usize,
+    /// Global `MIDX` block index.
+    pub index_block: usize,
+    pub start_index: usize,
+    pub base_vertex: u32,
+    pub primitive_type: String,
     /// Material path the draw call renders with (`m_material`), e.g.
     /// `models/.../vindicta_dress.vmat`.
     pub material: String,
@@ -75,21 +92,54 @@ pub fn draw_call_targets(vmdl_bytes: &[u8]) -> Result<Vec<DrawCallInfo>, DecodeE
         let Some(scene_objects) = mdat.get("m_sceneObjects").and_then(Value::as_array) else {
             continue;
         };
+        let mut primitive_index = 0usize;
         for (so_i, so) in scene_objects.iter().enumerate() {
             let Some(draw_calls) = so.get("m_drawCalls").and_then(Value::as_array) else {
                 continue;
             };
             for (dc_i, dc) in draw_calls.iter().enumerate() {
+                let vertex_buffers = vertex_buffers_of(dc);
+                let vertex_buffer = vertex_buffers.first().copied().unwrap_or(0);
+                let index_buffer = dc
+                    .get("m_indexBuffer")
+                    .map_or(0, |b| usize_field(b, "m_hBuffer"));
+                let vertex_blocks: Vec<usize> = vertex_buffers
+                    .iter()
+                    .filter_map(|&vb| em.vertex_buffers.get(vb).map(|d| d.block_index))
+                    .collect();
+                let vertex_block = em
+                    .vertex_buffers
+                    .get(vertex_buffer)
+                    .map_or(0, |d| d.block_index);
+                let index_block = em
+                    .index_buffers
+                    .get(index_buffer)
+                    .map_or(0, |d| d.block_index);
                 out.push(DrawCallInfo {
                     mesh_name: em.name.clone(),
                     mesh_index: em.mesh_index,
+                    primitive_index,
                     data_block: em.data_block,
                     scene_object: so_i,
                     draw_call: dc_i,
+                    vertex_buffers,
+                    vertex_buffer,
+                    index_buffer,
+                    vertex_blocks,
+                    vertex_block,
+                    index_block,
+                    start_index: usize_field(dc, "m_nStartIndex"),
+                    base_vertex: u32::try_from(usize_field(dc, "m_nBaseVertex")).unwrap_or(0),
+                    primitive_type: dc
+                        .get("m_nPrimitiveType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
                     material: material_of(dc).to_owned(),
                     vertex_count: usize_field(dc, "m_nVertexCount"),
                     index_count: usize_field(dc, "m_nIndexCount"),
                 });
+                primitive_index += 1;
             }
         }
     }
@@ -261,6 +311,21 @@ pub struct ReplacedMeshPart {
     pub index_size: usize,
 }
 
+/// A selected primitive within a target model, addressed by stable draw-call
+/// metadata from [`draw_call_targets`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrimitiveSelection {
+    pub mesh_index: usize,
+    pub primitive_index: usize,
+}
+
+/// What [`replace_mesh_group`] swapped.
+#[derive(Debug, Clone)]
+pub struct ReplacedMeshGroup {
+    pub replaced_parts: Vec<ReplacedMeshPart>,
+    pub replaced_draw_calls: usize,
+}
+
 /// Replaces an existing mesh part's geometry with a brand-new mesh of *any*
 /// vertex/index count, **in place** (the T1d wedge from `docs/handoff-model-edit.md`).
 /// Unlike a true additive insert (deferred), this reuses the target part's block
@@ -392,6 +457,438 @@ pub fn replace_mesh_part(
     ))
 }
 
+/// Replaces a semantic group that can span multiple draw calls. Each selected
+/// target primitive is sourced from one donor GLB primitive; unselected draw
+/// calls in the same mesh part are preserved by copying their existing geometry
+/// into the rebuilt buffer.
+///
+/// This still uses the proven in-place wedge: no new blocks, no KV3 array growth,
+/// and no material/RERL edits. Each touched mesh part must therefore have exactly
+/// one vertex buffer and one index buffer. Multiple draw calls over that buffer
+/// are supported.
+pub fn replace_mesh_group(
+    vmdl_bytes: &[u8],
+    selections: &[PrimitiveSelection],
+    donor_primitives: &[EditedPrimitive],
+) -> Result<(Vec<u8>, ReplacedMeshGroup), DecodeError> {
+    if selections.is_empty() {
+        return Err(DecodeError::Model(
+            "replace group matched no target draw calls",
+        ));
+    }
+    if donor_primitives.is_empty() {
+        return Err(DecodeError::Model("donor glb has no mesh primitives"));
+    }
+
+    let mut by_mesh: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
+    for sel in selections {
+        by_mesh
+            .entry(sel.mesh_index)
+            .or_default()
+            .insert(sel.primitive_index);
+    }
+
+    let mut bytes = vmdl_bytes.to_vec();
+    let mut replaced_parts = Vec::new();
+    let mut replaced_draw_calls = 0usize;
+    for (mesh_index, primitive_indices) in by_mesh {
+        let (next, replaced) =
+            replace_mesh_group_part(&bytes, mesh_index, &primitive_indices, donor_primitives)?;
+        replaced_draw_calls += primitive_indices.len();
+        replaced_parts.push(replaced);
+        bytes = next;
+    }
+
+    Ok((
+        bytes,
+        ReplacedMeshGroup {
+            replaced_parts,
+            replaced_draw_calls,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn replace_mesh_group_part(
+    vmdl_bytes: &[u8],
+    mesh_index: usize,
+    selected_primitives: &std::collections::BTreeSet<usize>,
+    donor_primitives: &[EditedPrimitive],
+) -> Result<(Vec<u8>, ReplacedMeshPart), DecodeError> {
+    let (resource, embedded) = parse_embedded(vmdl_bytes)?;
+    let mesh_pos = embedded
+        .iter()
+        .position(|em| em.mesh_index == mesh_index)
+        .ok_or(DecodeError::Model("no embedded mesh with that mesh index"))?;
+    let em = &embedded[mesh_pos];
+    if em.vertex_buffers.len() != 1 || em.index_buffers.len() != 1 {
+        return Err(DecodeError::Model(
+            "replace-group needs each touched mesh part to have exactly one vertex buffer and \
+             one index buffer; multi-stream parts need a future structural layout editor",
+        ));
+    }
+
+    let data = kv3::decode(resource.data_block()?)?;
+    let remap = skeleton::remap_table(&data, em.mesh_index);
+    let part = mesh::assemble(em, &resource, remap.as_deref())?;
+    if selected_primitives
+        .iter()
+        .any(|&i| i >= part.primitives.len())
+    {
+        return Err(DecodeError::Model(
+            "selected draw call is outside the target mesh",
+        ));
+    }
+
+    let donor_assignment = assign_donor_primitives(&part, selected_primitives, donor_primitives)?;
+    let mut sources = Vec::with_capacity(part.primitives.len());
+    for (prim_i, prim) in part.primitives.iter().enumerate() {
+        if let Some(&donor_i) = donor_assignment.get(&prim_i) {
+            let donor = &donor_primitives[donor_i];
+            sources.push(PrimitiveSource {
+                vb: donor.vertex_buffer.clone(),
+                indices: donor.indices.clone(),
+            });
+        } else {
+            let vb = part
+                .vertex_buffers
+                .get(prim.vertex_buffer)
+                .ok_or(DecodeError::Model("primitive vertex buffer out of range"))?
+                .clone();
+            sources.push(PrimitiveSource {
+                vb,
+                indices: prim.indices.clone(),
+            });
+        }
+    }
+
+    let (combined, indices, ranges) = combine_primitive_sources(&sources)?;
+    let mut local = combined;
+    if !local.joints.is_empty() {
+        let table = remap.as_deref().ok_or(DecodeError::Model(
+            "group mesh is skinned but the target mesh has no bone remap table",
+        ))?;
+        let weights =
+            (local.weights.len() == local.element_count).then_some(local.weights.as_slice());
+        local.joints = skeleton::localize_joints(&local.joints, weights, table)?;
+    }
+
+    let vb_desc = &em.vertex_buffers[0];
+    let ib_desc = &em.index_buffers[0];
+    let enc = build_mesh_buffers_to_layout(&local, &indices, &vb_desc.fields)?;
+
+    let mdat_bytes = resource
+        .get_block_by_index(em.data_block)
+        .ok_or(DecodeError::Model("MDAT block index out of range"))?;
+    let mdat = kv3::decode(mdat_bytes)?;
+    let draw_calls = locate_draw_calls(&mdat)?;
+    if draw_calls.len() != part.primitives.len() {
+        return Err(DecodeError::Model(
+            "decoded primitive count does not match MDAT draw-call count",
+        ));
+    }
+
+    let ctrl_idx = resource
+        .blocks()
+        .iter()
+        .position(|b| &b.kind == b"CTRL")
+        .ok_or(DecodeError::Model("model has no CTRL block"))?;
+    let ctrl_bytes = resource
+        .find_block(*b"CTRL")
+        .ok_or(DecodeError::Model("model has no CTRL block"))?;
+    let ctrl_edits = ctrl_edits_for(mesh_pos, vb_desc, ib_desc, &enc)?;
+
+    let mut mdat_edits = Vec::new();
+    for (i, (so_idx, dc_idx, draw_call)) in draw_calls.iter().enumerate() {
+        let r = ranges
+            .get(i)
+            .ok_or(DecodeError::Model("missing rebuilt primitive range"))?;
+        mdat_edits.extend(mdat_edits_for_range(
+            *so_idx,
+            *dc_idx,
+            draw_call,
+            enc.vertex_count,
+            r.index_count,
+            r.start_index,
+            0,
+        )?);
+    }
+
+    let mut swaps: Vec<(usize, Vec<u8>)> = Vec::with_capacity(4);
+    if !ctrl_edits.is_empty() {
+        swaps.push((ctrl_idx, kv3::set_scalars(ctrl_bytes, &ctrl_edits)?));
+    }
+    if !mdat_edits.is_empty() {
+        swaps.push((em.data_block, kv3::set_scalars(mdat_bytes, &mdat_edits)?));
+    }
+    swaps.push((vb_desc.block_index, enc.mvtx));
+    swaps.push((ib_desc.block_index, enc.midx));
+
+    let mut bytes = vmdl_bytes.to_vec();
+    for (idx, payload) in swaps {
+        let res = Resource::parse(&bytes)?;
+        bytes = res.rebuild_with_block(idx, &payload)?;
+    }
+
+    let materials: Vec<String> = selected_primitives
+        .iter()
+        .filter_map(|&i| part.primitives.get(i).map(|p| p.material.clone()))
+        .collect();
+    Ok((
+        bytes,
+        ReplacedMeshPart {
+            mesh_name: part.name,
+            material: materials.join(", "),
+            old_vertex_count: vb_desc.element_count,
+            new_vertex_count: enc.vertex_count,
+            old_index_count: ib_desc.element_count,
+            new_index_count: enc.index_count,
+            stride: enc.stride,
+            index_size: enc.index_size,
+        },
+    ))
+}
+
+struct PrimitiveSource {
+    vb: VertexBuffer,
+    indices: Vec<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct PrimitiveRange {
+    start_index: usize,
+    index_count: usize,
+}
+
+fn assign_donor_primitives(
+    part: &mesh::MeshPart,
+    selected_primitives: &std::collections::BTreeSet<usize>,
+    donors: &[EditedPrimitive],
+) -> Result<std::collections::BTreeMap<usize, usize>, DecodeError> {
+    let selected_count = selected_primitives.len();
+    let exact_mesh: Vec<usize> = donors
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| {
+            d.mesh_name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(&part.name))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let candidates: Vec<usize> = if exact_mesh.len() >= selected_count {
+        exact_mesh
+    } else if donors.len() == selected_count {
+        (0..donors.len()).collect()
+    } else {
+        donors
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| {
+                d.mesh_name
+                    .as_deref()
+                    .is_none_or(|n| n.eq_ignore_ascii_case(&part.name))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    let mut used = std::collections::BTreeSet::new();
+    let mut out = std::collections::BTreeMap::new();
+    for &prim_i in selected_primitives {
+        let target = part.primitives.get(prim_i).ok_or(DecodeError::Model(
+            "selected draw call is outside the target mesh",
+        ))?;
+        let donor_i = candidates
+            .iter()
+            .copied()
+            .find(|i| {
+                !used.contains(i)
+                    && donors[*i]
+                        .material_name
+                        .as_deref()
+                        .is_some_and(|m| material_names_match(m, &target.material))
+            })
+            .or_else(|| candidates.iter().copied().find(|i| !used.contains(i)))
+            .ok_or(DecodeError::Model(
+                "donor glb does not contain enough matching primitives for the selected group",
+            ))?;
+        used.insert(donor_i);
+        out.insert(prim_i, donor_i);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_lines)]
+fn combine_primitive_sources(
+    sources: &[PrimitiveSource],
+) -> Result<(VertexBuffer, Vec<u32>, Vec<PrimitiveRange>), DecodeError> {
+    let total: usize = sources.iter().map(|s| s.vb.element_count).sum();
+    if total == 0 {
+        return Err(DecodeError::Model(
+            "cannot build an empty replacement group",
+        ));
+    }
+
+    let max_texcoords = sources
+        .iter()
+        .map(|s| s.vb.texcoords.len())
+        .max()
+        .unwrap_or(0);
+    let max_colors = sources.iter().map(|s| s.vb.colors.len()).max().unwrap_or(0);
+    let any_normals = sources
+        .iter()
+        .any(|s| s.vb.normals.len() == s.vb.element_count);
+    let any_tangents = sources
+        .iter()
+        .any(|s| s.vb.tangents.len() == s.vb.element_count);
+    let any_joints = sources
+        .iter()
+        .any(|s| s.vb.joints.len() == s.vb.element_count);
+    let any_weights = sources
+        .iter()
+        .any(|s| s.vb.weights.len() == s.vb.element_count);
+
+    let mut out = VertexBuffer {
+        element_count: total,
+        texcoords: vec![Vec::with_capacity(total); max_texcoords],
+        colors: vec![Vec::with_capacity(total); max_colors],
+        ..VertexBuffer::default()
+    };
+    if any_normals {
+        out.normals = Vec::with_capacity(total);
+    }
+    if any_tangents {
+        out.tangents = Vec::with_capacity(total);
+    }
+    if any_joints {
+        out.joints = Vec::with_capacity(total);
+    }
+    if any_weights {
+        out.weights = Vec::with_capacity(total);
+    }
+
+    let mut indices = Vec::new();
+    let mut ranges = Vec::with_capacity(sources.len());
+    let mut vertex_offset = 0u32;
+    for source in sources {
+        let count = source.vb.element_count;
+        if source.vb.positions.len() != count {
+            return Err(DecodeError::Model("replacement primitive has no POSITION"));
+        }
+        out.positions.extend_from_slice(&source.vb.positions);
+        if any_normals {
+            extend_or(&mut out.normals, &source.vb.normals, count, [0.0, 0.0, 1.0]);
+        }
+        if any_tangents {
+            extend_or(
+                &mut out.tangents,
+                &source.vb.tangents,
+                count,
+                [1.0, 0.0, 0.0, 1.0],
+            );
+        }
+        for channel in 0..max_texcoords {
+            let fallback = source
+                .vb
+                .texcoords
+                .first()
+                .filter(|uv| uv.len() == count)
+                .and_then(|uv| uv.first().copied())
+                .unwrap_or([0.0, 0.0]);
+            if let Some(values) = source
+                .vb
+                .texcoords
+                .get(channel)
+                .filter(|uv| uv.len() == count)
+            {
+                out.texcoords[channel].extend_from_slice(values);
+            } else {
+                out.texcoords[channel].extend(std::iter::repeat_n(fallback, count));
+            }
+        }
+        for channel in 0..max_colors {
+            if let Some(values) = source.vb.colors.get(channel).filter(|c| c.len() == count) {
+                out.colors[channel].extend_from_slice(values);
+            } else {
+                out.colors[channel].extend(std::iter::repeat_n([1.0; 4], count));
+            }
+        }
+        if any_joints {
+            extend_or(&mut out.joints, &source.vb.joints, count, [0; 4]);
+        }
+        if any_weights {
+            extend_or(
+                &mut out.weights,
+                &source.vb.weights,
+                count,
+                [1.0, 0.0, 0.0, 0.0],
+            );
+        }
+
+        let start_index = indices.len();
+        for &idx in &source.indices {
+            indices.push(idx.checked_add(vertex_offset).ok_or(DecodeError::Model(
+                "replacement group index exceeds u32 range",
+            ))?);
+        }
+        ranges.push(PrimitiveRange {
+            start_index,
+            index_count: source.indices.len(),
+        });
+        vertex_offset = vertex_offset
+            .checked_add(u32::try_from(count).map_err(|_| {
+                DecodeError::Model("replacement group vertex count exceeds u32 range")
+            })?)
+            .ok_or(DecodeError::Model(
+                "replacement group vertex count exceeds u32 range",
+            ))?;
+    }
+
+    Ok((out, indices, ranges))
+}
+
+fn extend_or<T: Copy>(out: &mut Vec<T>, values: &[T], count: usize, fallback: T) {
+    if values.len() == count {
+        out.extend_from_slice(values);
+    } else {
+        out.extend(std::iter::repeat_n(fallback, count));
+    }
+}
+
+fn locate_draw_calls(mdat: &Value) -> Result<Vec<(usize, usize, &Value)>, DecodeError> {
+    let scene_objects = mdat
+        .get("m_sceneObjects")
+        .and_then(Value::as_array)
+        .ok_or(DecodeError::Model("MDAT has no m_sceneObjects"))?;
+    let mut out = Vec::new();
+    for (so_i, so) in scene_objects.iter().enumerate() {
+        let Some(dcs) = so.get("m_drawCalls").and_then(Value::as_array) else {
+            continue;
+        };
+        for (dc_i, dc) in dcs.iter().enumerate() {
+            out.push((so_i, dc_i, dc));
+        }
+    }
+    Ok(out)
+}
+
+fn material_names_match(donor: &str, target: &str) -> bool {
+    let d = material_key(donor);
+    let t = material_key(target);
+    !d.is_empty() && !t.is_empty() && (d.contains(&t) || t.contains(&d))
+}
+
+fn material_key(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches("_c")
+        .trim_end_matches(".vmat")
+        .to_ascii_lowercase()
+}
+
 /// The `CTRL` buffer-registry scalar edits for replacing mesh part `mesh_pos`'s
 /// single vertex/index buffer with `enc`: new element counts, vertex stride, index
 /// width, and each layout field's format/offset. Field count + order are unchanged
@@ -469,6 +966,26 @@ fn mdat_edits_for(
     new_vertex_count: usize,
     new_index_count: usize,
 ) -> Result<Vec<(Vec<Seg>, i64)>, DecodeError> {
+    mdat_edits_for_range(
+        so_idx,
+        dc_idx,
+        draw_call,
+        new_vertex_count,
+        new_index_count,
+        0,
+        0,
+    )
+}
+
+fn mdat_edits_for_range(
+    so_idx: usize,
+    dc_idx: usize,
+    draw_call: &Value,
+    new_vertex_count: usize,
+    new_index_count: usize,
+    new_start_index: usize,
+    new_base_vertex: usize,
+) -> Result<Vec<(Vec<Seg>, i64)>, DecodeError> {
     let dc_path = vec![
         seg("m_sceneObjects"),
         Seg::Index(so_idx),
@@ -492,13 +1009,13 @@ fn mdat_edits_for(
         &mut edits,
         child(&dc_path, "m_nStartIndex"),
         dc_uint(draw_call, "m_nStartIndex"),
-        0,
+        new_start_index,
     )?;
     push_if_changed(
         &mut edits,
         child(&dc_path, "m_nBaseVertex"),
         dc_uint(draw_call, "m_nBaseVertex"),
-        0,
+        new_base_vertex,
     )?;
     Ok(edits)
 }
@@ -580,6 +1097,22 @@ fn material_of(dc: &Value) -> &str {
         .or_else(|| dc.get("m_pMaterial"))
         .and_then(Value::as_str)
         .unwrap_or("")
+}
+
+fn vertex_buffers_of(dc: &Value) -> Vec<usize> {
+    dc.get("m_vertexBuffers")
+        .and_then(Value::as_array)
+        .map(|buffers| {
+            buffers
+                .iter()
+                .filter_map(|b| {
+                    b.get("m_hBuffer")
+                        .and_then(Value::as_int)
+                        .and_then(|v| usize::try_from(v).ok())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Reads an unsigned draw-call field, defaulting to 0 when absent (the value is

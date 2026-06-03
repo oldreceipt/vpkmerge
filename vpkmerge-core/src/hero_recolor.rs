@@ -484,6 +484,14 @@ fn magician_recipe() -> HeroRecolorRecipe {
 /// Pocket (`pocket`): particles plus hero-specific satchel, body, and magic
 /// missile color textures. The audit also found shared noise/default/Viscous
 /// textures; those stay untouched to avoid cross-hero bleed.
+///
+/// Ability-prop mesh albedos are pinned here too: Pocket's prop models (briefcase,
+/// AOE frog, deployable) carry NO `COLOR` vertex attribute, and their model-particle
+/// renderers are color-free, so neither the vertex-color nor the particle-tint axis
+/// reaches them. Painting the prop albedo is the only axis that does. The suitcase
+/// albedo lives under `models/heroes_staging/synth` (so a trippy-skin pass also
+/// catches it); the `models/abilities/*` props are skin-invisible and only covered
+/// here.
 fn pocket_recipe() -> HeroRecolorRecipe {
     HeroRecolorRecipe {
         codename: "pocket".to_string(),
@@ -495,6 +503,10 @@ fn pocket_recipe() -> HeroRecolorRecipe {
             "materials/particle/projected/pocket_satchel_projected_vmat_g_tselfillum_670d93d.vtex_c",
             "models/heroes_staging/synth/materials/pocket_body_color_png_eb808d8a.vtex_c",
             "materials/particle/abilities/pocket/pocket_magic_missile_illum_vmat_g_tcolor_754e94bd.vtex_c",
+            // Ability-prop mesh albedos (no COLOR verts, color-free render particles).
+            "models/heroes_staging/synth/materials/pocket_suitcase_vmat_g_tcolor_e71e9d59.vtex_c",
+            "models/abilities/materials/pocket_frog_small_color_png_e2620619.vtex_c",
+            "models/abilities/materials/synth_deployable_color_psd_a57da819.vtex_c",
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -983,6 +995,10 @@ pub struct HeroPrismRecolorReport {
     pub texture_offset_multipliers: usize,
     /// Gradient stop positions retimed so spectral changes read earlier/evener.
     pub gradient_timing_edits: usize,
+    /// Existing age-driven color gradients flipped to loop instead of playing once.
+    pub color_gradient_loops: usize,
+    /// Runtime color-cycle operators inserted for constant-color particles.
+    pub color_cycle_operators: usize,
     /// Total entries packed into the addon.
     pub total_entries: usize,
 }
@@ -1259,6 +1275,12 @@ pub struct PrismTuning {
     pub saturation: f64,
     /// Brightness (HSV value) scale on the spectrum (1.0 = engine default).
     pub brightness: f64,
+    /// Strength of the optional animation pass. `1.0` keeps the original
+    /// animated-prism timing; higher values push texture scroll and color timing
+    /// harder, while `0.0` disables animation edits even if `animated` is true.
+    pub animation_intensity: f64,
+    /// How far the optional animation pass should go.
+    pub animation_style: PrismAnimationStyle,
     /// When set, the prism samples this custom gradient instead of the full
     /// rainbow wheel (the effect's spectral position maps onto these stops). The
     /// rotation / saturation / brightness above still apply on top. `None` = the
@@ -1272,9 +1294,25 @@ impl Default for PrismTuning {
             hue_offset: 0.0,
             saturation: 1.0,
             brightness: 1.0,
+            animation_intensity: 1.0,
+            animation_style: PrismAnimationStyle::Sweep,
             gradient: None,
         }
     }
+}
+
+/// Optional animation depth for prism VFX.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PrismAnimationStyle {
+    /// Repoint safe texture scrolls, boost their travel, and retime early gradient
+    /// stops. This is the original `--animated` behavior.
+    #[default]
+    Sweep,
+    /// Sweep plus loop existing age-driven color gradients.
+    Loop,
+    /// Loop plus insert a runtime color-cycle operator for particles whose visible
+    /// color is a static constant.
+    Cycle,
 }
 
 /// One stop of a [`PrismGradient`]: a hue (degrees) and saturation (0..1) at a
@@ -1504,18 +1542,48 @@ pub fn prism_recolor_hero_to_addon_tuned(
         //    colored bytes. Best-effort: a file missing the timing fields is left as
         //    the color-only result.
         let mut animated_this = false;
-        if animated && is_prism_animation_target(entry) {
-            match apply_prism_animation(&working, entry) {
+        if animated && tuning.animation_intensity > 0.0 && is_prism_animation_target(entry) {
+            match apply_prism_animation(&working, entry, tuning) {
                 Ok((new_bytes, stats)) if stats.total() > 0 => {
                     working = new_bytes;
                     report.texture_age_inputs += stats.age_inputs;
                     report.texture_offset_multipliers += stats.multipliers;
                     report.gradient_timing_edits += stats.gradient_timing;
-                    report.particles_animated += 1;
                     animated_this = true;
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!("  note: animation skipped for {entry}: {e:#}"),
+            }
+
+            if matches!(
+                tuning.animation_style,
+                PrismAnimationStyle::Loop | PrismAnimationStyle::Cycle
+            ) {
+                match loop_animate_particle_bytes(&working) {
+                    Ok(Some(new_bytes)) => {
+                        working = new_bytes;
+                        report.color_gradient_loops += 1;
+                        animated_this = true;
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("  note: color-gradient loop skipped for {entry}: {e:#}"),
+                }
+            }
+
+            if tuning.animation_style == PrismAnimationStyle::Cycle {
+                match insert_color_cycle_operator_tuned(&working, tuning) {
+                    Ok(Some(new_bytes)) => {
+                        working = new_bytes;
+                        report.color_cycle_operators += 1;
+                        animated_this = true;
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("  note: color-cycle insert skipped for {entry}: {e:#}"),
+                }
+            }
+
+            if animated_this {
+                report.particles_animated += 1;
             }
         }
 
@@ -1733,6 +1801,31 @@ impl PrismAnimStats {
     }
 }
 
+/// Public summary of the byte-faithful particle timing animation pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParticleTimingAnimationStats {
+    pub age_inputs: usize,
+    pub texture_offset_multipliers: usize,
+    pub gradient_timing_edits: usize,
+}
+
+impl ParticleTimingAnimationStats {
+    #[must_use]
+    pub fn total(self) -> usize {
+        self.age_inputs + self.texture_offset_multipliers + self.gradient_timing_edits
+    }
+}
+
+impl From<PrismAnimStats> for ParticleTimingAnimationStats {
+    fn from(value: PrismAnimStats) -> Self {
+        Self {
+            age_inputs: value.age_inputs,
+            texture_offset_multipliers: value.multipliers,
+            gradient_timing_edits: value.gradient_timing,
+        }
+    }
+}
+
 #[derive(Default)]
 #[allow(clippy::struct_field_names)]
 struct PrismAnimPlan {
@@ -1767,16 +1860,29 @@ fn prism_anim_stop_target(label: &str) -> Option<f64> {
     }
 }
 
+fn path_starts_with(path: &[Seg], prefix: &[Seg]) -> bool {
+    path.len() >= prefix.len() && path.iter().zip(prefix).all(|(a, b)| a == b)
+}
+
 /// Walk the KV3 tree collecting the three animation edit sites: texture-offset
 /// input-type strings, texture-offset multipliers, and early gradient stop times.
-fn collect_prism_anim_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut PrismAnimPlan) {
+fn collect_prism_anim_plan(
+    v: &Value,
+    path: &mut Vec<Seg>,
+    skip_offset_prefixes: &[Vec<Seg>],
+    plan: &mut PrismAnimPlan,
+) {
     let label = path_label(path);
     let lower = label.to_ascii_lowercase();
+    let skip_offset = skip_offset_prefixes
+        .iter()
+        .any(|prefix| path_starts_with(path, prefix));
 
     if matches!(v, Value::String(s) if s != PRISM_ANIM_AGE_TYPE)
         && lower.contains("/m_texturecontrols/")
         && lower.contains("/m_flfinaltextureoffset")
         && lower.ends_with("/m_ntype")
+        && !skip_offset
     {
         plan.string_paths.push(path.clone());
     }
@@ -1784,6 +1890,7 @@ fn collect_prism_anim_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut PrismAnimP
     if lower.contains("/m_texturecontrols/")
         && lower.contains("/m_flfinaltextureoffset")
         && lower.ends_with("/m_flmultfactor")
+        && !skip_offset
     {
         plan.mult_paths.push(path.clone());
     }
@@ -1798,14 +1905,14 @@ fn collect_prism_anim_plan(v: &Value, path: &mut Vec<Seg>, plan: &mut PrismAnimP
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
                 path.push(Seg::Index(i));
-                collect_prism_anim_plan(item, path, plan);
+                collect_prism_anim_plan(item, path, skip_offset_prefixes, plan);
                 path.pop();
             }
         }
         Value::Object(pairs) => {
             for (key, child) in pairs {
                 path.push(Seg::Key(key.clone()));
-                collect_prism_anim_plan(child, path, plan);
+                collect_prism_anim_plan(child, path, skip_offset_prefixes, plan);
                 path.pop();
             }
         }
@@ -1830,14 +1937,20 @@ fn patch_one_number(bytes: Vec<u8>, path: Vec<Seg>, value: f64) -> (Vec<u8>, boo
 /// bytes. All three edits are byte-faithful in-place patches, so the compiled
 /// particle framing is preserved; each is best-effort and skipped where its fields
 /// aren't present. Color is never touched. Promoted from the Yamato micro-pass.
-fn apply_prism_animation(vpcf_bytes: &[u8], _entry: &str) -> Result<(Vec<u8>, PrismAnimStats)> {
+fn apply_prism_animation(
+    vpcf_bytes: &[u8],
+    _entry: &str,
+    tuning: PrismTuning,
+) -> Result<(Vec<u8>, PrismAnimStats)> {
     let tree = morphic::decode_kv3_resource(vpcf_bytes)
         .map_err(|e| anyhow::anyhow!("decoding particle KV3 for animation: {e}"))?;
     let mut plan = PrismAnimPlan::default();
-    collect_prism_anim_plan(&tree, &mut Vec::new(), &mut plan);
+    let skip_offset = non_tiling_texture_inputs(&tree);
+    collect_prism_anim_plan(&tree, &mut Vec::new(), &skip_offset, &mut plan);
 
     let mut out = vpcf_bytes.to_vec();
     let mut stats = PrismAnimStats::default();
+    let intensity = tuning.animation_intensity.clamp(0.0, 4.0);
 
     // Texture-scroll input -> particle age, only when that enum already exists in
     // the string table (so the in-place string patch can reference it).
@@ -1853,15 +1966,18 @@ fn apply_prism_animation(vpcf_bytes: &[u8], _entry: &str) -> Result<(Vec<u8>, Pr
         }
     }
 
+    let scroll_multiplier = 1.0 + 1.5 * intensity;
     for path in plan.mult_paths {
-        let (patched, ok) = patch_one_number(out, path, 2.5);
+        let (patched, ok) = patch_one_number(out, path, scroll_multiplier);
         out = patched;
         if ok {
             stats.multipliers += 1;
         }
     }
 
+    let timing_scale = intensity.sqrt().max(0.01);
     for (path, value) in plan.gradient_paths {
+        let value = (value / timing_scale).clamp(0.04, 0.95);
         let (patched, ok) = patch_one_number(out, path, value);
         out = patched;
         if ok {
@@ -1870,6 +1986,26 @@ fn apply_prism_animation(vpcf_bytes: &[u8], _entry: &str) -> Result<(Vec<u8>, Pr
     }
 
     Ok((out, stats))
+}
+
+/// Apply the same timing animation pass used by animated prism VFX to one
+/// particle: age-driven texture offset, boosted scroll multipliers, and tighter
+/// early gradient stops. Returns `None` when the particle has no safe timing
+/// fields to edit.
+pub fn animate_particle_timing_bytes(
+    vpcf_bytes: &[u8],
+    intensity: f64,
+) -> Result<Option<(Vec<u8>, ParticleTimingAnimationStats)>> {
+    let tuning = PrismTuning {
+        animation_intensity: intensity,
+        ..PrismTuning::default()
+    };
+    let (new_bytes, stats) = apply_prism_animation(vpcf_bytes, "", tuning)?;
+    if stats.total() == 0 {
+        Ok(None)
+    } else {
+        Ok(Some((new_bytes, stats.into())))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2546,6 +2682,23 @@ pub fn loop_animate_particle_bytes(vpcf_bytes: &[u8]) -> Result<Option<Vec<u8>>>
 /// over `0..1` seconds. The structural edit goes through morphic's byte-faithful
 /// KV3 array insertion, not a full particle re-encode.
 pub fn insert_color_cycle_operator(vpcf_bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    insert_color_cycle_operator_tuned(vpcf_bytes, PrismTuning::default())
+}
+
+/// Tuned sibling of [`insert_color_cycle_operator`], used by custom VFX themes
+/// that want the inserted runtime color-cycle gradient to follow a specific
+/// palette rather than the default rainbow.
+pub fn insert_color_cycle_operator_with_tuning(
+    vpcf_bytes: &[u8],
+    tuning: PrismTuning,
+) -> Result<Option<Vec<u8>>> {
+    insert_color_cycle_operator_tuned(vpcf_bytes, tuning)
+}
+
+fn insert_color_cycle_operator_tuned(
+    vpcf_bytes: &[u8],
+    tuning: PrismTuning,
+) -> Result<Option<Vec<u8>>> {
     let value = morphic::decode_kv3_resource(vpcf_bytes)
         .map_err(|e| anyhow::anyhow!("decoding particle KV3: {e}"))?;
     let Some(operators) = value.get("m_Operators").and_then(Value::as_array) else {
@@ -2558,7 +2711,7 @@ pub fn insert_color_cycle_operator(vpcf_bytes: &[u8]) -> Result<Option<Vec<u8>>>
         return Ok(None);
     }
 
-    let op = color_cycle_setvec_operator(rgb);
+    let op = color_cycle_setvec_operator(rgb, tuning);
     let path = vec![Seg::Key("m_Operators".to_string())];
     let new_bytes =
         morphic::patch_kv3_resource_array_insert(vpcf_bytes, &path, operators.len(), &op)
@@ -2610,13 +2763,14 @@ fn has_age_driven_color_gradient(v: &Value) -> bool {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn color_cycle_setvec_operator(rgb: [i64; 3]) -> Value {
+fn color_cycle_setvec_operator(rgb: [i64; 3], tuning: PrismTuning) -> Value {
     let (base_hue, _, source_v) = rgb_to_hsv(
         rgb[0] as f64 / 255.0,
         rgb[1] as f64 / 255.0,
         rgb[2] as f64 / 255.0,
     );
-    let value = source_v.max(0.95);
+    let value = (source_v.max(0.95) * tuning.brightness).clamp(0.0, 1.0);
+    let cycle_seconds = (1.0 / tuning.animation_intensity.max(0.25)).clamp(0.2, 4.0);
     let stops = [
         (0.0_f32, 0.0_f64),
         (0.166_666_67_f32, 60.0),
@@ -2627,7 +2781,13 @@ fn color_cycle_setvec_operator(rgb: [i64; 3]) -> Value {
         (1.0_f32, 360.0),
     ]
     .into_iter()
-    .map(|(t, hue_offset)| gradient_stop(t, base_hue + hue_offset, value))
+    .map(|(t, hue_offset)| {
+        gradient_stop(
+            t,
+            base_hue + hue_offset + tuning.hue_offset,
+            (tuning.saturation.clamp(0.0, 1.0), value),
+        )
+    })
     .collect();
 
     Value::Object(vec![
@@ -2659,7 +2819,7 @@ fn color_cycle_setvec_operator(rgb: [i64; 3]) -> Value {
                             Value::String("PF_INPUT_MODE_LOOPED".to_string()),
                         ),
                         ("m_flInput0".to_string(), Value::Double(0.0)),
-                        ("m_flInput1".to_string(), Value::Double(1.0)),
+                        ("m_flInput1".to_string(), Value::Double(cycle_seconds)),
                         ("m_flOutput0".to_string(), Value::Double(0.0)),
                         ("m_flOutput1".to_string(), Value::Double(1.0)),
                     ]),
@@ -2673,8 +2833,8 @@ fn color_cycle_setvec_operator(rgb: [i64; 3]) -> Value {
     ])
 }
 
-fn gradient_stop(position: f32, hue: f64, value: f64) -> Value {
-    let rgb = hsv_to_rgb_i64(hue, 1.0, value);
+fn gradient_stop(position: f32, hue: f64, sv: (f64, f64)) -> Value {
+    let rgb = hsv_to_rgb_i64(hue, sv.0, sv.1);
     Value::Object(vec![
         (
             "m_flPosition".to_string(),
@@ -3340,7 +3500,7 @@ mod tests {
             ("lash", 1, "lash_cable_material"),
             ("mcginnis", 2, "mcginnis_turret_ambient_goo"),
             ("magician", 2, "magician_hex_ground_projected"),
-            ("pocket", 3, "pocket_satchel_projected"),
+            ("pocket", 6, "pocket_satchel_projected"),
         ] {
             let r = recipe_for(code).unwrap_or_else(|| panic!("recipe for {code}"));
             assert_eq!(r.codename, code);
