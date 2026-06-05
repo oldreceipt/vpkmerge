@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.11.0
+
+Expands the ability-VFX recolor roster from 17 to 38 pinned heroes (Paradox / `chrono` pinned with a full particle-plus-texture recipe), adds two procedural VFX surfaces (`trippy-skin` / `trippy-vfx`), gives `prism` an `--animated` timing pass, extends `model edit` with draw-call/group geometry replacement, and hardens VPK extraction against path-traversal (Zip-Slip). All API changes are additive: existing recolor / prism / merge entry points and the GUI Prism tab are byte-compatible and unchanged, and default prism tuning is still byte-identical to prior releases.
+
+### Security
+
+- `vpkmerge-core` now rejects path-traversal in VPK entry extraction (Zip-Slip). Entry paths are stored verbatim in the archive, and `merge` / `pack` / `split` joined them with `tmp.join(entry)`, so a hand-crafted VPK carrying `..` segments or an absolute path could plant a file outside the temp dir. A new internal `safe_join` refuses absolute paths, `..` segments, and drive/volume components (both separators), then joins only normal segments. It is applied at all three extraction sites (and transitively the soundevents / texture / model `--encode-vpk` flows). Verified against 130,606 real entry paths (full base-game pak01 plus real mod VPKs): 0 rejected, valid entries resolve byte-for-byte as before, only tampered archives now error.
+
+### CLI (`vpkmerge` 0.11)
+
+- `recolor-hero`, `prism`, and `rainbow-scan` gain 21 newly pinned heroes, bringing the pinned roster to 38: `chrono` (Paradox), `archer`, `bebop`, `digger`, `doorman`, `drifter`, `dynamo`, `familiar`, `frank`, `haze`, `hornet` (Vindicta), `kelvin`, `mirage`, `priest`, `punkgoat`, `shiv`, `tengu`, `viper`, `viscous`, `warden`, and `werewolf`. Paradox carries a full recipe (ability particle prefixes plus her time-stop bubble FX textures); the others extend particle / recolor coverage. The `recolor-hero` help and not-found error still list the pinned set dynamically.
+- New `trippy-skin` subcommand: paint a hero skin with a procedural pattern plus runtime VMAT UV-scroll. `--style {confetti,liquid,moire,kaleido,holo,glitch,thermal,gradient}` (default `confetti`), with `--intensity` (texture blend strength), `--scroll` (UV-scroll speed scale), `--phase` (pattern/hue offset), and `--targets {all,body,weapons}`. Reads from `--vpk` (with `--base` fallback) and packs the result into a single `--encode-vpk` addon.
+- New `trippy-vfx` subcommand: paint and animate a hero's ability/weapon VFX with the same procedural themes over the pinned recipes. Adds `--animation-style {off,sweep,loop,cycle}` (default `cycle`) and `--animation-intensity` on top of the `trippy-skin` style/phase flags, and `--targets {all,abilities,weapons}`. `sweep` retimes safe texture-scroll/gradient fields, `loop` also loops color gradients, `cycle` also inserts runtime color-cycle operators where safe.
+- `prism` gains `--animated`: a byte-faithful timing pass on high-visibility effects (glow/beam/trail/arc/slash) that repoints texture scroll at particle age, boosts the scroll, and retimes gradient stops so the spectrum sweeps over each particle's lifetime. `--animation-intensity` and `--animation-style {sweep,loop,cycle}` tune it. Without `--animated` the prism is color-only and byte-identical to prior releases.
+- `model edit` gains draw-call/group geometry editing: `--list-drawcalls` (`--json` for machine-readable) enumerates renderable draw calls; `--group <NAME>` / `--material <SUBSTRING>` select a semantic group (gun, hair, dress, body, hands, legs); `--export-group-glb` exports a selected group as one isolated `.glb`; `--replace-group <GROUP>` and `--replace-part <MESH> --from-glb <FILE>` (Tier 1d) replace a part's geometry wholesale with a new mesh of any vertex/index count; `--remove-material <MATERIAL>` drops a part's draw calls so it stops rendering.
+
+### Library (`vpkmerge-core` 0.11)
+
+- New `recipe_for` arms and `pinned_hero_codenames` entries for the 21 heroes above (notably `chrono`, Paradox, with chromatic textures). `PrismGradient`, `PrismTuning`, and all existing recolor / prism entry points are unchanged.
+- The trippy module is promoted to public API: `trippy_skin_to_addon`, `trippy_ability_vfx_to_addon`, `trippy_preview_frames`, and `TrippyStyle`.
+- Animated-prism timing is exposed: `animate_particle_timing_bytes`, `PrismAnimationStyle`, `ParticleTimingAnimationStats`, and `insert_color_cycle_operator_with_tuning`. The static prism path is unchanged.
+- Model part/group editing: `inspect_model_parts`, `export_model_group_glb`, `replace_model_group`, and the part-inspection types (`ModelPartInspection` / `ModelPartSelector`, `DrawCallSkinInfo`, `ResolvedResource` / `TextureParam`, `SuggestedPartGroup`, `ModelDrawCallInspection`). Built on new `morphic` primitives `replace_mesh_group`, `read_edited_primitives`, `EditedPrimitive`, `PrimitiveSelection`, and `Material::uses_vertex_color`.
+
+### GUI (`vpkmerge` 0.11)
+
+- New hero-locker / trippy preview tab (`LockerTab.vue`): browse pinned heroes and preview their trippy VFX from the desktop app.
+- The new heroes are wired into the GUI's hero-label map so they show proper names in the Recolor / Prism / Locker tabs. GUI bundle version bumped to 0.11.0 across `tauri.conf.json`, `package.json`, and `src-tauri/Cargo.toml`.
+
 ## v0.10.0
 
 Expands the ability-VFX recolor roster and adds custom color ramps to the `prism` rainbow. Nine more heroes are pinned with recolor recipes, and `prism` can now spread each effect across a named preset or a hand-written gradient instead of the full spectrum. This release also re-aligns the GUI bundle version, which had lagged since v0.6.0.
