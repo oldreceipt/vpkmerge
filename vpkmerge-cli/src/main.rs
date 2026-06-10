@@ -92,6 +92,12 @@ enum Command {
 
     /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
     RainbowScan(RainbowScanCmd),
+
+    /// Style hero material shader parameters (`.vmat_c`): gemstone sheen, glass,
+    /// solid-ink NPR outlines, unlit, or full-PBR flips, via presets or raw
+    /// `--set-*` edits packed into an addon VPK. `--list` surveys the targeted
+    /// materials (shader, feature flags, bound texture channels) first.
+    Vmat(VmatCmd),
 }
 
 #[derive(Args)]
@@ -417,6 +423,60 @@ struct RainbowScanCmd {
     /// Hero codename(s) to scan. Defaults to every pinned hero recipe.
     #[arg(long = "hero", value_name = "CODENAME")]
     heroes: Vec<String>,
+}
+
+#[derive(Args)]
+struct VmatCmd {
+    /// VPK to read materials from (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to for entries `--vpk` does not ship.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Hero codename whose `models/heroes*` materials to target (e.g. `vindicta`;
+    /// material paths use display names, not model codenames).
+    #[arg(long, value_name = "CODENAME", conflicts_with = "entries")]
+    hero: Option<String>,
+
+    /// Explicit `.vmat_c` entry path(s) to target instead of hero discovery.
+    #[arg(long = "entry", value_name = "PATH")]
+    entries: Vec<String>,
+
+    /// List the targeted materials (shader, active feature flags, bound texture
+    /// channels) instead of patching.
+    #[arg(long)]
+    list: bool,
+
+    /// Curated look: gem (sheen, takes --tint), glass, pbr (NPR lighting off,
+    /// real reflections), unlit, or ink (thick solid outline, takes --tint).
+    #[arg(long, value_name = "NAME")]
+    preset: Option<String>,
+
+    /// Preset color as `R,G,B` (0..1 floats) or `#RRGGBB`.
+    #[arg(long, value_name = "COLOR")]
+    tint: Option<String>,
+
+    /// Raw int/flag param edit `NAME=VALUE` (e.g. `F_SHEEN=1`). Repeatable.
+    #[arg(long = "set-int", value_name = "NAME=V")]
+    set_int: Vec<String>,
+
+    /// Raw float param edit `NAME=VALUE`. Repeatable.
+    #[arg(long = "set-float", value_name = "NAME=V")]
+    set_float: Vec<String>,
+
+    /// Raw vector param edit `NAME=X,Y,Z[,W]` (W defaults to 0). Repeatable.
+    #[arg(long = "set-vec", value_name = "NAME=X,Y,Z[,W]")]
+    set_vec: Vec<String>,
+
+    /// Target set for hero discovery: all, body, or weapons.
+    #[arg(long, value_name = "TARGETS", default_value = "all")]
+    targets: String,
+
+    /// Pack the patched materials into this addon VPK.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -789,6 +849,7 @@ fn main() -> Result<()> {
         Some(Command::TrippySkin(args)) => run_trippy_skin(&args),
         Some(Command::TrippyVfx(args)) => run_trippy_vfx(&args),
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
+        Some(Command::Vmat(args)) => run_vmat(&args),
         None => run_merge(cli),
     }
 }
@@ -2078,6 +2139,157 @@ fn parse_trippy_vfx_animation(
             anyhow::bail!("--animation-style must be off, sweep, loop, or cycle (got {other:?})")
         }
     }
+}
+
+/// Parses `NAME=REST`, failing with the flag name on a missing `=`.
+fn parse_name_eq<'a>(spec: &'a str, flag: &str) -> Result<(&'a str, &'a str)> {
+    spec.split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("{flag}: expected NAME=VALUE, got {spec:?}"))
+}
+
+/// Parses a preset color: `R,G,B` floats 0..=1, or `#RRGGBB` / `RRGGBB` sRGB.
+fn parse_tint(spec: &str) -> Result<[f64; 3]> {
+    let hex = spec.strip_prefix('#').unwrap_or(spec);
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let chan = |i: usize| -> Result<f64> {
+            Ok(f64::from(u8::from_str_radix(&hex[i..i + 2], 16)?) / 255.0)
+        };
+        return Ok([chan(0)?, chan(2)?, chan(4)?]);
+    }
+    let parts: Vec<f64> = spec
+        .split(',')
+        .map(|p| p.trim().parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("--tint: expected R,G,B floats or #RRGGBB, got {spec:?}"))?;
+    anyhow::ensure!(
+        parts.len() == 3,
+        "--tint: expected 3 components, got {}",
+        parts.len()
+    );
+    Ok([parts[0], parts[1], parts[2]])
+}
+
+fn vmat_edits(args: &VmatCmd) -> Result<Vec<vpkmerge_core::VmatEdit>> {
+    let tint = args.tint.as_deref().map(parse_tint).transpose()?;
+    let mut edits = Vec::new();
+    if let Some(preset) = &args.preset {
+        edits.extend(vpkmerge_core::VmatPreset::from_name(preset)?.edits(tint));
+    }
+    for spec in &args.set_int {
+        let (name, v) = parse_name_eq(spec, "--set-int")?;
+        edits.push(vpkmerge_core::VmatEdit::Int {
+            name: name.to_string(),
+            value: v.parse().with_context(|| format!("--set-int {spec:?}"))?,
+        });
+    }
+    for spec in &args.set_float {
+        let (name, v) = parse_name_eq(spec, "--set-float")?;
+        edits.push(vpkmerge_core::VmatEdit::Float {
+            name: name.to_string(),
+            value: v.parse().with_context(|| format!("--set-float {spec:?}"))?,
+        });
+    }
+    for spec in &args.set_vec {
+        let (name, v) = parse_name_eq(spec, "--set-vec")?;
+        let comps: Vec<f64> = v
+            .split(',')
+            .map(|p| p.trim().parse::<f64>())
+            .collect::<std::result::Result<_, _>>()
+            .with_context(|| format!("--set-vec {spec:?}"))?;
+        anyhow::ensure!(
+            comps.len() == 3 || comps.len() == 4,
+            "--set-vec {spec:?}: expected 3 or 4 components"
+        );
+        let mut value = [0.0; 4];
+        value[..comps.len()].copy_from_slice(&comps);
+        edits.push(vpkmerge_core::VmatEdit::Vector {
+            name: name.to_string(),
+            value,
+        });
+    }
+    Ok(edits)
+}
+
+fn run_vmat(args: &VmatCmd) -> Result<()> {
+    let targets = if let Some(hero) = &args.hero {
+        let t = args.targets.to_ascii_lowercase();
+        let (include_body, include_weapons) = match t.as_str() {
+            "all" => (true, true),
+            "body" | "skin" => (true, false),
+            "weapon" | "weapons" => (false, true),
+            other => anyhow::bail!("--targets must be all, body, or weapons (got {other:?})"),
+        };
+        vpkmerge_core::VmatTargets::Hero {
+            codename: hero.clone(),
+            include_body,
+            include_weapons,
+        }
+    } else if !args.entries.is_empty() {
+        vpkmerge_core::VmatTargets::Entries(args.entries.clone())
+    } else {
+        anyhow::bail!("pass --hero CODENAME or one or more --entry PATH");
+    };
+
+    if args.list {
+        let infos = vpkmerge_core::list_materials(&args.vpk, args.base.as_deref(), &targets)?;
+        anyhow::ensure!(!infos.is_empty(), "no materials matched");
+        for info in &infos {
+            println!("{} [{}]", info.entry, info.shader);
+            if !info.flags.is_empty() {
+                let flags: Vec<String> = info
+                    .flags
+                    .iter()
+                    .map(|(n, v)| {
+                        if *v == 1 {
+                            n.clone()
+                        } else {
+                            format!("{n}={v}")
+                        }
+                    })
+                    .collect();
+                println!("  flags: {}", flags.join(" "));
+            }
+            for (slot, path) in &info.textures {
+                println!("  {slot} -> {path}");
+            }
+        }
+        println!("{} material(s)", infos.len());
+        return Ok(());
+    }
+
+    let edits = vmat_edits(args)?;
+    anyhow::ensure!(
+        !edits.is_empty(),
+        "nothing to do: pass --preset and/or --set-int/--set-float/--set-vec (or --list)"
+    );
+    let Some(out) = &args.encode_vpk else {
+        anyhow::bail!("--encode-vpk OUT_dir.vpk is required when patching");
+    };
+
+    let report = vpkmerge_core::style_materials_to_addon(
+        &args.vpk,
+        args.base.as_deref(),
+        &targets,
+        &edits,
+        out,
+    )?;
+    eprintln!(
+        "{} material(s) patched ({} params set, {} inserted); skipped: {} non-pbr, {} unreadable",
+        report.materials_patched,
+        report.params_set,
+        report.params_inserted,
+        report.skipped_non_pbr,
+        report.skipped_unreadable,
+    );
+    for (entry, param) in &report.failed_params {
+        eprintln!("  warning: could not apply {param} on {entry}");
+    }
+    println!(
+        "wrote {}: {} material(s) styled",
+        out.display(),
+        report.materials_patched
+    );
+    Ok(())
 }
 
 fn run_rainbow_scan(args: &RainbowScanCmd) -> Result<()> {

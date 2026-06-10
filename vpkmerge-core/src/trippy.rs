@@ -1161,7 +1161,7 @@ fn compiled_resource_path(path: &str) -> String {
     }
 }
 
-fn hero_path_match(path: &str, codename: &str) -> bool {
+pub(crate) fn hero_path_match(path: &str, codename: &str) -> bool {
     let p = path.to_ascii_lowercase();
     let c = codename.to_ascii_lowercase();
     p.contains(&format!("/{c}/"))
@@ -1170,7 +1170,7 @@ fn hero_path_match(path: &str, codename: &str) -> bool {
         || p.contains(&format!("/{c}."))
 }
 
-fn is_weapon_path(path: &str) -> bool {
+pub(crate) fn is_weapon_path(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
     [
         "weapon", "gun", "rifle", "pistol", "shotgun", "cannon", "launcher", "bow", "arrow",
@@ -1180,7 +1180,7 @@ fn is_weapon_path(path: &str) -> bool {
     .any(|needle| p.contains(needle))
 }
 
-fn open_vpks(vpk: &Path, base: Option<&Path>) -> Result<Vec<valve_pak::VPK>> {
+pub(crate) fn open_vpks(vpk: &Path, base: Option<&Path>) -> Result<Vec<valve_pak::VPK>> {
     let mut vpks =
         vec![valve_pak::open(vpk).with_context(|| format!("opening {}", vpk.display()))?];
     if let Some(base) = base {
@@ -1189,7 +1189,7 @@ fn open_vpks(vpk: &Path, base: Option<&Path>) -> Result<Vec<valve_pak::VPK>> {
     Ok(vpks)
 }
 
-fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_entry(vpks: &[valve_pak::VPK], entry: &str) -> Option<Vec<u8>> {
     for vpk in vpks {
         if let Ok(mut vf) = vpk.get_file(entry) {
             if let Ok(bytes) = vf.read_all() {

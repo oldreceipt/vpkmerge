@@ -56,7 +56,11 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]
+    [
+        a[0] + t * (b[0] - a[0]),
+        a[1] + t * (b[1] - a[1]),
+        a[2] + t * (b[2] - a[2]),
+    ]
 }
 
 fn hash21(ix: i32, iy: i32) -> f32 {
@@ -65,7 +69,10 @@ fn hash21(ix: i32, iy: i32) -> f32 {
     ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
 }
 fn hash2(ix: i32, iy: i32, salt: i32) -> f32 {
-    hash21(ix.wrapping_add(salt.wrapping_mul(101)), iy.wrapping_sub(salt.wrapping_mul(57)))
+    hash21(
+        ix.wrapping_add(salt.wrapping_mul(101)),
+        iy.wrapping_sub(salt.wrapping_mul(57)),
+    )
 }
 
 // three-stop agate ramp teal -> sky -> pale -> sky (palindrome, seamless), phase in [0,1)
@@ -74,7 +81,11 @@ fn agate_color(phase: f32) -> [f32; 3] {
     let seg = p.floor() as i32 % 4;
     let f = p.fract();
     let stops = [TEAL, SKY, PALE, SKY];
-    lerp3(stops[seg as usize], stops[((seg + 1) % 4) as usize], smoothstep(0.0, 1.0, f))
+    lerp3(
+        stops[seg as usize],
+        stops[((seg + 1) % 4) as usize],
+        smoothstep(0.0, 1.0, f),
+    )
 }
 
 // Periodic Voronoi over a GRID x GRID torus.
@@ -110,10 +121,10 @@ struct Gem {
     col: [f32; 3],
     nx: f32, // tangent-space normal X/Y in [-1,1]
     ny: f32,
-    rough: f32,       // 0..1
-    ao: f32,          // 0..1 (1 = lit)
-    glow: f32,        // 0..1 self-illum mask
-    trans: [f32; 3],  // transmissive color bytes 0..255
+    rough: f32,      // 0..1
+    ao: f32,         // 0..1 (1 = lit)
+    glow: f32,       // 0..1 self-illum mask
+    trans: [f32; 3], // transmissive color bytes 0..255
 }
 
 fn gem(u: f32, v: f32, scale: (i32, i32)) -> Gem {
@@ -133,7 +144,11 @@ fn gem(u: f32, v: f32, scale: (i32, i32)) -> Gem {
     let facet_lit = (1.0 - (f1a / 0.085).min(1.0)).powf(1.5);
     col = lerp3(col, lerp3(col, QUARTZ, 0.55), 0.35 * facet_lit);
     let trough = smoothstep(0.0, 0.12, f1a);
-    col = lerp3(col, [col[0] * 0.62, col[1] * 0.62, col[2] * 0.72], 0.30 * trough);
+    col = lerp3(
+        col,
+        [col[0] * 0.62, col[1] * 0.62, col[2] * 0.72],
+        0.30 * trough,
+    );
 
     // druzy seams (bright crystal borders) feed both albedo sparkle and self-illum
     let seam_a = 1.0 - smoothstep(0.0, 0.035, f2a - f1a);
@@ -162,14 +177,26 @@ fn gem(u: f32, v: f32, scale: (i32, i32)) -> Gem {
     let ao = (1.0 - 0.7 * seam) * (0.85 + 0.15 * (1.0 - trough));
 
     // --- self-illum: faint glow at druzy points only (base mask is black; stay conservative) ---
-    let glow = if druzy { 0.55 } else { 0.10 * facet_lit + 0.25 * seam_b };
+    let glow = if druzy {
+        0.55
+    } else {
+        0.10 * facet_lit + 0.25 * seam_b
+    };
 
     // --- transmissive: icy cyan, brighter where the facet is lit (thin/translucent reads) ---
     let trans_base = [70.0, 150.0, 185.0];
     let trans_bright = [150.0, 220.0, 245.0];
     let trans = lerp3(trans_base, trans_bright, 0.4 + 0.6 * facet_lit);
 
-    Gem { col, nx, ny, rough, ao, glow, trans }
+    Gem {
+        col,
+        nx,
+        ny,
+        rough,
+        ao,
+        glow,
+        trans,
+    }
 }
 
 fn rgba8_mut(img: &mut Image) -> anyhow::Result<&mut Vec<u8>> {
@@ -215,8 +242,15 @@ fn write_png(path: &str, w: u32, h: u32, f: impl Fn(&Gem) -> [u8; 4]) -> anyhow:
             buf[i..i + 4].copy_from_slice(&o);
         }
     }
-    let img = Image { width: w, height: h, data: ImageData::Rgba8(buf) };
-    std::fs::write(path, morphic::encode_image(&img, TextureFormat::PngRgba8888)?)?;
+    let img = Image {
+        width: w,
+        height: h,
+        data: ImageData::Rgba8(buf),
+    };
+    std::fs::write(
+        path,
+        morphic::encode_image(&img, TextureFormat::PngRgba8888)?,
+    )?;
     eprintln!("wrote {path} ({w}x{h})");
     Ok(())
 }
@@ -276,22 +310,37 @@ fn main() -> anyhow::Result<()> {
     let d = DRESS_SCALE;
     files.push((entry(COLOR), bake_channel(&read(COLOR)?, d, enc_color)?));
     // paint NR into the BC7 donor, pack at the real NORMALROUGH path
-    files.push((entry(NORMALROUGH), bake_channel(&read(NR_DONOR)?, d, enc_nr)?));
+    files.push((
+        entry(NORMALROUGH),
+        bake_channel(&read(NR_DONOR)?, d, enc_nr)?,
+    ));
     files.push((entry(AO), bake_channel(&read(AO)?, d, enc_ao)?));
-    files.push((entry(TRANSMISSIVE), bake_channel(&read(TRANSMISSIVE)?, d, enc_trans)?));
-    files.push((entry(SELFILLUM), bake_channel(&read(SELFILLUM)?, d, enc_glow)?));
+    files.push((
+        entry(TRANSMISSIVE),
+        bake_channel(&read(TRANSMISSIVE)?, d, enc_trans)?,
+    ));
+    files.push((
+        entry(SELFILLUM),
+        bake_channel(&read(SELFILLUM)?, d, enc_glow)?,
+    ));
     eprintln!("dress done (5 channels)");
 
     // --- gun: agate + faceted normal/roughness + AO ---
     let g = GUN_SCALE;
-    files.push((entry(GUN_COLOR), bake_channel(&read(GUN_COLOR)?, g, enc_color)?));
+    files.push((
+        entry(GUN_COLOR),
+        bake_channel(&read(GUN_COLOR)?, g, enc_color)?,
+    ));
     files.push((entry(GUN_NR), bake_channel(&read(GUN_NR)?, g, enc_nr)?));
     files.push((entry(GUN_AO), bake_channel(&read(GUN_AO)?, g, enc_ao)?));
     eprintln!("gun done (3 channels)");
 
     // --- props: agate + faceted normal/roughness + AO ---
     let p = PROPS_SCALE;
-    files.push((entry(PROPS_COLOR), bake_channel(&read(PROPS_COLOR)?, p, enc_color)?));
+    files.push((
+        entry(PROPS_COLOR),
+        bake_channel(&read(PROPS_COLOR)?, p, enc_color)?,
+    ));
     files.push((entry(PROPS_NR), bake_channel(&read(PROPS_NR)?, p, enc_nr)?));
     files.push((entry(PROPS_AO), bake_channel(&read(PROPS_AO)?, p, enc_ao)?));
     eprintln!("props done (3 channels)");
@@ -308,7 +357,10 @@ fn main() -> anyhow::Result<()> {
          Built by vpkmerge reskin_vindicta_geode example.\n";
     files.push(("README.txt".to_string(), readme.as_bytes().to_vec()));
 
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(k, v)| (k.as_str(), v.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_slice()))
+        .collect();
     vpkmerge_core::pack(&refs, &out)?;
     println!("wrote addon VPK: {out}  ({} files)", refs.len());
     Ok(())

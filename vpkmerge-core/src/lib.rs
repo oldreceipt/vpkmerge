@@ -57,6 +57,12 @@ pub use trippy::{
     TrippyAbilityReport, TrippySkinOptions, TrippySkinReport, TrippyStyle, TRIPPY_STYLE_NAMES,
 };
 
+pub mod vmat_style;
+pub use vmat_style::{
+    list_materials, patch_vmat_params, style_materials_to_addon, VmatEdit, VmatInfo,
+    VmatPatchStats, VmatPreset, VmatStyleReport, VmatTargets,
+};
+
 #[derive(Debug, Clone)]
 pub struct ModInfo {
     pub path: PathBuf,
