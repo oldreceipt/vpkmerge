@@ -29,6 +29,7 @@ tools/morphic-oracle/obj/
 
 # Local agent / session state (Claude Code worktrees, transcripts, caches)
 .claude/
+.worktrees/
 
 # Local Blender renders, bakes, and GLB exports (large, not source)
 blender-work/
