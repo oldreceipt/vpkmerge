@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.12.0
+
+Exposes the trippy live preview to CLI callers. The v0.11.0 `trippy_preview_frames` pattern renderer (used by the GUI Locker tab) gains a sprite-sheet variant and a `trippy-preview` subcommand, so an external UI (Grimoire's Locker) can show an animated swatch of a trippy style without linking the library or touching a VPK. No changes to any bake path: `trippy-skin`, `trippy-vfx`, `prism`, recolor, merge, and model outputs are byte-identical to v0.11.0.
+
+### CLI (`vpkmerge` 0.12)
+
+- New `trippy-preview` subcommand: render the procedural trippy pattern loop as one sprite-sheet PNG (frames left to right, width = frames x size). `--style {confetti,liquid,moire,kaleido,holo,glitch,thermal,gradient}`, `--phase`, `--scroll` (advances phase across the loop, mirroring the runtime UV-scroll speed), `--intensity` (pattern blend over the checkerboard base), `--frames` (1..=48, default 24), `--size` (16..=512 px, default 256), `--out <PNG>`. Pure pattern generation from the same function the skin/VFX bakes use; reads no VPK and runs in milliseconds.
+
+### Library (`vpkmerge-core` 0.12)
+
+- New `trippy_preview_sprite(style, phase, scroll, intensity, n_frames, size)`: the same frames as `trippy_preview_frames`, composed into a single sprite-sheet PNG. A 1-frame sprite is byte-identical to the first frame of `trippy_preview_frames`. The per-tile painter is shared between both paths, so the existing frames API is unchanged.
+
+### GUI (`vpkmerge` 0.12)
+
+- GUI bundle version kept in lockstep at 0.12.0 (`tauri.conf.json`, `package.json`, `src-tauri/Cargo.toml`); no functional GUI changes.
+
 ## v0.11.0
 
 Expands the ability-VFX recolor roster from 17 to 38 pinned heroes (Paradox / `chrono` pinned with a full particle-plus-texture recipe), adds two procedural VFX surfaces (`trippy-skin` / `trippy-vfx`), gives `prism` an `--animated` timing pass, extends `model edit` with draw-call/group geometry replacement, and hardens VPK extraction against path-traversal (Zip-Slip). All API changes are additive: existing recolor / prism / merge entry points and the GUI Prism tab are byte-compatible and unchanged, and default prism tuning is still byte-identical to prior releases.

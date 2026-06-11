@@ -53,8 +53,9 @@ pub use hero_recolor::{
 
 pub mod trippy;
 pub use trippy::{
-    trippy_ability_vfx_to_addon, trippy_preview_frames, trippy_skin_to_addon, TrippyAbilityOptions,
-    TrippyAbilityReport, TrippySkinOptions, TrippySkinReport, TrippyStyle, TRIPPY_STYLE_NAMES,
+    trippy_ability_vfx_to_addon, trippy_preview_frames, trippy_preview_sprite,
+    trippy_skin_to_addon, TrippyAbilityOptions, TrippyAbilityReport, TrippySkinOptions,
+    TrippySkinReport, TrippyStyle, TRIPPY_STYLE_NAMES,
 };
 
 pub mod vmat_style;

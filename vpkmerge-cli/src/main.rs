@@ -90,6 +90,11 @@ enum Command {
     /// themes, using the same pinned recipes as prism/recolor.
     TrippyVfx(TrippyVfxCmd),
 
+    /// Render the procedural trippy pattern as a sprite-sheet PNG (frames left
+    /// to right) for a live UI preview. Pure pattern generation from the same
+    /// function the skin/VFX bakes use: reads no VPK, runs in milliseconds.
+    TrippyPreview(TrippyPreviewCmd),
+
     /// Scan pinned hero recipes for rainbow / animated-rainbow VFX support.
     RainbowScan(RainbowScanCmd),
 
@@ -408,6 +413,39 @@ struct TrippyVfxCmd {
     /// Target set: all, abilities, or weapons.
     #[arg(long, value_name = "TARGETS", default_value = "all")]
     targets: String,
+}
+
+#[derive(Args)]
+struct TrippyPreviewCmd {
+    /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
+    /// or gradient.
+    #[arg(long, value_name = "STYLE", default_value = "confetti")]
+    style: String,
+
+    /// Pattern phase / hue offset, normalized 0..1.
+    #[arg(long, value_name = "T", default_value_t = 0.0)]
+    phase: f32,
+
+    /// UV-scroll speed scale; advances the phase across the frame loop, so the
+    /// loop speed mirrors the runtime scroll the bake would apply.
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    scroll: f32,
+
+    /// Texture blend strength (0 = checkerboard base, 1 = full generated pattern).
+    #[arg(long, value_name = "SCALE", default_value_t = 1.0)]
+    intensity: f32,
+
+    /// Number of frames in the loop (clamped to 1..=48).
+    #[arg(long, value_name = "N", default_value_t = 24)]
+    frames: usize,
+
+    /// Tile size in pixels per frame (clamped to 16..=512).
+    #[arg(long, value_name = "PX", default_value_t = 256)]
+    size: u32,
+
+    /// Write the sprite-sheet PNG here (width = frames x size, height = size).
+    #[arg(long, value_name = "PNG")]
+    out: PathBuf,
 }
 
 #[derive(Args)]
@@ -848,6 +886,7 @@ fn main() -> Result<()> {
         Some(Command::Prism(args)) => run_prism(&args),
         Some(Command::TrippySkin(args)) => run_trippy_skin(&args),
         Some(Command::TrippyVfx(args)) => run_trippy_vfx(&args),
+        Some(Command::TrippyPreview(args)) => run_trippy_preview(&args),
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         Some(Command::Vmat(args)) => run_vmat(&args),
         None => run_merge(cli),
@@ -1998,6 +2037,33 @@ fn run_prism(args: &PrismCmd) -> Result<()> {
         args.encode_vpk.display(),
         report.total_entries,
         report.codename,
+    );
+    Ok(())
+}
+
+fn run_trippy_preview(args: &TrippyPreviewCmd) -> Result<()> {
+    let style = vpkmerge_core::TrippyStyle::from_name(&args.style)
+        .map_err(|e| anyhow::anyhow!("--style: {e:#}"))?;
+    let frames = args.frames.clamp(1, 48);
+    let size = args.size.clamp(16, 512);
+    let sprite = vpkmerge_core::trippy_preview_sprite(
+        style,
+        args.phase,
+        args.scroll,
+        args.intensity,
+        frames,
+        size,
+    )
+    .with_context(|| format!("rendering {} trippy preview sprite", style.as_str()))?;
+    std::fs::write(&args.out, &sprite)
+        .with_context(|| format!("writing sprite {}", args.out.display()))?;
+    println!(
+        "wrote {}: {} frame(s) @ {}px ({} bytes PNG, {} style)",
+        args.out.display(),
+        frames,
+        size,
+        sprite.len(),
+        style.as_str(),
     );
     Ok(())
 }

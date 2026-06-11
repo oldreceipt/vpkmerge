@@ -190,18 +190,79 @@ pub fn trippy_preview_frames(
     Ok(out)
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
+/// Render the same preview frames as [`trippy_preview_frames`], composed into a
+/// single sprite-sheet PNG with the frames laid out left to right. One file
+/// instead of N makes the loop cheap to hand to a UI: draw with a per-frame
+/// source offset, or animate via CSS `steps()`.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub fn trippy_preview_sprite(
+    style: TrippyStyle,
+    phase: f32,
+    scroll: f32,
+    intensity: f32,
+    n_frames: usize,
+    size: u32,
+) -> Result<Vec<u8>> {
+    let n_frames = n_frames.clamp(1, 48);
+    let size = size.clamp(16, 512);
+    let width = size * n_frames as u32;
+    let mut pixels = vec![255; (width as usize) * (size as usize) * 4];
+
+    for frame in 0..n_frames {
+        let t = frame as f32 / n_frames as f32;
+        let frame_phase = phase + t * scroll;
+        paint_preview_tile(
+            &mut pixels,
+            width,
+            frame as u32 * size,
+            style,
+            frame_phase,
+            intensity,
+            size,
+        );
+    }
+
+    let image = Image {
+        width,
+        height: size,
+        data: ImageData::Rgba8(pixels),
+    };
+    morphic::encode_image(&image, TextureFormat::PngRgba8888)
+        .context("encoding trippy preview sprite PNG")
+}
+
 fn trippy_preview_png(
     style: TrippyStyle,
     phase: f32,
     intensity: f32,
     size: u32,
 ) -> Result<Vec<u8>> {
-    let mut pixels = vec![255; (size * size * 4) as usize];
+    let mut pixels = vec![255; (size as usize) * (size as usize) * 4];
+    paint_preview_tile(&mut pixels, size, 0, style, phase, intensity, size);
+    let image = Image {
+        width: size,
+        height: size,
+        data: ImageData::Rgba8(pixels),
+    };
+    morphic::encode_image(&image, TextureFormat::PngRgba8888).context("encoding trippy preview PNG")
+}
+
+/// Paint one `size`x`size` preview tile (pattern blended over the checkerboard)
+/// into an RGBA8 buffer that is `row_stride` pixels wide, starting at column `x0`.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn paint_preview_tile(
+    pixels: &mut [u8],
+    row_stride: u32,
+    x0: u32,
+    style: TrippyStyle,
+    phase: f32,
+    intensity: f32,
+    size: u32,
+) {
     let blend = intensity.clamp(0.0, 1.0);
     for y in 0..size {
         let v = y as f32 / size.max(1) as f32;
@@ -209,7 +270,7 @@ fn trippy_preview_png(
             let u = x as f32 / size.max(1) as f32;
             let generated = trippy_pixel(style, u, v, phase);
             let shade = checker_shade(x, y);
-            let i = ((y * size + x) * 4) as usize;
+            let i = ((y * row_stride + x0 + x) * 4) as usize;
             for k in 0..3 {
                 let base = shade;
                 pixels[i + k] = (base + (f32::from(generated[k]) - base) * blend)
@@ -218,12 +279,6 @@ fn trippy_preview_png(
             }
         }
     }
-    let image = Image {
-        width: size,
-        height: size,
-        data: ImageData::Rgba8(pixels),
-    };
-    morphic::encode_image(&image, TextureFormat::PngRgba8888).context("encoding trippy preview PNG")
 }
 
 #[allow(clippy::manual_is_multiple_of)]
@@ -1244,5 +1299,28 @@ mod tests {
         for frame in frames {
             assert!(frame.starts_with(b"\x89PNG\r\n\x1a\n"));
         }
+    }
+
+    #[test]
+    fn preview_sprite_is_one_png_strip() {
+        let sprite =
+            trippy_preview_sprite(TrippyStyle::Holo, 0.0, 1.0, 1.0, 4, 32).expect("sprite");
+        assert!(sprite.starts_with(b"\x89PNG\r\n\x1a\n"));
+        // PNG IHDR: width at byte 16, height at byte 20 (big-endian u32).
+        let width = u32::from_be_bytes(sprite[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(sprite[20..24].try_into().unwrap());
+        assert_eq!(width, 4 * 32);
+        assert_eq!(height, 32);
+    }
+
+    #[test]
+    fn single_frame_sprite_matches_frame() {
+        // A 1-frame sprite paints through the same tile path as a single frame,
+        // so the two encodes must be byte-identical.
+        let sprite =
+            trippy_preview_sprite(TrippyStyle::Liquid, 0.25, 1.0, 0.8, 1, 32).expect("sprite");
+        let frames =
+            trippy_preview_frames(TrippyStyle::Liquid, 0.25, 1.0, 0.8, 1, 32).expect("frames");
+        assert_eq!(sprite, frames[0]);
     }
 }
