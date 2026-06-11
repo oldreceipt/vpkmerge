@@ -20,7 +20,20 @@ use std::f32::consts::TAU;
 use std::path::Path;
 
 pub const TRIPPY_STYLE_NAMES: &[&str] = &[
-    "confetti", "liquid", "moire", "kaleido", "holo", "glitch", "thermal", "gradient",
+    "confetti",
+    "liquid",
+    "moire",
+    "kaleido",
+    "holo",
+    "glitch",
+    "thermal",
+    "gradient",
+    "camo",
+    "carbon",
+    "galaxy",
+    "halftone",
+    "lava",
+    "vaporwave",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +46,12 @@ pub enum TrippyStyle {
     Glitch,
     Thermal,
     Gradient,
+    Camo,
+    Carbon,
+    Galaxy,
+    Halftone,
+    Lava,
+    Vaporwave,
 }
 
 impl TrippyStyle {
@@ -47,6 +66,12 @@ impl TrippyStyle {
             Self::Glitch => "glitch",
             Self::Thermal => "thermal",
             Self::Gradient => "gradient",
+            Self::Camo => "camo",
+            Self::Carbon => "carbon",
+            Self::Galaxy => "galaxy",
+            Self::Halftone => "halftone",
+            Self::Lava => "lava",
+            Self::Vaporwave => "vaporwave",
         }
     }
 
@@ -60,6 +85,12 @@ impl TrippyStyle {
             "glitch" | "crt" => Ok(Self::Glitch),
             "thermal" | "xray" => Ok(Self::Thermal),
             "gradient" | "smooth" => Ok(Self::Gradient),
+            "camo" | "camouflage" | "woodland" => Ok(Self::Camo),
+            "carbon" | "carbonfiber" | "carbon-fiber" => Ok(Self::Carbon),
+            "galaxy" | "nebula" | "cosmos" | "space" => Ok(Self::Galaxy),
+            "halftone" | "popart" | "pop-art" | "comic" | "dots" => Ok(Self::Halftone),
+            "lava" | "magma" | "molten" => Ok(Self::Lava),
+            "vaporwave" | "synthwave" | "retrowave" | "outrun" => Ok(Self::Vaporwave),
             other => anyhow::bail!(
                 "unknown trippy style {other:?}; expected one of {}",
                 TRIPPY_STYLE_NAMES.join(", ")
@@ -799,31 +830,48 @@ fn vfx_target_allowed(entry: &str, options: &TrippyAbilityOptions) -> bool {
     }
 }
 
-fn trippy_cycle_tuning(options: &TrippyAbilityOptions) -> PrismTuning {
-    let gradient = match options.style {
-        TrippyStyle::Thermal => PrismGradient::preset("fire"),
+fn gradient_stops(triples: &[(f64, f64, f64)]) -> Option<PrismGradient> {
+    let stops: Vec<GradientStop> = triples
+        .iter()
+        .map(|&(position, hue, saturation)| GradientStop {
+            position,
+            hue,
+            saturation,
+        })
+        .collect();
+    PrismGradient::from_stops(&stops)
+}
+
+/// The color ramp `trippy-vfx` particle cycles sample for a style, so the
+/// animated particles stay on the skin's theme. `None` = full rainbow.
+fn trippy_style_gradient(style: TrippyStyle) -> Option<PrismGradient> {
+    match style {
+        TrippyStyle::Thermal | TrippyStyle::Lava => PrismGradient::preset("fire"),
         TrippyStyle::Liquid => PrismGradient::preset("ocean"),
         TrippyStyle::Moire | TrippyStyle::Glitch => PrismGradient::preset("neon"),
         TrippyStyle::Kaleido => PrismGradient::preset("sunset"),
-        TrippyStyle::Holo => PrismGradient::from_stops(&[
-            GradientStop {
-                position: 0.0,
-                hue: 190.0,
-                saturation: 0.45,
-            },
-            GradientStop {
-                position: 0.48,
-                hue: 305.0,
-                saturation: 0.62,
-            },
-            GradientStop {
-                position: 1.0,
-                hue: 55.0,
-                saturation: 0.38,
-            },
-        ]),
+        TrippyStyle::Holo => {
+            gradient_stops(&[(0.0, 190.0, 0.45), (0.48, 305.0, 0.62), (1.0, 55.0, 0.38)])
+        }
+        TrippyStyle::Camo => {
+            gradient_stops(&[(0.0, 95.0, 0.55), (0.5, 130.0, 0.60), (1.0, 60.0, 0.45)])
+        }
+        TrippyStyle::Carbon => gradient_stops(&[(0.0, 210.0, 0.10), (1.0, 225.0, 0.05)]),
+        TrippyStyle::Galaxy => {
+            gradient_stops(&[(0.0, 225.0, 0.95), (0.5, 280.0, 1.0), (1.0, 320.0, 0.90)])
+        }
+        TrippyStyle::Halftone => {
+            gradient_stops(&[(0.0, 0.0, 1.0), (0.5, 55.0, 1.0), (1.0, 195.0, 1.0)])
+        }
+        TrippyStyle::Vaporwave => {
+            gradient_stops(&[(0.0, 280.0, 1.0), (0.5, 325.0, 0.95), (1.0, 185.0, 0.95)])
+        }
         TrippyStyle::Confetti | TrippyStyle::Gradient => None,
-    };
+    }
+}
+
+fn trippy_cycle_tuning(options: &TrippyAbilityOptions) -> PrismTuning {
+    let gradient = trippy_style_gradient(options.style);
     let intensity = f64::from(options.intensity.max(0.0));
     PrismTuning {
         hue_offset: f64::from(options.phase) * 360.0,
@@ -889,6 +937,23 @@ fn trippy_material_edits(
             &[(0, 1.0), (1, 1.0), (2, 1.0)],
         ));
     }
+    if matches!(options.style, TrippyStyle::Lava) {
+        edits.extend(float_param_edit(
+            value,
+            "g_flSelfIllumScale1",
+            4.0 * f64::from(options.intensity.max(0.0)),
+        ));
+        edits.extend(float_param_edit(
+            value,
+            "g_flSelfIllumFresnelMaskExponent",
+            3.0,
+        ));
+        edits.extend(vcomp_edits(
+            value,
+            "g_vSelfIllumFresnelMaskTint1",
+            &[(0, 1.0), (1, 0.35), (2, 0.08)],
+        ));
+    }
     if weapon {
         edits.extend(vcomp_edits(
             value,
@@ -938,6 +1003,12 @@ fn trippy_pixel(style: TrippyStyle, u: f32, v: f32, phase: f32) -> [u8; 3] {
         TrippyStyle::Glitch => glitch(u, v, phase),
         TrippyStyle::Thermal => thermal(u, v, phase),
         TrippyStyle::Gradient => gradient(u, v, phase),
+        TrippyStyle::Camo => camo(u, v, phase),
+        TrippyStyle::Carbon => carbon(u, v, phase),
+        TrippyStyle::Galaxy => galaxy(u, v, phase),
+        TrippyStyle::Halftone => halftone(u, v, phase),
+        TrippyStyle::Lava => lava(u, v, phase),
+        TrippyStyle::Vaporwave => vaporwave(u, v, phase),
     }
 }
 
@@ -1156,6 +1227,196 @@ fn gradient(u: f32, v: f32, phase: f32) -> [u8; 3] {
     pack_rgb(hsv2rgb(hue, 0.95, 0.92))
 }
 
+/// Tileable Voronoi over a `p`-cell grid: distance to the nearest and second
+/// nearest feature point, plus a per-cell hash id. Cell ids wrap modulo `p`
+/// (same trick as [`vnoise`]) so the field is seamless.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn voronoi(u: f32, v: f32, p: i64) -> (f32, f32, f32) {
+    let gx = u * p as f32;
+    let gy = v * p as f32;
+    let x0 = gx.floor() as i64;
+    let y0 = gy.floor() as i64;
+    let wrap = |a: i64| ((a % p) + p) % p;
+    let mut f1 = f32::MAX;
+    let mut f2 = f32::MAX;
+    let mut id = 0.0;
+    for dj in -1..=1 {
+        for di in -1..=1 {
+            let ci = x0 + di;
+            let cj = y0 + dj;
+            let (wi, wj) = (wrap(ci), wrap(cj));
+            let px = ci as f32 + hash2(wi + 101, wj + 17);
+            let py = cj as f32 + hash2(wi + 43, wj + 59);
+            let d = (gx - px).hypot(gy - py);
+            if d < f1 {
+                f2 = f1;
+                f1 = d;
+                id = hash2(wi + 7, wj + 91);
+            } else if d < f2 {
+                f2 = d;
+            }
+        }
+    }
+    (f1, f2, id)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn camo(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    // Woodland palette, darkest first so the overlay blobs can reuse slot 0.
+    const PALETTE: [[f32; 3]; 4] = [
+        [0.11, 0.14, 0.07],
+        [0.25, 0.29, 0.13],
+        [0.40, 0.34, 0.20],
+        [0.55, 0.50, 0.33],
+    ];
+    let drift = phase * 0.5;
+    let n1 = fbm(u + drift, v + 1.3, 4, 4);
+    let n2 = fbm(u + 7.3, v + 2.9 + drift, 4, 4);
+    // Stretch contrast so the quantized blobs use the whole palette.
+    let t = (n1 * 0.6 + n2 * 0.4 - 0.5) * 2.6 + 0.5;
+    let mut c = PALETTE[(t.clamp(0.0, 0.999) * 4.0) as usize];
+    // Classic woodland: dark disruption blobs punch through every layer.
+    if fbm(u + 3.1 - drift, v + 8.8, 5, 4) > 0.62 {
+        c = PALETTE[0];
+    }
+    let speck = (fbm(u + 5.5, v + 0.7, 64, 2) - 0.5) * 0.07;
+    pack_rgb([c[0] + speck, c[1] + speck, c[2] + speck])
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::many_single_char_names)]
+fn carbon(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let cells = 22.0;
+    let x = u * cells;
+    let y = (v + phase * 0.08) * cells;
+    let fx = x - x.floor();
+    let fy = y - y.floor();
+    let horizontal = (x.floor() as i64 + y.floor() as i64).rem_euclid(2) == 0;
+    let across = if horizontal { fy } else { fx };
+    let along = if horizontal { fx } else { fy };
+    // Cylindrical tow shading: brightest along the center of each bundle.
+    let bulge = (TAU * (across - 0.5) * 0.5).cos();
+    // Fine fiber striations running along the tow.
+    let fiber = ((along * 7.0 + across * 1.5) * TAU * 6.0).sin() * 0.5 + 0.5;
+    // A diagonal sheen band sweeps with phase so the weave glints as it scrolls.
+    let sheen = ((u + v + phase) * TAU).sin().max(0.0).powi(3);
+    let g = 0.035 + bulge * (0.16 * bulge + 0.05 * fiber + 0.18 * sheen);
+    pack_rgb([g * 0.95, g, g * 1.08])
+}
+
+fn galaxy(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    let drift = phase * 0.35;
+    let q = fbm(u + drift, v + 1.3, 4, 5);
+    let r = fbm(u + 5.8, v - drift + 7.2, 4, 5);
+    let neb = fbm(u + 0.55 * q, v + 0.55 * r, 5, 5);
+    let dust = fbm(u + 9.4 - drift, v + 3.7, 10, 4);
+    let hue = 225.0 + 95.0 * neb + 18.0 * q;
+    let sat = (0.78 + 0.22 * r - 0.35 * (dust - 0.5).max(0.0)).clamp(0.0, 1.0);
+    let val = (0.04 + 0.62 * neb * neb + 0.16 * (dust - 0.62).max(0.0)).clamp(0.0, 1.0);
+    let mut rgb = hsv2rgb(hue, sat, val);
+
+    // Sparse star field: roughly one star per five cells, twinkling with phase.
+    let (f1, _, id) = voronoi(u, v, 40);
+    if id > 0.80 {
+        let twinkle = 0.7 + 0.3 * ((phase * 2.0 + id * 23.0) * TAU).sin();
+        let star = (1.0 - f1 * 2.8).clamp(0.0, 1.0).powi(4) * twinkle;
+        // The hottest hash ids run warm instead of blue-white.
+        let tint = if id > 0.95 {
+            [1.0, 0.85, 0.60]
+        } else {
+            [0.85, 0.92, 1.0]
+        };
+        for k in 0..3 {
+            rgb[k] = (rgb[k] + star * tint[k]).min(1.0);
+        }
+    }
+    pack_rgb(rgb)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn halftone(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    // (background, dot color) pairs per pop-art panel.
+    const PANELS: [([f32; 3], [f32; 3]); 4] = [
+        ([0.96, 0.93, 0.86], [0.82, 0.08, 0.10]),
+        ([0.98, 0.84, 0.10], [0.82, 0.08, 0.10]),
+        ([0.62, 0.86, 0.94], [0.05, 0.25, 0.65]),
+        ([0.97, 0.78, 0.84], [0.08, 0.08, 0.10]),
+    ];
+    // Diagonal color panels crawl with phase. The 0.5 * v slope keeps the
+    // band count integral in both axes so the pattern stays seamless.
+    let zone = (((u + 0.5 * v + phase) * 4.0).floor().rem_euclid(4.0)) as usize;
+    let (bg, dot) = PANELS[zone];
+
+    // Ben-Day dot grid, rotated 45 degrees like printed comics.
+    let cells = 30.0;
+    let xr = (u + v) * cells;
+    let yr = (u - v) * cells;
+    let fx = xr - xr.floor() - 0.5;
+    let fy = yr - yr.floor() - 0.5;
+    let d = fx.hypot(fy) * 2.0;
+    // Dot radius follows a smooth luminance field: the shading ramp.
+    let radius = 0.18 + 0.62 * fbm(u + 1.9, v + 4.3, 4, 4);
+    let t = ((radius - d) / 0.08).clamp(0.0, 1.0);
+    pack_rgb([
+        bg[0] + (dot[0] - bg[0]) * t,
+        bg[1] + (dot[1] - bg[1]) * t,
+        bg[2] + (dot[2] - bg[2]) * t,
+    ])
+}
+
+fn lava(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    // Warp the crack field so the plates read as cooled crust, not a grid.
+    let wu = u + 0.10 * fbm(u + 2.2, v + 7.1, 5, 4);
+    let wv = v + 0.10 * fbm(u + 6.4, v + 1.8, 5, 4);
+    let (f1, f2, id) = voronoi(wu, wv, 6);
+    // Plate borders are where the two nearest feature points are equidistant.
+    let crack = f2 - f1;
+    // Each plate's cracks breathe on their own cycle.
+    let pulse = ((phase + id) * TAU).sin() * 0.5 + 0.5;
+    let width = 0.16 + 0.05 * pulse;
+    let glow = (1.0 - crack / width).clamp(0.0, 1.0).powf(1.6);
+    let crust_n = fbm(u + 3.3, v + 5.5, 12, 4);
+    let crust = hsv2rgb(12.0 + 14.0 * crust_n, 0.45, 0.05 + 0.10 * crust_n);
+    let hot = thermal_color(0.62 + 0.34 * pulse + 0.04 * crust_n);
+    pack_rgb([
+        crust[0] + (hot[0] - crust[0]) * glow,
+        crust[1] + (hot[1] - crust[1]) * glow,
+        crust[2] + (hot[2] - crust[2]) * glow,
+    ])
+}
+
+fn vaporwave(u: f32, v: f32, phase: f32) -> [u8; 3] {
+    // Mirror vertically so the texture tiles: band 1 is the "horizon",
+    // band 0 the top/bottom edges.
+    let band = 1.0 - (2.0 * v - 1.0).abs();
+    // Sunset sky: purple at the edges through pink to orange at the horizon.
+    let hue = if band < 0.6 {
+        280.0 + (band / 0.6) * 50.0
+    } else {
+        330.0 + ((band - 0.6) / 0.4) * 55.0
+    };
+    let mut rgb = hsv2rgb(hue, 0.88, 0.18 + 0.62 * band);
+    // Retro sun slats: dark horizontal cuts that thicken toward the horizon.
+    if band > 0.55 {
+        let slat = ((v * 36.0 + phase) * TAU).sin();
+        if slat > 0.45 {
+            let k = ((slat - 0.45) / 0.55) * 0.55 * ((band - 0.55) / 0.45);
+            for c in &mut rgb {
+                *c *= 1.0 - k;
+            }
+        }
+    }
+    // Neon grid rushing toward the horizon; fades out as it approaches.
+    let lx = ((u * 14.0).fract() - 0.5).abs();
+    let ly = (((1.0 - band) * 7.0 + phase * 2.0).fract() - 0.5).abs();
+    let line = (1.0 - lx / 0.045).max(1.0 - ly / 0.05).clamp(0.0, 1.0) * (1.0 - band * 0.85);
+    let glow = line.powf(1.5);
+    let neon = hsv2rgb(187.0, 0.85, 1.0);
+    for k in 0..3 {
+        rgb[k] = (rgb[k] + neon[k] * glow).min(1.0);
+    }
+    pack_rgb(rgb)
+}
+
 fn vector_param_index(v: &Value, name: &str) -> Option<usize> {
     v.get("m_vectorParams")?
         .as_array()?
@@ -1279,6 +1540,39 @@ mod tests {
             TrippyStyle::Holo
         );
         assert!(TrippyStyle::from_name("plain").is_err());
+    }
+
+    #[test]
+    fn all_style_names_round_trip() {
+        for name in TRIPPY_STYLE_NAMES {
+            let style = TrippyStyle::from_name(name).expect("listed style parses");
+            assert_eq!(style.as_str(), *name);
+        }
+    }
+
+    #[test]
+    fn new_style_aliases_parse() {
+        for (alias, style) in [
+            ("woodland", TrippyStyle::Camo),
+            ("carbonfiber", TrippyStyle::Carbon),
+            ("nebula", TrippyStyle::Galaxy),
+            ("popart", TrippyStyle::Halftone),
+            ("magma", TrippyStyle::Lava),
+            ("synthwave", TrippyStyle::Vaporwave),
+        ] {
+            assert_eq!(TrippyStyle::from_name(alias).unwrap(), style);
+        }
+    }
+
+    #[test]
+    fn every_style_renders_a_preview() {
+        for name in TRIPPY_STYLE_NAMES {
+            let style = TrippyStyle::from_name(name).unwrap();
+            let frames = trippy_preview_frames(style, 0.1, 1.0, 1.0, 2, 16).expect("preview");
+            for frame in frames {
+                assert!(frame.starts_with(b"\x89PNG\r\n\x1a\n"), "{name}");
+            }
+        }
     }
 
     #[test]

@@ -2,15 +2,25 @@
 
 ## v0.12.0
 
-Exposes the trippy live preview to CLI callers. The v0.11.0 `trippy_preview_frames` pattern renderer (used by the GUI Locker tab) gains a sprite-sheet variant and a `trippy-preview` subcommand, so an external UI (Grimoire's Locker) can show an animated swatch of a trippy style without linking the library or touching a VPK. No changes to any bake path: `trippy-skin`, `trippy-vfx`, `prism`, recolor, merge, and model outputs are byte-identical to v0.11.0.
+Exposes the trippy live preview to CLI callers and grows the trippy style catalog from 8 to 14. The v0.11.0 `trippy_preview_frames` pattern renderer (used by the GUI Locker tab) gains a sprite-sheet variant and a `trippy-preview` subcommand, so an external UI (Grimoire's Locker) can show an animated swatch of a trippy style without linking the library or touching a VPK. Six classic skin styles join the roster: camo, carbon, galaxy, halftone, lava, and vaporwave. Existing bake paths are unchanged: `trippy-skin`, `trippy-vfx`, `prism`, recolor, merge, and model outputs for the original 8 styles are byte-identical to v0.11.0.
 
 ### CLI (`vpkmerge` 0.12)
 
-- New `trippy-preview` subcommand: render the procedural trippy pattern loop as one sprite-sheet PNG (frames left to right, width = frames x size). `--style {confetti,liquid,moire,kaleido,holo,glitch,thermal,gradient}`, `--phase`, `--scroll` (advances phase across the loop, mirroring the runtime UV-scroll speed), `--intensity` (pattern blend over the checkerboard base), `--frames` (1..=48, default 24), `--size` (16..=512 px, default 256), `--out <PNG>`. Pure pattern generation from the same function the skin/VFX bakes use; reads no VPK and runs in milliseconds.
+- New `trippy-preview` subcommand: render the procedural trippy pattern loop as one sprite-sheet PNG (frames left to right, width = frames x size). `--style`, `--phase`, `--scroll` (advances phase across the loop, mirroring the runtime UV-scroll speed), `--intensity` (pattern blend over the checkerboard base), `--frames` (1..=48, default 24), `--size` (16..=512 px, default 256), `--out <PNG>`. Pure pattern generation from the same function the skin/VFX bakes use; reads no VPK and runs in milliseconds.
+- `trippy-skin`, `trippy-vfx`, and `trippy-preview` accept the six new styles everywhere `--style` is read.
 
 ### Library (`vpkmerge-core` 0.12)
 
 - New `trippy_preview_sprite(style, phase, scroll, intensity, n_frames, size)`: the same frames as `trippy_preview_frames`, composed into a single sprite-sheet PNG. A 1-frame sprite is byte-identical to the first frame of `trippy_preview_frames`. The per-tile painter is shared between both paths, so the existing frames API is unchanged.
+- Six new `TrippyStyle` variants, all seamless/tileable and animated by the same phase/scroll loop:
+  - `camo` (aliases `camouflage`, `woodland`): quantized woodland blob camouflage with dark disruption patches and fabric speckle.
+  - `carbon` (`carbonfiber`): plain-weave carbon fiber with cylindrical tow shading, fiber striations, and a sheen band that sweeps as it scrolls.
+  - `galaxy` (`nebula`, `cosmos`, `space`): blue-violet nebula clouds with dust lanes and a twinkling star field (occasional warm stars).
+  - `halftone` (`popart`, `comic`, `dots`): rotated Ben-Day dot grid over crawling pop-art color panels; pairs with the `vmat` `ink` preset for a full comic look.
+  - `lava` (`magma`, `molten`): dark basalt plates with pulsing molten cracks (tileable Voronoi borders colored by the thermal ramp). On materials that expose the params, the skin bake also boosts `g_flSelfIllumScale1` and sets an orange Fresnel rim, the same byte-patch mechanism the holo style uses.
+  - `vaporwave` (`synthwave`, `retrowave`, `outrun`): mirrored synthwave sunset with retro sun slats and a neon grid that rushes toward the horizon as it scrolls.
+- Per-style VFX color-cycle gradients are pinned for the new styles (fire ramp for lava, woodland greens for camo, desaturated steel for carbon, blue-violet for galaxy, pop primaries for halftone, purple-pink-cyan for vaporwave), so `trippy-vfx` particles match the skin's theme.
+- New internal tileable Voronoi field (nearest/second-nearest feature distance plus cell id), shared by the lava cracks and the galaxy star field.
 
 ### GUI (`vpkmerge` 0.12)
 

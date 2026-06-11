@@ -339,7 +339,7 @@ struct TrippySkinCmd {
     encode_vpk: PathBuf,
 
     /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
-    /// or gradient.
+    /// gradient, camo, carbon, galaxy, halftone, lava, or vaporwave.
     #[arg(long, value_name = "STYLE", default_value = "confetti")]
     style: String,
 
@@ -379,7 +379,7 @@ struct TrippyVfxCmd {
     encode_vpk: PathBuf,
 
     /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
-    /// or gradient.
+    /// gradient, camo, carbon, galaxy, halftone, lava, or vaporwave.
     #[arg(long, value_name = "STYLE", default_value = "confetti")]
     style: String,
 
@@ -418,7 +418,7 @@ struct TrippyVfxCmd {
 #[derive(Args)]
 struct TrippyPreviewCmd {
     /// Procedural style: confetti, liquid, moire, kaleido, holo, glitch, thermal,
-    /// or gradient.
+    /// gradient, camo, carbon, galaxy, halftone, lava, or vaporwave.
     #[arg(long, value_name = "STYLE", default_value = "confetti")]
     style: String,
 
