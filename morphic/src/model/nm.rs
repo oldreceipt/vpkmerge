@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use crate::error::DecodeError;
-use crate::kv3::Value;
+use crate::kv3::{Seg, Value};
 
 use super::math::{Quat, Vec3};
 use super::pose::LocalPose;
@@ -518,6 +518,99 @@ fn decode_frames(
         }
     }
     Ok(tracks)
+}
+
+/// Re-encodes an edited NM clip back into `original`'s resource, byte-faithfully,
+/// supporting a **changed animated-rotation channel set** at a fixed frame count.
+/// This is the first step toward authoring clips (e.g. importing a Blender
+/// animation that keyframes bones the slot left static): rotation tracks may be
+/// added (a static bone becomes animated) and re-posed; the re-encoded pose stream
+/// is spliced in with [`crate::patch_kv3_resource_sole_blob`] (it may now be a
+/// different length), the per-frame offsets are rewritten, and each newly-animated
+/// bone's `m_bIsRotationStatic` is flipped to false.
+///
+/// Constrained to what is safe without touching quantization ranges or the
+/// document's array shapes:
+/// - `clip.frame_count` must equal the original's (a frame-count change would
+///   resize `m_compressedPoseOffsets`, a separate capability);
+/// - the **translation** and **scale** animated-channel sets must match the
+///   original's (adding those needs new `m_flRange*` values, which may be tagless
+///   `0`/`1` constants the in-place patcher cannot rewrite);
+/// - a rotation channel may be **added** or kept, but not **removed** (removing
+///   would need a fresh `m_constantRotation`).
+///
+/// Translation/scale values are quantized against the original ranges (authored
+/// values outside a bone's range saturate). Errors if any constraint is violated.
+pub fn reencode_nm_clip(original: &[u8], clip: &NmClip) -> Result<Vec<u8>, DecodeError> {
+    let orig = decode_nm_clip(original)?;
+    if clip.frame_count != orig.frame_count {
+        return Err(DecodeError::Model(
+            "reencode: frame-count change not supported",
+        ));
+    }
+    if clip.tracks.len() != orig.tracks.len() {
+        return Err(DecodeError::Model("reencode: track count mismatch"));
+    }
+    for (a, b) in orig.tracks.iter().zip(&clip.tracks) {
+        if a.translations.is_some() != b.translations.is_some() {
+            return Err(DecodeError::Model(
+                "reencode: translation channel-set change not supported",
+            ));
+        }
+        if a.scales.is_some() != b.scales.is_some() {
+            return Err(DecodeError::Model(
+                "reencode: scale channel-set change not supported",
+            ));
+        }
+        if a.rotations.is_some() && b.rotations.is_none() {
+            return Err(DecodeError::Model(
+                "reencode: removing a rotation channel not supported",
+            ));
+        }
+    }
+
+    let (blob, offsets) = encode_compressed_pose(clip);
+
+    // 1. Splice the (possibly longer) pose stream in.
+    let mut out = crate::patch_kv3_resource_sole_blob(original, &blob)?;
+
+    // 2. Rewrite the per-frame offsets (same count, new values).
+    if offsets != orig.compressed_pose_offsets {
+        let edits: Vec<(Vec<Seg>, i64)> = offsets
+            .iter()
+            .enumerate()
+            .map(|(f, &o)| {
+                (
+                    vec![Seg::Key("m_compressedPoseOffsets".into()), Seg::Index(f)],
+                    i64::from(o),
+                )
+            })
+            .collect();
+        out = crate::patch_kv3_resource_scalars(&out, &edits)?;
+    }
+
+    // 3. Flip m_bIsRotationStatic = false for each newly-animated rotation track.
+    let bool_edits: Vec<(Vec<Seg>, bool)> = orig
+        .tracks
+        .iter()
+        .zip(&clip.tracks)
+        .enumerate()
+        .filter(|(_, (a, b))| a.rotations.is_none() && b.rotations.is_some())
+        .map(|(i, _)| {
+            (
+                vec![
+                    Seg::Key("m_trackCompressionSettings".into()),
+                    Seg::Index(i),
+                    Seg::Key("m_bIsRotationStatic".into()),
+                ],
+                false,
+            )
+        })
+        .collect();
+    if !bool_edits.is_empty() {
+        out = crate::patch_kv3_resource_bools(&out, &bool_edits)?;
+    }
+    Ok(out)
 }
 
 /// Re-quantizes the decoded tracks back into `(m_compressedPoseData,

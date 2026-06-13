@@ -70,31 +70,42 @@ slot in-game.
 ## Built vs. missing
 
 **Built and proven:** the quantizer (`encode_compressed_pose`), the byte-faithful
-single-frame blob splice (`patch_kv3_resource_blob` -> `set_blob` ->
-`replace_single_blob_v5`), glTF export + preview (`nm_clip_to_clip`, `to_glb`), and
-in-game acceptance of re-encoded clips. The codec round-trips (decode -> encode ->
-decode pose-identical, 90%+ byte-exact).
+blob splice (`patch_kv3_resource_blob`), glTF export + preview (`nm_clip_to_clip`,
+`to_glb`), and in-game acceptance of re-encoded clips (single-hue, bow, spin,
+moonwalk, slow-mo all confirmed). The codec round-trips (decode -> encode -> decode
+pose-identical, 90%+ byte-exact).
 
-**Missing — two real pieces:**
+**Arbitrary-length blob write — DONE (2026-06-14).** `replace_blob_v5` (via
+`kv3::set_sole_blob` / `morphic::patch_kv3_resource_sole_blob`) writes a pose blob
+of any length up to one LZ4 frame (16 KB; ~70 frames of 29 channels, more for
+fewer), updating `sizeBlobs`/`comp2`/`comp_total` + the per-blob length + the
+frame-size table. Staying within one frame keeps buf2's uncompressed size fixed, so
+no document-array reshaping. CI: `sole_blob_resize_round_trips`. `set_scalars` and
+`set_bools` gained the blobbed-LZ4-v5 branch (decompress-working + reassemble) they
+were missing, so offsets and flags can be patched on a clip.
 
-1. **A full clip *encoder*, not a patcher.** Every edit so far kept the clip's exact
-   shape (same frame count, same animated channels) so an *equal-length* blob could
-   be spliced in place. A from-scratch Blender animation won't match: it may animate
-   bones the slot left static, or want a different frame count. The importer must
-   **build a fresh `NmClip`**: decide per bone which channels are animated, compute
-   each channel's quantization range (min/max over the authored animation), write
-   `m_nNumFrames` and the offset table, then write an **arbitrary-length** pose blob
-   back into the container. That last step extends the single-frame blob writer to a
-   size change: rebuild the LZ4 blob frame(s) + the per-frame size table in buf2 +
-   the affected header sizes (today `replace_single_blob_v5` only handles an
-   equal-length, single-frame swap).
+**Encoder v1 — DONE.** `morphic::model::reencode_nm_clip(original, &NmClip)`
+re-encodes a clip with a **changed animated-rotation channel set at a fixed frame
+count**: rotation tracks may be added (a static bone becomes animated) and re-posed;
+it splices the (now longer/shorter) stream, rewrites the per-frame offsets, and
+flips each newly-animated bone's `m_bIsRotationStatic`. This is the core Blender
+re-pose case. CI: `reencode_adds_a_rotation_channel`.
+
+**Still missing — two pieces:**
+
+1. **Adding translation/scale channels + frame-count change.** Animating a bone's
+   *translation* that was static needs new `m_flRange*` values, which may be tagless
+   `0`/`1` constants the in-place patcher can't rewrite (needs a tagless->tagged
+   promotion, as the vmat recolor does, or a fuller re-encode). A *frame-count*
+   change additionally resizes the `m_compressedPoseOffsets` array and rewrites
+   `m_nNumFrames` (a document-array reshape, not in-place). Until then: keep the
+   slot's frame count (resample the Blender timeline onto it) and animate rotations
+   freely; translation animation is limited to bones the slot already animates.
 
 2. **Resampling to the slot's clock.** The engine plays a slot at a fixed length
-   (for abilities the duration is gameplay-timed), so the Blender timeline is
-   resampled onto the slot's frame grid. Want it *longer* than the slot? Pick a
-   longer slot (e.g. an idle), or have the encoder rewrite the frame count — the
-   same full-rebuild path as (1). (This is the "reload is too short" problem: the
-   reload slots are ~0.7 s.)
+   (confirmed clip-duration-driven, even for abilities, via the Warden slow-mo
+   test). Resample the Blender timeline onto the slot's frame grid; want it
+   *longer*? Pick a longer slot, or land the frame-count-change capability above.
 
 ## De-risking order
 

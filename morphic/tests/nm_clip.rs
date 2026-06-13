@@ -239,6 +239,72 @@ fn sole_blob_resize_round_trips() {
 }
 
 #[test]
+fn reencode_adds_a_rotation_channel() {
+    // The encoder step toward authoring: animate a bone whose rotation was static
+    // in the slot (the common Blender case), at a fixed frame count. The pose
+    // stream grows by 3 u16/frame, the offsets shift, and the bone's
+    // m_bIsRotationStatic flips to false. Re-decode must show the new animated
+    // rotation and leave every other track unchanged.
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let clip = decode_nm_clip(&bytes).expect("decode");
+    let frames = clip.frame_count as usize;
+
+    // Pick a track that is rotation-static (its rotations are None).
+    let target = clip
+        .tracks
+        .iter()
+        .position(|t| t.rotations.is_none())
+        .expect("clip has a static-rotation track");
+
+    // Give it an animated rotation: yaw ramping 0 -> 45 degrees over the clip.
+    let mut edited = clip.clone();
+    #[allow(clippy::cast_precision_loss)]
+    let rots: Vec<Quat> = (0..frames)
+        .map(|f| {
+            let frac = if frames > 1 {
+                f as f32 / (frames - 1) as f32
+            } else {
+                0.0
+            };
+            let half = (45.0_f32.to_radians() * frac) * 0.5;
+            Quat {
+                x: 0.0,
+                y: 0.0,
+                z: half.sin(),
+                w: half.cos(),
+            }
+        })
+        .collect();
+    edited.tracks[target].rotations = Some(rots.clone());
+
+    let out =
+        morphic::model::reencode_nm_clip(&bytes, &edited).expect("reencode with added channel");
+    let redec = decode_nm_clip(&out).expect("re-decode reencoded clip");
+
+    assert_eq!(redec.frame_count, clip.frame_count);
+    let got = redec.tracks[target]
+        .rotations
+        .as_ref()
+        .expect("target track is now animated");
+    assert_eq!(got.len(), frames);
+    // Last frame should be ~45 deg about Z (within quantization), distinct from the
+    // identity at frame 0.
+    let last = got[frames - 1];
+    assert!(
+        last.z.abs() > 0.2,
+        "added rotation should reach a clear angle, got {last:?}"
+    );
+    assert!((got[0].z).abs() < 0.05, "frame 0 should be ~identity");
+
+    // Every other track is unchanged from the original decode.
+    for (i, (a, b)) in clip.tracks.iter().zip(redec.tracks.iter()).enumerate() {
+        if i != target {
+            assert_eq!(a, b, "non-target track {i} changed");
+        }
+    }
+}
+
+#[test]
 fn ui_hero_select_is_fully_static() {
     // The named first target: a single authored menu pose, every track constant,
     // no compressed stream. Decodes cleanly with all channel vectors empty.

@@ -97,7 +97,16 @@ pub enum Seg {
 /// Errors if the block is not v4/v5, if any path is missing / not an integer
 /// scalar / ambiguous, or if a value does not fit its field's width.
 pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, DecodeError> {
-    let mut out = rewrap_uncompressed(block)?;
+    // A blobbed-LZ4 v5 block (a `.vnmclip_c` with its pose blob) is decompressed to
+    // a walkable working copy and re-emitted still compressed (the blob frames
+    // carried through verbatim), exactly as [`set_doubles`] does; otherwise rewrap
+    // to an uncompressed block. Either way the in-place patch is identical.
+    let blobbed = is_blobbed_lz4_v5(block);
+    let mut out = if blobbed {
+        decompress_v5_working(block)?
+    } else {
+        rewrap_uncompressed(block)?
+    };
     // v5 uses a two-buffer layout (120-byte header); v4 a single buffer (72-byte
     // header). Both patch in place once decompressed; only the lane math differs.
     let version = u32_at(&out, 0)? & 0xFF;
@@ -137,7 +146,11 @@ pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, D
             .ok_or(DecodeError::Kv3("scalar patch offset out of range"))?
             .copy_from_slice(&bytes);
     }
-    Ok(out)
+    if blobbed {
+        reassemble_blobbed_v5(block, &out)
+    } else {
+        Ok(out)
+    }
 }
 
 /// Sets `DOUBLE` (f64) fields located by KV3 path, in place, on a byte-faithful
@@ -1394,7 +1407,15 @@ fn write_i32_at(b: &mut [u8], o: usize, v: i32) {
 ///
 /// Errors if the block is not v5, or if a path is missing / not a bool / ambiguous.
 pub fn set_bools(block: &[u8], edits: &[(Vec<Seg>, bool)]) -> Result<Vec<u8>, DecodeError> {
-    let mut out = rewrap_uncompressed(block)?;
+    // Blobbed-LZ4 v5 (a `.vnmclip_c` with its pose blob) decompresses to a walkable
+    // working copy and re-emits still compressed, like [`set_doubles`]; otherwise
+    // rewrap uncompressed. The in-place flip is identical either way.
+    let blobbed = is_blobbed_lz4_v5(block);
+    let mut out = if blobbed {
+        decompress_v5_working(block)?
+    } else {
+        rewrap_uncompressed(block)?
+    };
     if out.len() < 120 || u32::from_le_bytes([out[0], out[1], out[2], out[3]]) & 0xFF != 5 {
         return Err(DecodeError::Kv3("bool patch requires KV3 v5"));
     }
@@ -1437,7 +1458,11 @@ pub fn set_bools(block: &[u8], edits: &[(Vec<Seg>, bool)]) -> Result<Vec<u8>, De
             BoolKind::ValueByte => *b = u8::from(want),
         }
     }
-    Ok(out)
+    if blobbed {
+        reassemble_blobbed_v5(block, &out)
+    } else {
+        Ok(out)
+    }
 }
 
 /// Encodes `value` to the little-endian bytes of an integer scalar of node type
