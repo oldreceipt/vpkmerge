@@ -327,6 +327,11 @@ playable animated GLB. `NmClip::duration` / `fps()` set the rate. This is the
 grimoire animated-hero-preview primitive and the offline way to eyeball an edited
 clip before installing. Example: `examples/nm_clip_preview_glb.rs`.
 
+**End-state design** for hand-authoring animations in Blender (export rig to glTF,
+key it, import + compile + inject) and what's still missing (a full clip *encoder*
+that writes an arbitrary-length pose blob, vs. today's equal-length in-place patch):
+[docs/anim-authoring-pipeline.md](docs/anim-authoring-pipeline.md).
+
 ## Related
 
 - `../grimoire/` is the mod manager that uses these VPKs. The user plans to eventually fold the GUI logic into the Grimoire desktop client; treat `gui/` as a prototype for that integration.
