@@ -152,6 +152,25 @@ re-encode byte-for-byte. The ~9% that do not are the smallest-three quaternion's
 inherent largest-component tie (two near-equal components let an equivalent
 3-word encoding be chosen) and are pose-identical, not a codec error. Committed
 fixtures + CI round-trip: `tests/nm_clip.rs` over `fixtures/nm/*.vnmclip_c`.
+
+### First authored custom animation (2026-06-13, pending in-game verify)
+
+`vpkmerge-core/examples/yamato_custom_pose.rs` authors the first hand-made
+Deadlock pose: it edits Yamato's static `ui_hero_select` clip (raise
+`arm_upper_L` 75 degrees, tilt `head` 25, lean `spine_2` 20) by **byte-faithfully
+patching the `m_constantRotation` quaternions in place**
+(`patch_kv3_resource_doubles`/`_floats`, the same structural patch the vpost /
+material recolors use, so the v5 envelope is preserved), then packs the edited
+clip at her `reload_idle` + `reload_idle_quick` paths (the proven press-R taunt
+slots from the experiment rounds). Offline it bakes the edited pose onto Yamato's
+mesh (`bake_nm_pose`): 58.5% of vertices move from the unedited pose (max ~29u),
+and a re-decode of the patched clip confirms the targeted rotations, so the edit
+is well-formed. Staged addon: `.scratch/yamato_taunt/yamato_reload_taunt_dir.vpk`
+(+ a `yamato_custom_pose.glb` to eyeball). Install as a free `pakNN_dir.vpk` in
+`game/citadel/addons/` and press R. (This edits a *static* clip, so it exercises
+the KV3 patch path, not the new compressed-pose codec; an animated-clip edit
+would splice an `encode_compressed_pose`d stream of equal length in place.)
+
 - Several heroes ship alternate UI face meshes (`head_ui_smug`/`_cocky`/...) and
   Apollo a long sword; the export includes all parts. Trimming alternate faces to
   one is a separate hero-card polish item (cf. the Viscous alt-form drop), not a
