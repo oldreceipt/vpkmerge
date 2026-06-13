@@ -84,12 +84,24 @@ no document-array reshaping. CI: `sole_blob_resize_round_trips`. `set_scalars` a
 `set_bools` gained the blobbed-LZ4-v5 branch (decompress-working + reassemble) they
 were missing, so offsets and flags can be patched on a clip.
 
-**Encoder v1 — DONE.** `morphic::model::reencode_nm_clip(original, &NmClip)`
-re-encodes a clip with a **changed animated-rotation channel set at a fixed frame
-count**: rotation tracks may be added (a static bone becomes animated) and re-posed;
-it splices the (now longer/shorter) stream, rewrites the per-frame offsets, and
-flips each newly-animated bone's `m_bIsRotationStatic`. This is the core Blender
-re-pose case. CI: `reencode_adds_a_rotation_channel`.
+**Encoder v1 — DONE, IN-GAME CONFIRMED (2026-06-14).**
+`morphic::model::reencode_nm_clip(original, &NmClip)` re-encodes a clip with a
+**changed animated-rotation channel set at a fixed frame count**: rotation tracks
+may be added (a static bone becomes animated) and re-posed; it splices the (now
+longer/shorter) stream, rewrites the per-frame offsets, and flips each
+newly-animated bone's `m_bIsRotationStatic`. CI: `reencode_adds_a_rotation_channel`.
+Verified in-engine: a re-encode that converted all 68 static rotation tracks of
+Yamato's `reload_idle_quick` to animated loaded and played (whole upper body
+wobbled). The container fix that unblocked it: a blobbed KV3 block has a second
+`0xFFEEDD00` trailer after the compressed blob frames that the engine asserts on
+(morphic's reader ignores it); `replace_blob_v5` now re-appends it. Validated
+offline against VRF/Source2Viewer (the engine-grade KV3 reader) before in-game.
+
+**Bone masks are a real constraint.** Only the **upper body** moved in that test:
+the animgraph blends `reload_idle_quick` over an upper-body bone mask, so authored
+leg/lower-body channels are discarded for that slot even though the clip carries
+them. Pick the slot by which bones it un-masks: a full-body idle (e.g.
+`hideout_stand_idle`) for whole-body motion, an upper-body slot for arm/torso work.
 
 **Still missing — two pieces:**
 
