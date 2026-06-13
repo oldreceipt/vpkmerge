@@ -103,7 +103,24 @@ leg/lower-body channels are discarded for that slot even though the clip carries
 them. Pick the slot by which bones it un-masks: a full-body idle (e.g.
 `hideout_stand_idle`) for whole-body motion, an upper-body slot for arm/torso work.
 
-**Full encoder — DONE (CI; v4 path pending in-game confirm).**
+**IN-GAME RESULT (2026-06-14): the v4 full re-encode is ENGINE-INERT.** A clip
+re-encoded via `encode_kv3_resource` (uncompressed v4) loads with no KV3 error and
+opens in Source2Viewer, but the engine's NM animation runtime does **not** read its
+pose data -- it does not animate, even for channels the clip already animates
+(tested: a v4-re-encoded reload that animated via the v5 path showed nothing; a
+from-scratch idle showed nothing). NM clips ship v5; downgrading to v4 makes the
+pose blob invisible to the animation system. **Only the v5 byte-faithful in-place
+path animates in-game** (`patch_kv3_resource_blob` / `set_*`, LZ4 preserved -- the
+bow/spin/moonwalk/slow-mo effects). So `reencode_nm_clip_full` is an **offline-only**
+tool (round-trip tests, GLB preview, S2V) until morphic gains a **v5 KV3 writer**;
+the gaps it "closes" (translation/scale adds, frame-count change, from-scratch) are
+NOT yet achievable in-game. To deliver them in-game: write a v5 encoder (two-buffer
++ LZ4 frames) so a full re-encode stays v5, or do the structural edits surgically in
+the v5 container. Separately, whether the engine even reads *added* channels (vs a
+compile-baked channel set) is still open -- the reload add test was confounded by
+the slot's upper-body bone mask.
+
+**Full encoder (offline only) -- DONE (CI; NOT engine-viable, see above).**
 `morphic::model::reencode_nm_clip_full(original, &NmClip)` closes both remaining
 gaps by **rebuilding the whole DATA block from the value tree** (uncompressed v4 via
 `encode_kv3_resource`) instead of patching in place. Each former blocker becomes a
