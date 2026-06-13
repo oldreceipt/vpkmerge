@@ -69,6 +69,9 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let pak = args.next().context("missing arg: pak01_dir.vpk")?;
     let out_dir = args.next().context("missing arg: out_dir")?;
+    // "full" -> route through reencode_nm_clip_full (whole-DATA v4 re-encode) to
+    // confirm that path plays in-engine; otherwise the in-place v5 surgical path.
+    let full = args.next().as_deref() == Some("full");
 
     let bytes = vpkmerge_core::read_vpk_entry(&pak, CLIP)?;
     let clip = decode_nm_clip(&bytes)?;
@@ -104,7 +107,12 @@ fn main() -> Result<()> {
         clip.tracks.len() - static_before,
     );
 
-    let out = reencode_nm_clip(&bytes, &edited).context("reencode (add all rotation channels)")?;
+    let out = if full {
+        println!("(full v4 re-encode path)");
+        morphic::model::reencode_nm_clip_full(&bytes, &edited).context("reencode_nm_clip_full")?
+    } else {
+        reencode_nm_clip(&bytes, &edited).context("reencode (add all rotation channels)")?
+    };
     let redec = decode_nm_clip(&out).context("re-decode reencoded clip")?;
     let now_animated = redec
         .tracks
