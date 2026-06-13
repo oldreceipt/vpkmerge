@@ -518,7 +518,11 @@ fn synthetic_model() -> Model {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         normals: vec![[0.0, 0.0, 1.0]; 3],
         tangents: Vec::new(),
-        texcoords: vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]],
+        texcoords: vec![
+            vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            // A second UV set (detail/AO pass) exercises TEXCOORD_1 emission.
+            vec![[0.5, 0.5], [1.0, 0.5], [0.5, 1.0]],
+        ],
         colors: vec![vec![
             [0.8, 0.3, 0.2, 1.0],
             [0.7, 0.25, 0.2, 1.0],
@@ -588,6 +592,14 @@ fn glb_writes_and_reloads() {
     assert!(prim.get(&gltf::Semantic::Colors(0)).is_some(), "COLOR_0");
     assert!(prim.get(&gltf::Semantic::Joints(0)).is_some(), "JOINTS_0");
     assert!(prim.get(&gltf::Semantic::Weights(0)).is_some(), "WEIGHTS_0");
+    assert!(
+        prim.get(&gltf::Semantic::TexCoords(0)).is_some(),
+        "TEXCOORD_0"
+    );
+    assert!(
+        prim.get(&gltf::Semantic::TexCoords(1)).is_some(),
+        "TEXCOORD_1 (second UV set)"
+    );
     assert!(prim.indices().is_some(), "indices");
 }
 
@@ -706,6 +718,142 @@ fn glb_textured_embeds_resolved_images() {
     );
     // pbr.vfx exposes g_tNormalRoughness, so a normal map is wired too.
     assert!(mat.normal_texture().is_some(), "normal texture wired");
+}
+
+/// The textured path emits the `morphic` extras payload (NPR shader params +
+/// embedded mask textures) and rides the overbright self-illum scale on
+/// `KHR_materials_emissive_strength` via the serialized-JSON injection pass.
+#[test]
+fn glb_textured_emits_npr_extras_and_emissive_strength() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let resolver = FixtureResolver {
+        vmat: std::fs::read(root.join("fixtures/material/vindicta_headv2.vmat_c"))
+            .expect("vmat fixture"),
+        vtex: std::fs::read(root.join("fixtures/bc7/generic_sleep_icon.vtex_c"))
+            .expect("vtex fixture"),
+    };
+    let glb = super::to_glb_textured(&synthetic_model(), &resolver).expect("textured glb");
+
+    // Read the raw JSON chunk: the injected extensions and extras are easiest
+    // to assert on structurally (the gltf crate hides unknown extensions).
+    let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    assert_eq!(&glb[16..20], b"JSON");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&glb[20..20 + json_len]).expect("glb json chunk");
+
+    // vindicta_headv2 carries g_flSelfIllumScale1 = 3.5 (> 1) and a self-illum
+    // mask, so the material gets KHR_materials_emissive_strength, and the
+    // extension is declared at the root (required for valid glTF).
+    let used = doc["extensionsUsed"].as_array().expect("extensionsUsed");
+    assert!(
+        used.iter().any(|v| v == "KHR_materials_emissive_strength"),
+        "extension listed in extensionsUsed"
+    );
+    let mat = &doc["materials"][0];
+    let strength = mat["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+        .as_f64()
+        .expect("emissiveStrength");
+    assert!((strength - 3.5).abs() < 1e-6, "scale carried: {strength}");
+
+    // The morphic extras payload: shader + full param tables + NPR masks.
+    let morphic = &mat["extras"]["morphic"];
+    assert_eq!(morphic["shader"], "pbr.vfx");
+    assert_eq!(morphic["ints"]["F_USE_NPR_LIGHTING"], 1);
+    let scale = morphic["floats"]["g_flSelfIllumScale1"]
+        .as_f64()
+        .expect("float param");
+    assert!((scale - 3.5).abs() < 1e-6);
+    let tint = morphic["vectors"]["g_vSelfIllumTint1"]
+        .as_array()
+        .expect("vector param");
+    assert_eq!(tint.len(), 4, "vectors are [x, y, z, w]");
+
+    // All three NPR mask slots resolve (to the fixture BC7), embed, and are
+    // referenced by glTF texture index.
+    let texture_count = doc["textures"].as_array().map_or(0, Vec::len) as u64;
+    for slot in [
+        "g_tTintMaskRimLightMask",
+        "g_tNprOutlineMask",
+        "g_tNprTransmissiveColor",
+    ] {
+        let idx = morphic["textures"][slot]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{slot} embedded"));
+        assert!(idx < texture_count, "{slot} texture index in range");
+    }
+}
+
+/// The ORM image packs the metalness mask's R channel into B, nearest-neighbor
+/// resampled to the roughness image's dimensions; without a mask B stays 0.
+#[test]
+fn metal_rough_packs_resampled_metalness() {
+    // 2x2 packed normal (alpha = roughness) + 1x1 metalness (R = 200): the
+    // single metal texel upsamples across the whole ORM image.
+    #[rustfmt::skip]
+    let rough = [
+        10, 20, 30, 100,  10, 20, 30, 110,
+        10, 20, 30, 120,  10, 20, 30, 130,
+    ];
+    let metal = (1u32, 1u32, vec![200u8, 0, 0, 255]);
+    let png = super::glb::metal_rough_png(2, 2, &rough, Some(&metal));
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    let expect_rough = [100u8, 110, 120, 130];
+    for (i, px) in img.pixels().enumerate() {
+        assert_eq!(px[0], 0, "R unused");
+        assert_eq!(px[1], expect_rough[i], "G = roughness");
+        assert_eq!(px[2], 200, "B = metalness");
+    }
+
+    let png = super::glb::metal_rough_png(2, 2, &rough, None);
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    assert!(img.pixels().all(|px| px[2] == 0), "no mask: B = 0");
+}
+
+/// [`super::glb::inject_material_extensions`] lands each extension object on
+/// the right material and declares every name in `extensionsUsed`.
+#[test]
+fn material_extensions_inject_into_serialized_json() {
+    let json = r#"{"asset":{"version":"2.0"},"materials":[{"name":"a"},{"name":"b"}]}"#;
+    let mut unlit = serde_json::Map::new();
+    unlit.insert("KHR_materials_unlit".to_owned(), serde_json::json!({}));
+    let mut glass = serde_json::Map::new();
+    glass.insert(
+        "KHR_materials_transmission".to_owned(),
+        serde_json::json!({ "transmissionFactor": 0.9 }),
+    );
+    glass.insert(
+        "KHR_materials_ior".to_owned(),
+        serde_json::json!({ "ior": 1.5 }),
+    );
+    let mut per = std::collections::BTreeMap::new();
+    per.insert(0usize, unlit);
+    per.insert(1usize, glass);
+
+    let out = super::glb::inject_material_extensions(json, &per).expect("inject");
+    let doc: serde_json::Value = serde_json::from_str(&out).expect("reparse");
+    assert!(doc["materials"][0]["extensions"]["KHR_materials_unlit"].is_object());
+    let t = doc["materials"][1]["extensions"]["KHR_materials_transmission"]["transmissionFactor"]
+        .as_f64()
+        .expect("transmissionFactor");
+    assert!((t - 0.9).abs() < 1e-9);
+    let ior = doc["materials"][1]["extensions"]["KHR_materials_ior"]["ior"]
+        .as_f64()
+        .expect("ior");
+    assert!((ior - 1.5).abs() < 1e-9);
+    let used: Vec<&str> = doc["extensionsUsed"]
+        .as_array()
+        .expect("extensionsUsed")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert_eq!(
+        used,
+        [
+            "KHR_materials_ior",
+            "KHR_materials_transmission",
+            "KHR_materials_unlit"
+        ]
+    );
 }
 
 #[test]
