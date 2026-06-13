@@ -206,6 +206,39 @@ fn animated_edit_splices_back_into_the_resource() {
 }
 
 #[test]
+fn sole_blob_resize_round_trips() {
+    // The container can write a pose blob of a DIFFERENT length (single frame):
+    // extend reload_idle_quick's blob, write it back, and confirm the resource
+    // re-reads exactly the new bytes. This exercises the per-blob length,
+    // sizeBlobs, the frame-size table, comp2, and the header-size updates — if any
+    // were wrong the re-read blob would be the wrong length or corrupt. The frame
+    // offsets are unchanged, so the (longer) blob's trailing bytes are never read
+    // by the track decoder and the original tracks decode identically.
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let clip = decode_nm_clip(&bytes).expect("decode");
+    let orig_blob = clip.compressed_pose_data.clone();
+
+    let mut bigger = orig_blob.clone();
+    bigger.extend(std::iter::repeat_n(0xAB, 300)); // +300 bytes, still < 16 KB
+    assert!(bigger.len() <= 16384);
+
+    let patched =
+        morphic::patch_kv3_resource_sole_blob(&bytes, &bigger).expect("write a longer sole blob");
+    let redec = decode_nm_clip(&patched).expect("re-decode after resize");
+
+    assert_eq!(
+        redec.compressed_pose_data, bigger,
+        "blob round-trips at the new length"
+    );
+    assert_eq!(redec.frame_count, clip.frame_count);
+    // The pose tracks are unchanged (offsets untouched, the extra bytes unread).
+    assert_eq!(
+        redec.tracks, clip.tracks,
+        "tracks unchanged by trailing bytes"
+    );
+}
+
+#[test]
 fn ui_hero_select_is_fully_static() {
     // The named first target: a single authored menu pose, every track constant,
     // no compressed stream. Decodes cleanly with all channel vectors empty.

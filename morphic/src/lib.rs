@@ -163,6 +163,17 @@ pub fn patch_kv3_resource_blob(
     resource.rebuild_with_data(&new_data)
 }
 
+/// Replace the sole binary blob of a resource's KV3 `DATA` block with `new` of any
+/// length up to one LZ4 frame (16 KB). The length-changing sibling of
+/// [`patch_kv3_resource_blob`], for re-encoding a `.vnmclip_c` whose pose stream
+/// grew or shrank (a changed animated-channel set). See [`kv3::set_sole_blob`].
+pub fn patch_kv3_resource_sole_blob(original: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_sole_blob(data, new)?;
+    resource.rebuild_with_data(&new_data)
+}
+
 /// Patch `STRING` fields of a resource's KV3 `DATA` block in place by path by
 /// redirecting the field to an already-interned string table value. This does not
 /// add strings or change the KV3 structure, so it is suitable for conservative

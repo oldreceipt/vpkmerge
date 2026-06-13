@@ -239,30 +239,31 @@ pub(crate) fn reassemble_blobbed_v5(orig: &[u8], working: &[u8]) -> Result<Vec<u
     Ok(out)
 }
 
-/// Replace the sole binary blob of a blobbed-LZ4 v5 block with `new` (same
-/// uncompressed length as the existing blob), re-emitting an engine-loadable
-/// compressed block. Handles only the single-blob, single-LZ4-frame shape, which
-/// is every Deadlock `.vnmclip_c` pose stream (one blob, < 16 KB, one frame);
-/// any other shape errors so the caller can fall back rather than corrupt.
+/// Replace the sole binary blob of a blobbed-LZ4 v5 block with `new`, re-emitting
+/// an engine-loadable compressed block. `new` may be a **different length** than
+/// the existing blob, as long as it still fits a single LZ4 frame
+/// (`new.len() <= frame_size`, 16 KB) — which covers every Deadlock `.vnmclip_c`
+/// pose stream and any custom clip up to ~16 KB of pose data. Multi-frame blobs
+/// and multi-blob blocks error rather than corrupt.
 ///
-/// The per-frame compressed-size table is the tail of buf2 (after the type
-/// stream, the per-blob length table, and the trailer), so swapping the blob
-/// means: recompress it into one LZ4 frame, rewrite that one `u16` table entry,
-/// recompress buf2, and fix the two affected header sizes. `old` is verified
-/// against the decompressed existing frame first, so any layout surprise errors
-/// out instead of shipping a broken file. The block stays `compressionMethod = 1`
-/// (the engine misreads a blobbed block flipped to 0; see [`rewrap_uncompressed`]).
-pub(crate) fn replace_single_blob_v5(
+/// Keeping the blob within one frame means buf2's *uncompressed* size is
+/// unchanged (the one-entry frame-size table does not grow), so only a handful of
+/// fields move: the per-blob length and the frame-size `u16` (both in buf2's
+/// tail), `sizeBlobs` (60), `comp2` (84), and the total compressed size (52,
+/// which excludes blob frames). The block stays `compressionMethod = 1` (the
+/// engine misreads a blobbed block flipped to 0; see [`rewrap_uncompressed`]).
+///
+/// When `verify_old` is `Some`, the existing blob must decompress to exactly those
+/// bytes (a safety check for content-keyed callers); pass `None` to replace the
+/// sole blob unconditionally.
+pub(crate) fn replace_blob_v5(
     orig: &[u8],
-    old: &[u8],
     new: &[u8],
+    verify_old: Option<&[u8]>,
 ) -> Result<Vec<u8>, DecodeError> {
     const HEADER: usize = 120;
     if !is_blobbed_lz4_v5(orig) {
         return Err(DecodeError::Kv3("blob replace: not a blobbed LZ4 v5 block"));
-    }
-    if old.len() != new.len() {
-        return Err(DecodeError::Kv3("blob replace requires equal length"));
     }
     if i32_at(orig, 56) != 1 {
         return Err(DecodeError::Kv3(
@@ -274,13 +275,10 @@ pub(crate) fn replace_single_blob_v5(
     let comp1 = usize_at(orig, 76)?;
     let unc2 = usize_at(orig, 80)?;
     let comp2 = usize_at(orig, 84)?;
-    if size_blobs != new.len() {
-        return Err(DecodeError::Kv3("blob replace: new length != blob length"));
-    }
     let frame_size = usize::from(u16::from_le_bytes([orig[26], orig[27]]));
-    if frame_size == 0 || size_blobs > frame_size {
+    if frame_size == 0 || new.len() > frame_size {
         return Err(DecodeError::Kv3(
-            "blob replace: multi-frame blob not handled",
+            "blob replace: new blob exceeds one LZ4 frame (multi-frame not handled)",
         ));
     }
     if size_block_compressed != 2 {
@@ -297,50 +295,55 @@ pub(crate) fn replace_single_blob_v5(
         .ok_or(DecodeError::Kv3("buffer2 extent overflow"))?;
     let frames = slice(orig, frames_start, orig.len().saturating_sub(frames_start))?;
 
-    // The single frame's compressed size is the lone u16 at buf2's tail.
-    let raw2 = decompress(slice(orig, b2c, comp2)?, 1, unc2, comp2)?;
-    if raw2.len() < size_block_compressed {
-        return Err(DecodeError::Kv3(
-            "blob replace: buf2 shorter than frame table",
-        ));
+    // buf2 tail layout (single blob, single frame): [per-blob length i32]
+    // [trailer 4][frame-size table u16]. The per-blob length and the frame size
+    // are the only buf2 bytes that change; the type stream ahead of them is kept.
+    let mut raw2 = decompress(slice(orig, b2c, comp2)?, 1, unc2, comp2)?;
+    let tail_len = 4 + 4 + size_block_compressed; // 1 blob length + trailer + 1 frame size
+    if raw2.len() < tail_len {
+        return Err(DecodeError::Kv3("blob replace: buf2 shorter than its tail"));
     }
-    let table_off = raw2.len() - size_block_compressed;
-    let old_frame_len = usize::from(u16::from_le_bytes([raw2[table_off], raw2[table_off + 1]]));
+    let len_off = raw2.len() - tail_len; // start of the per-blob length i32
+    let table_off = raw2.len() - size_block_compressed; // the frame-size u16
 
-    // Verify the existing frame decompresses to exactly `old` (empty dictionary:
-    // it is the first and only frame), so a layout mismatch fails safely.
-    let frame_in = slice(frames, 0, old_frame_len)?;
-    let mut decoded = vec![0u8; size_blobs];
-    let n = lz4_flex::block::decompress_into(frame_in, &mut decoded)
-        .map_err(|e| DecodeError::Kv3Lz4(e.to_string()))?;
-    if n != size_blobs || decoded != old {
-        return Err(DecodeError::Kv3(
-            "blob replace: existing blob did not match `old`",
-        ));
+    // Optionally verify the existing blob decompresses to `old` (empty dictionary:
+    // it is the first and only frame), so a layout surprise fails safely.
+    if let Some(old) = verify_old {
+        let old_frame_len = usize::from(u16::from_le_bytes([raw2[table_off], raw2[table_off + 1]]));
+        let frame_in = slice(frames, 0, old_frame_len)?;
+        let mut decoded = vec![0u8; size_blobs];
+        let n = lz4_flex::block::decompress_into(frame_in, &mut decoded)
+            .map_err(|e| DecodeError::Kv3Lz4(e.to_string()))?;
+        if n != size_blobs || decoded != old {
+            return Err(DecodeError::Kv3(
+                "blob replace: existing blob did not match `old`",
+            ));
+        }
     }
-    let trailing = frames.get(old_frame_len..).unwrap_or(&[]);
 
-    // Recompress the new blob into one frame and patch the frame-table entry.
+    // Compress the new blob into one frame; rewrite the per-blob length and the
+    // frame-size table entry in buf2's tail, then recompress buf2.
     let new_frame = lz4_flex::block::compress(new);
     let new_frame_len = u16::try_from(new_frame.len())
         .map_err(|_| DecodeError::Kv3("blob replace: frame exceeds 64 KB"))?;
-    let mut raw2_new = raw2;
-    raw2_new[table_off..table_off + 2].copy_from_slice(&new_frame_len.to_le_bytes());
-    let comp2_new = lz4_flex::block::compress(&raw2_new);
+    raw2[len_off..len_off + 4].copy_from_slice(&fit_i32(new.len())?.to_le_bytes());
+    raw2[table_off..table_off + 2].copy_from_slice(&new_frame_len.to_le_bytes());
+    let comp2_new = lz4_flex::block::compress(&raw2);
 
-    // comp1 (76) and unc2 (80) are unchanged; only comp2 (84) and the total
-    // compressed size (52, blob frames excluded) move. Blob framing fields
-    // (26/56/60/68) are untouched: one blob, one frame, same uncompressed length.
+    // comp1 (76) and unc2 (80) are unchanged (buf2's uncompressed size is fixed).
+    // sizeBlobs (60) tracks the new uncompressed blob length; comp2 (84) and the
+    // total compressed size (52, frames excluded) move. countBlocks (56),
+    // size_block_compressed (68, one frame), and frame_size (26) stay.
     let total_comp = comp1
         .checked_add(comp2_new.len())
         .ok_or(DecodeError::Kv3("compressed size overflow"))?;
     let mut out = orig[..HEADER].to_vec();
     write_i32(&mut out, 52, fit_i32(total_comp)?);
+    write_i32(&mut out, 60, fit_i32(new.len())?);
     write_i32(&mut out, 84, fit_i32(comp2_new.len())?);
     out.extend_from_slice(slice(orig, HEADER, comp1)?);
     out.extend_from_slice(&comp2_new);
     out.extend_from_slice(&new_frame);
-    out.extend_from_slice(trailing);
     Ok(out)
 }
 

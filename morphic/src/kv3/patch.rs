@@ -2236,7 +2236,7 @@ pub fn set_blob(block: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeE
     // lives in a compressed frame. Recompress the frame in place, keeping the
     // block compressed (the engine misreads a blobbed block flipped to raw).
     if super::rewrap::is_blobbed_lz4_v5(block) {
-        return super::rewrap::replace_single_blob_v5(block, old, new);
+        return super::rewrap::replace_blob_v5(block, new, Some(old));
     }
 
     // Otherwise the block has no compressed blob frames: re-wrap it uncompressed
@@ -2255,6 +2255,21 @@ pub fn set_blob(block: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeE
     let start = found.ok_or(DecodeError::Kv3("blob not found in block"))?;
     out[start..start + new.len()].copy_from_slice(new);
     Ok(out)
+}
+
+/// Replace the sole binary blob of a blobbed-LZ4 v5 block (a `.vnmclip_c`'s
+/// `m_compressedPoseData`) with `new` of **any** length up to one LZ4 frame
+/// (16 KB), unlike [`set_blob`] which is content-keyed and equal-length. Built for
+/// re-encoding a clip whose animated-channel set changed (so the pose stream grew
+/// or shrank). Errors on a non-blobbed block or a `new` larger than one frame; see
+/// [`super::rewrap::replace_blob_v5`].
+pub fn set_sole_blob(block: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    if !super::rewrap::is_blobbed_lz4_v5(block) {
+        return Err(DecodeError::Kv3(
+            "set_sole_blob: not a blobbed LZ4 v5 block",
+        ));
+    }
+    super::rewrap::replace_blob_v5(block, new, None)
 }
 
 #[cfg(test)]
