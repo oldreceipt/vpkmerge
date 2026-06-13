@@ -147,6 +147,22 @@ pub fn patch_kv3_resource_floats(
     resource.rebuild_with_data(&new_data)
 }
 
+/// Replace a binary-blob value in a resource's KV3 `DATA` block in place,
+/// preserving every other byte. `old` is the current blob bytes (located by exact
+/// content, so it must occur once) and `new` must be the same length. Built to
+/// write a re-encoded `m_compressedPoseData` stream back into a `.vnmclip_c`, the
+/// blob sibling of [`patch_kv3_resource_floats`]; see [`kv3::set_blob`].
+pub fn patch_kv3_resource_blob(
+    original: &[u8],
+    old: &[u8],
+    new: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    let data = resource.data_block()?;
+    let new_data = kv3::set_blob(data, old, new)?;
+    resource.rebuild_with_data(&new_data)
+}
+
 /// Patch `STRING` fields of a resource's KV3 `DATA` block in place by path by
 /// redirecting the field to an already-interned string table value. This does not
 /// add strings or change the KV3 structure, so it is suitable for conservative

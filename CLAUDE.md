@@ -307,6 +307,16 @@ encoding of the same rotation), not a codec error. CI round-trip on committed
 `morphic/fixtures/nm/*.vnmclip_c` lives in `tests/nm_clip.rs`. Recon + format
 writeup: [docs/handoff-nm-loose-clip-pose.md](docs/handoff-nm-loose-clip-pose.md).
 
+**Editing an animated clip** writes the re-encoded (equal-length) stream back with
+`morphic::patch_kv3_resource_blob` (-> `kv3::set_blob`): for a blobbed-LZ4 v5 block
+(`.vnmclip_c`) it recompresses the single LZ4 blob frame, rewrites the per-frame
+size table in buf2's tail, and keeps the block compressed (the engine misreads a
+blobbed block flipped to raw; same constraint as the vmat recolor's
+`reassemble_blobbed_v5`). Only the single-blob/single-frame shape (every pose
+stream: one blob < 16 KB) is handled. Examples: `yamato_custom_pose.rs` (static
+pose edit via `m_constantRotation` patch) and `yamato_animated_taunt.rs` (animated
+"bow" layered onto rotation tracks via the codec + blob splice).
+
 ## Related
 
 - `../grimoire/` is the mod manager that uses these VPKs. The user plans to eventually fold the GUI logic into the Grimoire desktop client; treat `gui/` as a prototype for that integration.

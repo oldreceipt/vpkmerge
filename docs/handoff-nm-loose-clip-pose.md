@@ -168,8 +168,29 @@ and a re-decode of the patched clip confirms the targeted rotations, so the edit
 is well-formed. Staged addon: `.scratch/yamato_taunt/yamato_reload_taunt_dir.vpk`
 (+ a `yamato_custom_pose.glb` to eyeball). Install as a free `pakNN_dir.vpk` in
 `game/citadel/addons/` and press R. (This edits a *static* clip, so it exercises
-the KV3 patch path, not the new compressed-pose codec; an animated-clip edit
-would splice an `encode_compressed_pose`d stream of equal length in place.)
+the KV3 patch path, not the compressed-pose codec.)
+
+### First authored custom *motion* (2026-06-13, pending in-game verify)
+
+`vpkmerge-core/examples/yamato_animated_taunt.rs` goes further: it edits an
+*animated* clip with the codec. It decodes Yamato's `reload_idle_quick` (21
+frames, 4914-byte pose stream), layers an authored "bow" onto the spine/neck/head
+**rotation tracks across all frames** (a tilt ramping 0 -> peak -> 0 over the
+clip, accumulating to ~38.5 degrees at the head), `encode_compressed_pose`s the
+edited tracks, and splices the (equal-length) stream back with the new
+**`patch_kv3_resource_blob`** -> `kv3::set_blob` -> `rewrap::replace_single_blob_v5`:
+the blob lives in one LZ4 frame in a blobbed-v5 block, so it recompresses just that
+frame, rewrites the one-entry per-frame size table in buf2's tail, recompresses
+buf2, and fixes the two header sizes, keeping the block `compressionMethod = 1`
+(the engine misreads a blobbed block flipped to raw; same constraint the vmat
+recolor's `reassemble_blobbed_v5` lives under). Re-decode confirms only the
+targeted tracks moved and the edit survives quantization; frame-0 and apex GLBs are
+written to eyeball. Staged addon:
+`.scratch/yamato_taunt/yamato_reload_bow_dir.vpk`. CI coverage:
+`animated_edit_splices_back_into_the_resource` in `tests/nm_clip.rs` runs the whole
+pipeline on the committed `reload_idle_quick` fixture. Only the single-blob,
+single-frame shape (every `.vnmclip_c` pose stream: one blob < 16 KB) is handled;
+multi-frame blobs error rather than corrupt.
 
 - Several heroes ship alternate UI face meshes (`head_ui_smug`/`_cocky`/...) and
   Apollo a long sword; the export includes all parts. Trimming alternate faces to

@@ -2210,6 +2210,53 @@ fn read_cstr(buf: &[u8], pos: &mut usize) -> Result<String, DecodeError> {
     Ok(s)
 }
 
+/// Replaces a binary-blob value's bytes in place, on a byte-faithful uncompressed
+/// re-wrap of `block`. `old` must appear exactly once in the (uncompressed) block
+/// and `new` must be the same length, so every other byte (including the blob's
+/// recorded length, which lives elsewhere in the structure) is preserved.
+///
+/// Unlike the path-keyed setters, this locates the blob by its (unique) content
+/// rather than by KV3 path: a blob is the only large opaque byte run in these
+/// resources, so an exact-content match is unambiguous and avoids walking the
+/// v5 blob-buffer layout. Built to write a re-encoded `m_compressedPoseData`
+/// stream back into a `.vnmclip_c` (the new stream is the same length as the old
+/// whenever the set of animated channels is unchanged).
+///
+/// Errors if lengths differ, if `old` is empty, or if `old` is absent or occurs
+/// more than once in the block.
+pub fn set_blob(block: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    if old.len() != new.len() {
+        return Err(DecodeError::Kv3("blob replace requires equal length"));
+    }
+    if old.is_empty() {
+        return Err(DecodeError::Kv3("blob replace: empty blob"));
+    }
+
+    // The common case (Deadlock `.vnmclip_c`): a blobbed-LZ4 v5 block whose blob
+    // lives in a compressed frame. Recompress the frame in place, keeping the
+    // block compressed (the engine misreads a blobbed block flipped to raw).
+    if super::rewrap::is_blobbed_lz4_v5(block) {
+        return super::rewrap::replace_single_blob_v5(block, old, new);
+    }
+
+    // Otherwise the block has no compressed blob frames: re-wrap it uncompressed
+    // (a no-op if already raw) and overwrite the blob bytes where they sit. The
+    // blob is the only large opaque run, so an exact-content match is unambiguous.
+    let mut out = rewrap_uncompressed(block)?;
+    let mut found = None;
+    for start in 0..=out.len().saturating_sub(old.len()) {
+        if &out[start..start + old.len()] == old {
+            if found.is_some() {
+                return Err(DecodeError::Kv3("blob occurs more than once; ambiguous"));
+            }
+            found = Some(start);
+        }
+    }
+    let start = found.ok_or(DecodeError::Kv3("blob not found in block"))?;
+    out[start..start + new.len()].copy_from_slice(new);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
