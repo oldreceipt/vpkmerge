@@ -41,7 +41,26 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let pak = args.next().context("pak")?;
     let out_dir = args.next().context("out_dir")?;
+    let filter = args.next().unwrap_or_else(|| "finger".to_string());
     let skel = decode_nm_skeleton(&vpkmerge_core::read_vpk_entry(&pak, SKEL)?)?;
+
+    if filter == "list" {
+        let bytes = vpkmerge_core::read_vpk_entry(
+            &pak,
+            "models/heroes_wip/yamato/clips/weapon_run_n.vnmclip_c",
+        )?;
+        let clip = decode_nm_clip(&bytes)?;
+        println!("weapon_run_n static-rotation bones:");
+        for (i, t) in clip.tracks.iter().enumerate() {
+            if t.rotations.is_none() {
+                println!(
+                    "  {i:>3} {}",
+                    skel.bone_names.get(i).map_or("?", String::as_str)
+                );
+            }
+        }
+        return Ok(());
+    }
 
     let mut packed: Vec<(String, Vec<u8>)> = Vec::new();
     let mut reported = false;
@@ -59,7 +78,7 @@ fn main() -> Result<()> {
             let name = skel.bone_names.get(i).map_or("", String::as_str);
             // Only newly-animate static-rotation finger bones (a genuine channel add
             // on an unmasked region).
-            if t.rotations.is_some() || !name.to_ascii_lowercase().contains("finger") {
+            if t.rotations.is_some() || !name.to_ascii_lowercase().contains(&filter) {
                 continue;
             }
             let base = t.settings.constant_rotation;
@@ -68,8 +87,8 @@ fn main() -> Result<()> {
                     .map(|f| {
                         #[allow(clippy::cast_precision_loss)]
                         let u = f as f32 / (frames.max(2) - 1) as f32;
-                        // clench->release each loop (0 -> 95deg -> 0), curl about local X.
-                        let deg = 95.0 * (PI * u).sin();
+                        // swing out and back each loop (0 -> 120deg -> 0).
+                        let deg = 120.0 * (PI * u).sin();
                         let h = deg.to_radians() * 0.5;
                         normalize(qmul(
                             base,
