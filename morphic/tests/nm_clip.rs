@@ -316,6 +316,32 @@ fn reencode_adds_a_rotation_channel() {
 }
 
 #[test]
+fn full_v4_reencode_round_trips() {
+    // A full re-encode through the KV3 writer (uncompressed v4, blob inline) must
+    // be readable again -- this exercises the v4 binary-blob reader path and proves
+    // the full-re-encode strategy (the basis for translation/scale channel adds and
+    // frame-count changes, which are value-tree edits). The re-decoded clip must
+    // equal the original.
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let original = decode_nm_clip(&bytes).expect("decode original");
+
+    let tree = morphic::decode_kv3_resource(&bytes).expect("decode DATA tree");
+    let reenc = morphic::encode_kv3_resource(&bytes, &tree).expect("full v4 re-encode");
+
+    // The v4 output carries the pose blob and must decode back identically.
+    let round = decode_nm_clip(&reenc).expect("re-decode v4 re-encode (v4-blob reader)");
+    assert_eq!(round.frame_count, original.frame_count);
+    assert_eq!(
+        round.compressed_pose_data, original.compressed_pose_data,
+        "pose blob survives a full v4 re-encode"
+    );
+    assert_eq!(
+        round.tracks, original.tracks,
+        "tracks survive a full v4 re-encode"
+    );
+}
+
+#[test]
 fn ui_hero_select_is_fully_static() {
     // The named first target: a single authored menu pose, every track constant,
     // no compressed stream. Decodes cleanly with all channel vectors empty.
