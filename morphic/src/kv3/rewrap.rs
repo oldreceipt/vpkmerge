@@ -344,8 +344,16 @@ pub(crate) fn replace_blob_v5(
     out.extend_from_slice(slice(orig, HEADER, comp1)?);
     out.extend_from_slice(&comp2_new);
     out.extend_from_slice(&new_frame);
+    // The block ends with a document trailer *after* the compressed blob frames
+    // (separate from the one inside buf2's tail). morphic's reader never reads it,
+    // but the engine/VRF assert on it (`trailer == 0xFFEEDD00`), so re-append it.
+    out.extend_from_slice(&BLOB_TRAILER.to_le_bytes());
     Ok(out)
 }
+
+/// Document trailer that follows the compressed blob frames at the end of a
+/// blobbed KV3 block (also appears inside buf2's tail after the blob-length table).
+const BLOB_TRAILER: u32 = 0xFFEE_DD00;
 
 /// Keep a buffer byte-identical when its raw bytes did not change (so an unchanged
 /// buffer round-trips exactly), else LZ4-recompress the patched raw bytes.

@@ -236,6 +236,17 @@ fn sole_blob_resize_round_trips() {
         redec.tracks, clip.tracks,
         "tracks unchanged by trailing bytes"
     );
+
+    // The end-of-block document trailer (after the compressed blob frames) must
+    // survive: VRF/the engine assert on it though morphic's reader ignores it.
+    // It is the only *raw* 0xFFEEDD00 in the block (buf2's internal one is inside
+    // compressed bytes), and it sits at the DATA block's end.
+    let trailer = [0x00u8, 0xDD, 0xEE, 0xFF];
+    let tail = &patched[patched.len().saturating_sub(64)..];
+    assert!(
+        tail.windows(4).any(|w| w == trailer),
+        "end-of-block 0xFFEEDD00 trailer missing after re-encode"
+    );
 }
 
 #[test]
