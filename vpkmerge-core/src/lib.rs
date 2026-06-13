@@ -33,6 +33,9 @@ pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 pub mod soundevents;
 pub use soundevents::{EventSummary, SoundEvents};
 
+pub mod cubemap;
+pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
+
 pub mod recolor;
 pub use recolor::{
     inspect_texture, recolor_model_vertex_colors, recolor_texture_hue, recolor_texture_image,

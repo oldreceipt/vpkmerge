@@ -169,6 +169,19 @@ Exposed as `vpkmerge texture <file|entry> [--from-vpk <vpk>] --hue <DEG> [--prev
 ability-VFX recolor (ult dragon, projectile self-illum), the texture half of the particle
 recolor. Full writeup: [../grimoire/docs/ability-vfx-recolor.md](../grimoire/docs/ability-vfx-recolor.md).
 
+## Cubemap export (`.vtex_c` to `.hdr`)
+
+`vpkmerge cubemap <file|entry> [--from-vpk <vpk>] --out-dir <DIR>` decodes a Source 2
+cube texture at mip 0 and writes six Radiance `.hdr` faces (flat RGBE, no RLE) named
+`px/nx/py/ny/pz/nz.hdr`, in morphic's cubemap storage order `[+X, -X, +Y, -Y, +Z, -Z]`,
+which is also the order three.js `CubeTextureLoader` expects. Decode-only (nothing is
+re-encoded or packed): built to ship real Deadlock IBL probes (the BC6H cube textures
+under `materials/skybox/`, e.g. `sky_dl_dusk_ibl_exr_3dabb6cd.vtex_c`) to the grimoire
+viewer's image-based lighting. f16 sources pass through as linear light; 8-bit sources
+are treated as sRGB and linearized. Refuses non-cubemap textures (no `CUBE_TEXTURE`
+flag). API: `vpkmerge_core::export_cubemap_hdr`, returning per-face mean luminance so
+a caller can sanity-check orientation (`py` should be the brightest sky face).
+
 ## Model vertex-color recolor (`.vmdl_c`)
 
 The **third** VFX recolor mechanism (after particle params + texture hue): some effects
