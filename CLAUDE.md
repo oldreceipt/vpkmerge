@@ -315,7 +315,17 @@ blobbed block flipped to raw; same constraint as the vmat recolor's
 `reassemble_blobbed_v5`). Only the single-blob/single-frame shape (every pose
 stream: one blob < 16 KB) is handled. Examples: `yamato_custom_pose.rs` (static
 pose edit via `m_constantRotation` patch) and `yamato_animated_taunt.rs` (animated
-"bow" layered onto rotation tracks via the codec + blob splice).
+"bow" layered onto rotation tracks via the codec + blob splice). **In-game
+confirmed (2026-06-13):** an edited animated pose stream loads and plays in the
+live engine.
+
+**Animated GLB preview:** `morphic::model::nm_clip_to_clip(clip, nm_skel,
+model_skeleton, name)` converts a decoded `NmClip` into a glTF [`Clip`] mapped onto
+the mesh skeleton by bone name (animated channels use their samples, static ones
+hold their constant); attach it as the model's `animations` and `to_glb` emits a
+playable animated GLB. `NmClip::duration` / `fps()` set the rate. This is the
+grimoire animated-hero-preview primitive and the offline way to eyeball an edited
+clip before installing. Example: `examples/nm_clip_preview_glb.rs`.
 
 ## Related
 

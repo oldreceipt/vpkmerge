@@ -35,7 +35,8 @@ use crate::kv3::Value;
 
 use super::math::{Quat, Vec3};
 use super::pose::LocalPose;
-use super::Model;
+use super::skeleton::Skeleton;
+use super::{BoneTrack, Clip, Model};
 
 /// A decoded NM skeleton. Only the bone *names*, in track order (the clip's
 /// track `i` is bone `i`), are needed to map an NM pose onto a model skeleton by
@@ -259,10 +260,27 @@ pub struct NmTrack {
 pub struct NmClip {
     pub skeleton_ref: String,
     pub frame_count: u32,
+    /// `m_flDuration` in seconds (0 for a single-frame pose). Sets the glTF
+    /// playback rate when converting to an animation.
+    pub duration: f32,
     pub additive: bool,
     pub tracks: Vec<NmTrack>,
     pub compressed_pose_data: Vec<u8>,
     pub compressed_pose_offsets: Vec<u32>,
+}
+
+impl NmClip {
+    /// Playback frames per second: `(frame_count - 1) / duration` (frame 0 at
+    /// t=0, the last frame at t=duration). Falls back to 30 fps when the duration
+    /// is missing or the clip is a single frame.
+    #[must_use]
+    pub fn fps(&self) -> f32 {
+        if self.duration > 0.0 && self.frame_count > 1 {
+            (self.frame_count - 1) as f32 / self.duration
+        } else {
+            30.0
+        }
+    }
 }
 
 // Quaternion "smallest three" packing: each stored component sits in
@@ -297,6 +315,10 @@ fn nm_clip_from_value(data: &Value) -> Result<NmClip, DecodeError> {
                 .or_else(|| v.as_int().and_then(|n| u64::try_from(n).ok()))
         })
         .unwrap_or(1) as u32;
+    let duration = data
+        .get("m_flDuration")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0) as f32;
 
     let settings: Vec<TrackSettings> = data
         .get("m_trackCompressionSettings")
@@ -333,11 +355,66 @@ fn nm_clip_from_value(data: &Value) -> Result<NmClip, DecodeError> {
     Ok(NmClip {
         skeleton_ref,
         frame_count,
+        duration,
         additive,
         tracks,
         compressed_pose_data,
         compressed_pose_offsets,
     })
+}
+
+/// Converts a decoded NM clip into a glTF-ready [`Clip`] driving `model`'s
+/// skeleton, so [`super::to_glb`] emits a playable animated GLB. NM track `i` maps
+/// to `skel.bone_names[i]`, resolved against the model skeleton by name (NM bones
+/// are a by-name subset of the mesh skeleton); tracks whose bone is absent are
+/// dropped. Every channel is emitted with one sample per frame: an animated
+/// channel uses its decoded samples, a static channel holds its constant across
+/// all frames, so the clip reproduces the authored motion (and pose) exactly. The
+/// frame rate comes from [`NmClip::fps`].
+#[must_use]
+pub fn nm_clip_to_clip(clip: &NmClip, skel: &NmSkeleton, model: &Skeleton, name: &str) -> Clip {
+    let frames = clip.frame_count as usize;
+    let mut tracks = Vec::new();
+    for (i, t) in clip.tracks.iter().enumerate() {
+        let Some(bone_name) = skel.bone_names.get(i) else {
+            continue;
+        };
+        let Some(bone) = model.bones.iter().position(|b| &b.name == bone_name) else {
+            continue;
+        };
+        let s = &t.settings;
+        let translations = t.translations.clone().unwrap_or_else(|| {
+            vec![
+                Vec3 {
+                    x: s.translation_range[0].start,
+                    y: s.translation_range[1].start,
+                    z: s.translation_range[2].start,
+                };
+                frames
+            ]
+        });
+        let rotations = t
+            .rotations
+            .clone()
+            .unwrap_or_else(|| vec![s.constant_rotation; frames]);
+        let scales = t
+            .scales
+            .clone()
+            .unwrap_or_else(|| vec![s.scale_range.start; frames]);
+        tracks.push(BoneTrack {
+            bone,
+            translations: Some(translations),
+            rotations: Some(rotations),
+            scales: Some(scales),
+        });
+    }
+    Clip {
+        name: name.to_owned(),
+        fps: clip.fps(),
+        frame_count: clip.frame_count as usize,
+        looping: true,
+        tracks,
+    }
 }
 
 fn parse_track_settings(t: &Value) -> Option<TrackSettings> {
@@ -887,6 +964,7 @@ mod tests {
         let clip = NmClip {
             skeleton_ref: String::new(),
             frame_count: 2,
+            duration: 0.0,
             additive: false,
             tracks,
             compressed_pose_data: bytes.clone(),
@@ -899,6 +977,136 @@ mod tests {
         // re-decode is identical track-for-track.
         let tracks2 = decode_frames(&settings, &data2, &offsets2, 2).expect("re-decode");
         assert_eq!(tracks2, clip.tracks);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // verbose struct literals, not real complexity
+    fn nm_clip_to_clip_maps_by_name_and_fills_static() {
+        use super::super::math::Mat4;
+        use super::super::skeleton::Bone;
+
+        let bone = |name: &str| Bone {
+            name: name.to_owned(),
+            parent: None,
+            flags: 0,
+            position: Vec3::default(),
+            rotation: Quat::default(),
+            local_bind: Mat4::IDENTITY,
+            global_bind: Mat4::IDENTITY,
+            inverse_bind: Mat4::IDENTITY,
+        };
+        // Model skeleton in a *different* order than the NM skeleton, plus an extra
+        // bone the clip never names.
+        let model = Skeleton {
+            bones: vec![bone("spine"), bone("root"), bone("extra")],
+        };
+        let nm = NmSkeleton {
+            bone_names: vec!["root".into(), "spine".into()],
+        };
+
+        let r = |s: f32| QuantRange {
+            start: s,
+            length: 0.0,
+        };
+        // track 0 (root): animated rotation, static translation (5,6,7), static scale.
+        let track0 = NmTrack {
+            settings: TrackSettings {
+                translation_range: [r(5.0), r(6.0), r(7.0)],
+                scale_range: r(1.0),
+                constant_rotation: Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                rotation_static: false,
+                translation_static: true,
+                scale_static: true,
+            },
+            rotations: Some(vec![
+                Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                Quat {
+                    x: 0.1,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 0.995,
+                },
+                Quat {
+                    x: 0.2,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 0.98,
+                },
+            ]),
+            translations: None,
+            scales: None,
+        };
+        // track 1 (spine): fully static.
+        let track1 = NmTrack {
+            settings: TrackSettings {
+                translation_range: [r(0.0), r(0.0), r(0.0)],
+                scale_range: r(2.0),
+                constant_rotation: Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                rotation_static: true,
+                translation_static: true,
+                scale_static: true,
+            },
+            rotations: None,
+            translations: None,
+            scales: None,
+        };
+        let clip = NmClip {
+            skeleton_ref: String::new(),
+            frame_count: 3,
+            duration: 0.1,
+            additive: false,
+            tracks: vec![track0, track1],
+            compressed_pose_data: Vec::new(),
+            compressed_pose_offsets: Vec::new(),
+        };
+
+        let out = nm_clip_to_clip(&clip, &nm, &model, "test");
+        assert_eq!(out.frame_count, 3);
+        assert_eq!(
+            out.tracks.len(),
+            2,
+            "both named bones map; extra is untouched"
+        );
+
+        // root -> model bone index 1; every channel filled, len == frames.
+        let root = out.tracks.iter().find(|t| t.bone == 1).expect("root track");
+        assert_eq!(root.rotations.as_ref().unwrap().len(), 3);
+        let tr = root.translations.as_ref().unwrap();
+        assert_eq!(tr.len(), 3);
+        // static translation held at the range starts across all frames.
+        assert!(tr.iter().all(|v| (v.x - 5.0).abs() < 1e-6
+            && (v.y - 6.0).abs() < 1e-6
+            && (v.z - 7.0).abs() < 1e-6));
+        // animated rotation preserved.
+        assert!((root.rotations.as_ref().unwrap()[2].x - 0.2).abs() < 1e-6);
+
+        // spine -> model bone index 0; static scale held at 2.0.
+        let spine = out
+            .tracks
+            .iter()
+            .find(|t| t.bone == 0)
+            .expect("spine track");
+        assert!(spine
+            .scales
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|&s| (s - 2.0).abs() < 1e-6));
     }
 
     #[test]
@@ -927,6 +1135,7 @@ mod tests {
         let clip = NmClip {
             skeleton_ref: String::new(),
             frame_count: 10,
+            duration: 0.0,
             additive: false,
             tracks,
             compressed_pose_data: Vec::new(),
