@@ -41,8 +41,8 @@ pub use mesh::{
 };
 pub use nm::{
     bake_nm_pose, decode_nm_clip, decode_nm_pose, decode_nm_skeleton, decode_pose_stream,
-    encode_compressed_pose, nm_clip_to_clip, reencode_nm_clip, NmClip, NmPose, NmSkeleton, NmTrack,
-    QuantRange, TrackSettings,
+    encode_compressed_pose, nm_clip_to_clip, reencode_nm_clip, reencode_nm_clip_full, NmClip,
+    NmPose, NmSkeleton, NmTrack, QuantRange, TrackSettings,
 };
 pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
 pub use skeleton::{invert_remap, localize_joints, Bone, Skeleton};

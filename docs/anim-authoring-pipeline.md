@@ -103,21 +103,27 @@ leg/lower-body channels are discarded for that slot even though the clip carries
 them. Pick the slot by which bones it un-masks: a full-body idle (e.g.
 `hideout_stand_idle`) for whole-body motion, an upper-body slot for arm/torso work.
 
-**Still missing — two pieces:**
+**Full encoder — DONE (CI; v4 path pending in-game confirm).**
+`morphic::model::reencode_nm_clip_full(original, &NmClip)` closes both remaining
+gaps by **rebuilding the whole DATA block from the value tree** (uncompressed v4 via
+`encode_kv3_resource`) instead of patching in place. Each former blocker becomes a
+plain tree edit: adding a **translation/scale channel** (its range is recomputed
+from the channel's min/max and written as a real value -- the writer re-tags
+everything, so no tagless-constant problem) and changing the **frame count** (the
+`m_compressedPoseOffsets` array is rebuilt and `m_nNumFrames` set). It recomputes
+every animated channel's range from data, so untouched channels re-quantize within a
+sub-step (use the in-place `reencode_nm_clip` when byte-faithfulness matters). CI:
+`full_reencode_adds_a_translation_channel`, `full_reencode_changes_frame_count`,
+`full_v4_reencode_round_trips`. The identity v4 re-encode opens cleanly in
+Source2Viewer (VRF); an *edited* v4 re-encode still needs an in-game confirmation
+(v4-uncompressed clips are new in-engine territory; the v5 surgical path is already
+confirmed).
 
-1. **Adding translation/scale channels + frame-count change.** Animating a bone's
-   *translation* that was static needs new `m_flRange*` values, which may be tagless
-   `0`/`1` constants the in-place patcher can't rewrite (needs a tagless->tagged
-   promotion, as the vmat recolor does, or a fuller re-encode). A *frame-count*
-   change additionally resizes the `m_compressedPoseOffsets` array and rewrites
-   `m_nNumFrames` (a document-array reshape, not in-place). Until then: keep the
-   slot's frame count (resample the Blender timeline onto it) and animate rotations
-   freely; translation animation is limited to bones the slot already animates.
-
-2. **Resampling to the slot's clock.** The engine plays a slot at a fixed length
-   (confirmed clip-duration-driven, even for abilities, via the Warden slow-mo
-   test). Resample the Blender timeline onto the slot's frame grid; want it
-   *longer*? Pick a longer slot, or land the frame-count-change capability above.
+So the encoder is feature-complete for the importer:
+- **Resampling to the slot's clock** is now free either way -- match the frame count
+  (in-place) or change it (full re-encode).
+- **Engine timing** is clip-duration-driven (confirmed via the Warden slow-mo test),
+  so a resampled clip plays at the slot's duration.
 
 ## De-risking order
 

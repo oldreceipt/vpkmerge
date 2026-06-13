@@ -613,6 +613,141 @@ pub fn reencode_nm_clip(original: &[u8], clip: &NmClip) -> Result<Vec<u8>, Decod
     Ok(out)
 }
 
+/// Re-encodes an edited NM clip by **rebuilding the whole `DATA` block** from its
+/// KV3 value tree (uncompressed v4 via [`crate::encode_kv3_resource`]), rather than
+/// patching the v5 container in place like [`reencode_nm_clip`]. This is the
+/// general path the Blender importer needs: it handles **arbitrary** edits that the
+/// in-place patcher cannot, because each becomes a plain value-tree edit:
+/// - a **frame-count change** (the `m_compressedPoseOffsets` array is rebuilt and
+///   `m_nNumFrames` set);
+/// - **adding any channel**, including translation/scale on a previously-static
+///   bone (the quantization ranges are recomputed from the channel data and written
+///   as real values -- no tagless-constant problem, since the writer re-tags
+///   everything).
+///
+/// Per-channel quantization ranges are derived from each animated channel's min/max
+/// over the clip's frames; static channels keep their constant. Every per-channel
+/// vector must have `clip.frame_count` entries (the caller resamples to the target
+/// frame count). The output is uncompressed v4 (larger than the original LZ4) but
+/// engine-loadable (verified against VRF/Source2Viewer). Prefer [`reencode_nm_clip`]
+/// for in-place rotation edits at a fixed frame count (byte-faithful, smaller, and
+/// already in-game confirmed); use this when the channel set or frame count changes.
+pub fn reencode_nm_clip_full(original: &[u8], clip: &NmClip) -> Result<Vec<u8>, DecodeError> {
+    // 1. Recompute quantization ranges from the (possibly new) channel data, so the
+    //    quantizer maps each animated value across its actual [min, max].
+    let mut work = clip.clone();
+    for t in &mut work.tracks {
+        if let Some(trans) = &t.translations {
+            for (axis, range) in t.settings.translation_range.iter_mut().enumerate() {
+                *range = range_of(trans.iter().map(|v| [v.x, v.y, v.z][axis]));
+            }
+        }
+        if let Some(scales) = &t.scales {
+            t.settings.scale_range = range_of(scales.iter().copied());
+        }
+    }
+
+    // 2. Quantize with the recomputed ranges.
+    let (blob, offsets) = encode_compressed_pose(&work);
+
+    // 3. Mutate the decoded DATA tree, then re-encode it whole.
+    let mut tree = crate::decode_kv3_resource(original)?;
+    set_value(
+        &mut tree,
+        "m_nNumFrames",
+        Value::Int(i64::from(work.frame_count)),
+    );
+    set_value(&mut tree, "m_compressedPoseData", Value::Binary(blob));
+    set_value(
+        &mut tree,
+        "m_compressedPoseOffsets",
+        Value::Array(
+            offsets
+                .into_iter()
+                .map(|o| Value::UInt(u64::from(o)))
+                .collect(),
+        ),
+    );
+    if let Some(Value::Array(tracks)) = tree.get_mut("m_trackCompressionSettings") {
+        for (i, slot) in tracks.iter_mut().enumerate() {
+            if let Some(t) = work.tracks.get(i) {
+                write_track_settings(slot, t);
+            }
+        }
+    }
+    crate::encode_kv3_resource(original, &tree)
+}
+
+/// `[min, max-min]` over an iterator of channel samples; a constant channel yields
+/// length 0 (which dequantizes back to the constant).
+fn range_of(samples: impl Iterator<Item = f32>) -> QuantRange {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for v in samples {
+        min = min.min(v);
+        max = max.max(v);
+    }
+    if min > max {
+        return QuantRange {
+            start: 0.0,
+            length: 0.0,
+        }; // empty (no frames)
+    }
+    QuantRange {
+        start: min,
+        length: max - min,
+    }
+}
+
+/// Overwrite one named child of an object value (no-op if the key is absent).
+fn set_value(obj: &mut Value, key: &str, v: Value) {
+    if let Some(slot) = obj.get_mut(key) {
+        *slot = v;
+    }
+}
+
+/// Write a [`NmTrack`]'s settings (static flags from channel presence, ranges, and
+/// constant rotation) into its `m_trackCompressionSettings` object in the tree.
+fn write_track_settings(track_obj: &mut Value, t: &NmTrack) {
+    set_value(
+        track_obj,
+        "m_bIsRotationStatic",
+        Value::Bool(t.rotations.is_none()),
+    );
+    set_value(
+        track_obj,
+        "m_bIsTranslationStatic",
+        Value::Bool(t.translations.is_none()),
+    );
+    set_value(
+        track_obj,
+        "m_bIsScaleStatic",
+        Value::Bool(t.scales.is_none()),
+    );
+    let r = &t.settings.translation_range;
+    for (key, range) in [
+        ("m_translationRangeX", r[0]),
+        ("m_translationRangeY", r[1]),
+        ("m_translationRangeZ", r[2]),
+        ("m_scaleRange", t.settings.scale_range),
+    ] {
+        if let Some(obj) = track_obj.get_mut(key) {
+            set_value(obj, "m_flRangeStart", Value::Double(f64::from(range.start)));
+            set_value(
+                obj,
+                "m_flRangeLength",
+                Value::Double(f64::from(range.length)),
+            );
+        }
+    }
+    if let Some(Value::Array(a)) = track_obj.get_mut("m_constantRotation") {
+        let q = t.settings.constant_rotation;
+        for (slot, v) in a.iter_mut().zip([q.x, q.y, q.z, q.w]) {
+            *slot = Value::Double(f64::from(v));
+        }
+    }
+}
+
 /// Re-quantizes the decoded tracks back into `(m_compressedPoseData,
 /// m_compressedPoseOffsets)`. The exact inverse of [`decode_frames`]; on a clip
 /// decoded straight from a file the result is byte-identical to the original

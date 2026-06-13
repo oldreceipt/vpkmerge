@@ -19,7 +19,10 @@
 //! no yamato clip uses it) is covered by the `frame_stream_round_trips` unit test
 //! in `model::nm`.
 
-use morphic::model::{decode_nm_clip, decode_pose_stream, encode_compressed_pose, NmClip, Quat};
+use morphic::model::{
+    decode_nm_clip, decode_pose_stream, encode_compressed_pose, reencode_nm_clip_full, NmClip,
+    Quat, Vec3,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/fixtures/nm/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -339,6 +342,121 @@ fn full_v4_reencode_round_trips() {
         round.tracks, original.tracks,
         "tracks survive a full v4 re-encode"
     );
+}
+
+#[test]
+fn full_reencode_adds_a_translation_channel() {
+    // Gap closed by the full re-encoder: animate TRANSLATION on a bone whose
+    // translation was static (the in-place patcher can't, because the static range
+    // length is a tagless 0). The bone's translation track + range are written via
+    // the value tree; re-decode must show the animated translation.
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let clip = decode_nm_clip(&bytes).expect("decode");
+    let frames = clip.frame_count as usize;
+    let target = clip
+        .tracks
+        .iter()
+        .position(|t| t.translations.is_none())
+        .expect("a static-translation track");
+
+    // Animate it sliding 0 -> 20 units along X over the clip.
+    let mut edited = clip.clone();
+    let base = edited.tracks[target].settings.translation_range;
+    #[allow(clippy::cast_precision_loss)]
+    let trans: Vec<Vec3> = (0..frames)
+        .map(|f| {
+            let u = if frames > 1 {
+                f as f32 / (frames - 1) as f32
+            } else {
+                0.0
+            };
+            Vec3 {
+                x: base[0].start + 20.0 * u,
+                y: base[1].start,
+                z: base[2].start,
+            }
+        })
+        .collect();
+    edited.tracks[target].translations = Some(trans);
+
+    let out =
+        reencode_nm_clip_full(&bytes, &edited).expect("full re-encode with new trans channel");
+    let redec = decode_nm_clip(&out).expect("re-decode");
+    let got = redec.tracks[target]
+        .translations
+        .as_ref()
+        .expect("target now has an animated translation");
+    assert_eq!(got.len(), frames);
+    // The slide is present: last frame ~20u past the first along X (within quant).
+    assert!(
+        (got[frames - 1].x - got[0].x - 20.0).abs() < 0.5,
+        "expected a ~20u X slide"
+    );
+    // The full re-encode re-quantizes every animated channel from recomputed ranges,
+    // so untouched channels move within a sub-quantization step (not byte-identical).
+    // What must hold: no OTHER track's channel set changed (we added exactly one
+    // translation channel), and other channels stay pose-close.
+    for (i, (a, b)) in clip.tracks.iter().zip(redec.tracks.iter()).enumerate() {
+        if i == target {
+            continue;
+        }
+        assert_eq!(
+            a.translations.is_some(),
+            b.translations.is_some(),
+            "track {i} translation presence changed"
+        );
+        assert_eq!(
+            a.rotations.is_some(),
+            b.rotations.is_some(),
+            "track {i} rotation presence changed"
+        );
+        if let (Some(ta), Some(tb)) = (&a.translations, &b.translations) {
+            for (pa, pb) in ta.iter().zip(tb) {
+                assert!(
+                    (pa.x - pb.x).abs() < 0.05
+                        && (pa.y - pb.y).abs() < 0.05
+                        && (pa.z - pb.z).abs() < 0.05,
+                    "track {i} translation drifted beyond re-quantization noise"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn full_reencode_changes_frame_count() {
+    // Gap closed by the full re-encoder: change the frame count (resizes the
+    // offsets array + m_nNumFrames). Time-stretch reload_idle_quick to 2x frames by
+    // duplicating each frame; re-decode must report the new count with matching
+    // per-channel sample counts.
+    fn dup<T: Copy>(v: &[T]) -> Vec<T> {
+        v.iter().flat_map(|&x| [x, x]).collect()
+    }
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let clip = decode_nm_clip(&bytes).expect("decode");
+    let old = clip.frame_count as usize;
+
+    let mut edited = clip.clone();
+    edited.frame_count = clip.frame_count * 2;
+    for t in &mut edited.tracks {
+        t.rotations = t.rotations.as_ref().map(|v| dup(v));
+        t.translations = t.translations.as_ref().map(|v| dup(v));
+        t.scales = t.scales.as_ref().map(|v| dup(v));
+    }
+
+    let out = reencode_nm_clip_full(&bytes, &edited).expect("full re-encode with new frame count");
+    let redec = decode_nm_clip(&out).expect("re-decode");
+    assert_eq!(redec.frame_count as usize, old * 2, "frame count doubled");
+    assert_eq!(
+        redec.compressed_pose_offsets.len(),
+        old * 2,
+        "offsets array resized"
+    );
+    for t in &redec.tracks {
+        if let Some(r) = &t.rotations {
+            assert_eq!(r.len(), old * 2);
+        }
+    }
 }
 
 #[test]
