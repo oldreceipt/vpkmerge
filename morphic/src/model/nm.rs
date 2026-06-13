@@ -20,8 +20,13 @@
 
 // KV3 widens f32 transform components to f64 and stores frame counts as wider
 // integers; narrowing them back is exact for real model data (the same contract
-// `skeleton.rs` relies on).
-#![allow(clippy::cast_possible_truncation)]
+// `skeleton.rs` relies on). The pose codec also rounds f32 magnitudes back into
+// u16 quantization slots (sign already non-negative by construction).
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 
 use std::collections::HashMap;
 
@@ -197,6 +202,388 @@ pub fn bake_nm_pose(
     Ok(super::pose::bake_pose_named(model, &by_name))
 }
 
+// ===========================================================================
+// Quantized-pose codec (animated NM clips)
+// ===========================================================================
+//
+// A faithful port of VRF `ModelAnimation2/AnimationClip` (`ReadFrame`,
+// `DecodeQuaternion`, `DecodeTranslation`, `DecodeFloat`). An animated
+// `.vnmclip_c` stores its non-constant channels in `m_compressedPoseData`, a
+// flat little-endian `u16` stream, with `m_compressedPoseOffsets[frame]` giving
+// the `u16` index at which that frame begins. Within a frame the per-bone tracks
+// appear in `m_trackCompressionSettings` order; a track contributes, in order,
+// 3 words for an animated rotation, 3 for an animated translation, and 1 for an
+// animated scale (a *static* channel contributes nothing, its constant lives in
+// the track settings). Decode dequantizes each word against the track's range;
+// encode is the exact inverse, so a clip's stream round-trips byte-for-byte.
+
+/// One channel's `[start, start+length]` quantization window (KV3
+/// `m_flRangeStart`/`m_flRangeLength`). A static channel's constant is
+/// `start`; an animated channel maps a `u16` linearly across the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuantRange {
+    pub start: f32,
+    pub length: f32,
+}
+
+/// One bone's `m_trackCompressionSettings` entry: the per-channel ranges, the
+/// constant rotation (used when rotation is static), and which channels are
+/// static (i.e. absent from the compressed stream).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackSettings {
+    pub translation_range: [QuantRange; 3],
+    pub scale_range: QuantRange,
+    pub constant_rotation: Quat,
+    pub rotation_static: bool,
+    pub translation_static: bool,
+    pub scale_static: bool,
+}
+
+/// One bone's decoded animation: the settings it came from, plus a per-frame
+/// sample vector for each *animated* channel (`None` when that channel is static,
+/// in which case its constant is in `settings`). Each present vector has exactly
+/// `NmClip::frame_count` entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NmTrack {
+    pub settings: TrackSettings,
+    pub rotations: Option<Vec<Quat>>,
+    pub translations: Option<Vec<Vec3>>,
+    pub scales: Option<Vec<f32>>,
+}
+
+/// A fully decoded NM animation clip: the referenced skeleton, frame count, the
+/// additive flag, the per-bone tracks, and the original quantized stream
+/// (`compressed_pose_data` + `compressed_pose_offsets`) kept verbatim so a caller
+/// can verify a re-encode is byte-faithful or splice in only the frames it edits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NmClip {
+    pub skeleton_ref: String,
+    pub frame_count: u32,
+    pub additive: bool,
+    pub tracks: Vec<NmTrack>,
+    pub compressed_pose_data: Vec<u8>,
+    pub compressed_pose_offsets: Vec<u32>,
+}
+
+// Quaternion "smallest three" packing: each stored component sits in
+// [-1/sqrt2, 1/sqrt2], 15-bit quantized; the dropped (largest) component is
+// reconstructed from unit length, its index carried in the two flag bits.
+const QUAT_MIN: f32 = -std::f32::consts::FRAC_1_SQRT_2;
+const QUAT_RANGE: f32 = std::f32::consts::SQRT_2; // (1/sqrt2) - (-1/sqrt2)
+const QUAT_QUANT_MAX: f32 = 0x7FFF as f32;
+
+/// Decodes a `.vnmclip_c` (static or animated) into per-bone tracks. The static
+/// constants come from `m_trackCompressionSettings`; the animated channels are
+/// dequantized from `m_compressedPoseData`. A fully static clip decodes with
+/// every track's channel vectors `None` (its pose is the per-track constants).
+pub fn decode_nm_clip(bytes: &[u8]) -> Result<NmClip, DecodeError> {
+    nm_clip_from_value(&crate::decode_kv3_resource(bytes)?)
+}
+
+fn nm_clip_from_value(data: &Value) -> Result<NmClip, DecodeError> {
+    let skeleton_ref = data
+        .get("m_skeleton")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let additive = data
+        .get("m_bIsAdditive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let frame_count = data
+        .get("m_nNumFrames")
+        .and_then(|v| {
+            v.as_uint()
+                .or_else(|| v.as_int().and_then(|n| u64::try_from(n).ok()))
+        })
+        .unwrap_or(1) as u32;
+
+    let settings: Vec<TrackSettings> = data
+        .get("m_trackCompressionSettings")
+        .and_then(Value::as_array)
+        .ok_or(DecodeError::Model(
+            "vnmclip missing m_trackCompressionSettings",
+        ))?
+        .iter()
+        .map(parse_track_settings)
+        .collect::<Option<Vec<_>>>()
+        .ok_or(DecodeError::Model("vnmclip track settings malformed"))?;
+
+    let compressed_pose_data = match data.get("m_compressedPoseData") {
+        Some(Value::Binary(b)) => b.clone(),
+        _ => Vec::new(),
+    };
+    let compressed_pose_offsets = data
+        .get("m_compressedPoseOffsets")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_uint().map(|u| u as u32))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let tracks = decode_frames(
+        &settings,
+        &compressed_pose_data,
+        &compressed_pose_offsets,
+        frame_count,
+    )?;
+
+    Ok(NmClip {
+        skeleton_ref,
+        frame_count,
+        additive,
+        tracks,
+        compressed_pose_data,
+        compressed_pose_offsets,
+    })
+}
+
+fn parse_track_settings(t: &Value) -> Option<TrackSettings> {
+    let range = |key: &str| -> Option<QuantRange> {
+        let o = t.get(key)?;
+        Some(QuantRange {
+            start: o.get("m_flRangeStart").and_then(Value::as_f64)? as f32,
+            length: o.get("m_flRangeLength").and_then(Value::as_f64)? as f32,
+        })
+    };
+    let is = |k: &str| t.get(k).and_then(Value::as_bool).unwrap_or(false);
+    Some(TrackSettings {
+        translation_range: [
+            range("m_translationRangeX")?,
+            range("m_translationRangeY")?,
+            range("m_translationRangeZ")?,
+        ],
+        scale_range: range("m_scaleRange")?,
+        constant_rotation: read_quat(t.get("m_constantRotation")?)?,
+        rotation_static: is("m_bIsRotationStatic"),
+        translation_static: is("m_bIsTranslationStatic"),
+        scale_static: is("m_bIsScaleStatic"),
+    })
+}
+
+/// Dequantizes a quantized pose stream against a set of track settings, the same
+/// way [`decode_nm_clip`] does internally. Exposed so a caller can prove a
+/// decode -> encode -> decode round-trip is pose-identical: feed back the
+/// `(data, offsets)` from [`encode_compressed_pose`] and the clip's per-track
+/// [`TrackSettings`].
+pub fn decode_pose_stream(
+    settings: &[TrackSettings],
+    data: &[u8],
+    offsets: &[u32],
+    frame_count: u32,
+) -> Result<Vec<NmTrack>, DecodeError> {
+    decode_frames(settings, data, offsets, frame_count)
+}
+
+/// Dequantizes every frame into per-bone channel vectors. Mirrors VRF
+/// `ReadFrame`: per frame, start at the frame's `u16` offset and walk the tracks
+/// in order, consuming 3/3/1 words for each animated rotation/translation/scale.
+fn decode_frames(
+    settings: &[TrackSettings],
+    data: &[u8],
+    offsets: &[u32],
+    frame_count: u32,
+) -> Result<Vec<NmTrack>, DecodeError> {
+    let frame_count = frame_count as usize;
+    // Allocate a sample vector for each animated channel, `None` for static ones.
+    let mut tracks: Vec<NmTrack> = settings
+        .iter()
+        .map(|s| NmTrack {
+            settings: *s,
+            rotations: (!s.rotation_static).then(|| Vec::with_capacity(frame_count)),
+            translations: (!s.translation_static).then(|| Vec::with_capacity(frame_count)),
+            scales: (!s.scale_static).then(|| Vec::with_capacity(frame_count)),
+        })
+        .collect();
+
+    let any_animated = settings
+        .iter()
+        .any(|s| !(s.rotation_static && s.translation_static && s.scale_static));
+    if !any_animated || frame_count == 0 {
+        return Ok(tracks);
+    }
+    if offsets.len() < frame_count {
+        return Err(DecodeError::Model(
+            "vnmclip has fewer pose offsets than frames",
+        ));
+    }
+
+    for &frame_start in &offsets[..frame_count] {
+        let mut word = frame_start as usize;
+        let mut read = |n: usize| -> Result<&[u8], DecodeError> {
+            let start = word * 2;
+            let end = start + n * 2;
+            let slice = data
+                .get(start..end)
+                .ok_or(DecodeError::Model("vnmclip pose stream truncated"))?;
+            word += n;
+            Ok(slice)
+        };
+        for tr in &mut tracks {
+            if let Some(rots) = &mut tr.rotations {
+                rots.push(decode_quaternion(read(3)?));
+            }
+            if let Some(trans) = &mut tr.translations {
+                let b = read(3)?;
+                let r = &tr.settings.translation_range;
+                trans.push(Vec3 {
+                    x: decode_float(u16le(b, 0), r[0]),
+                    y: decode_float(u16le(b, 1), r[1]),
+                    z: decode_float(u16le(b, 2), r[2]),
+                });
+            }
+            if let Some(scales) = &mut tr.scales {
+                let b = read(1)?;
+                scales.push(decode_float(u16le(b, 0), tr.settings.scale_range));
+            }
+        }
+    }
+    Ok(tracks)
+}
+
+/// Re-quantizes the decoded tracks back into `(m_compressedPoseData,
+/// m_compressedPoseOffsets)`. The exact inverse of [`decode_frames`]; on a clip
+/// decoded straight from a file the result is byte-identical to the original
+/// stream, and round-trips (decode -> encode -> decode) reproduce poses exactly.
+#[must_use]
+pub fn encode_compressed_pose(clip: &NmClip) -> (Vec<u8>, Vec<u32>) {
+    let frame_count = clip.frame_count as usize;
+    let mut words: Vec<u16> = Vec::new();
+    let mut offsets: Vec<u32> = Vec::with_capacity(frame_count);
+
+    for f in 0..frame_count {
+        offsets.push(words.len() as u32);
+        for tr in &clip.tracks {
+            if let Some(rots) = &tr.rotations {
+                if let Some(q) = rots.get(f) {
+                    words.extend_from_slice(&encode_quaternion(*q));
+                }
+            }
+            if let Some(trans) = &tr.translations {
+                if let Some(t) = trans.get(f) {
+                    let r = &tr.settings.translation_range;
+                    words.push(encode_float(t.x, r[0]));
+                    words.push(encode_float(t.y, r[1]));
+                    words.push(encode_float(t.z, r[2]));
+                }
+            }
+            if let Some(scales) = &tr.scales {
+                if let Some(s) = scales.get(f) {
+                    words.push(encode_float(*s, tr.settings.scale_range));
+                }
+            }
+        }
+    }
+
+    let mut bytes = Vec::with_capacity(words.len() * 2);
+    for w in words {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    (bytes, offsets)
+}
+
+fn u16le(b: &[u8], word: usize) -> u16 {
+    u16::from_le_bytes([b[word * 2], b[word * 2 + 1]])
+}
+
+/// Dequantizes one channel value: `start + (u16 / 65535) * length` (VRF
+/// `DecodeFloat`).
+fn decode_float(u: u16, range: QuantRange) -> f32 {
+    (f32::from(u) / f32::from(u16::MAX)).mul_add(range.length, range.start)
+}
+
+/// The inverse of [`decode_float`]: nearest `u16` whose dequantization is closest
+/// to `v`. A zero-length range (degenerate, never animated in practice) encodes
+/// to 0.
+fn encode_float(v: f32, range: QuantRange) -> u16 {
+    if range.length == 0.0 {
+        return 0;
+    }
+    let norm = (v - range.start) / range.length;
+    (norm * f32::from(u16::MAX))
+        .round()
+        .clamp(0.0, f32::from(u16::MAX)) as u16
+}
+
+/// Decodes Source 2's NM 3-word "smallest three" quaternion, a port of VRF
+/// `DecodeQuaternion`: words 0/1 carry a 15-bit magnitude plus one flag bit
+/// (bit 15), word 2 a 15-bit magnitude; the two flag bits name which component
+/// was dropped, and it is rebuilt from the unit-length constraint.
+fn decode_quaternion(b: &[u8]) -> Quat {
+    let d0 = u16le(b, 0);
+    let d1 = u16le(b, 1);
+    let d2 = u16le(b, 2);
+    let mul = QUAT_RANGE / QUAT_QUANT_MAX;
+    let v0 = f32::from(d0 & 0x7FFF).mul_add(mul, QUAT_MIN);
+    let v1 = f32::from(d1 & 0x7FFF).mul_add(mul, QUAT_MIN);
+    let v2 = f32::from(d2).mul_add(mul, QUAT_MIN);
+    let sum = v0.mul_add(v0, v1.mul_add(v1, v2 * v2));
+    let v3 = (1.0 - sum).max(0.0).sqrt();
+    let largest = ((d0 >> 14) & 0x0002) | (d1 >> 15);
+    match largest {
+        0 => Quat {
+            x: v3,
+            y: v0,
+            z: v1,
+            w: v2,
+        },
+        1 => Quat {
+            x: v0,
+            y: v3,
+            z: v1,
+            w: v2,
+        },
+        2 => Quat {
+            x: v0,
+            y: v1,
+            z: v3,
+            w: v2,
+        },
+        _ => Quat {
+            x: v0,
+            y: v1,
+            z: v2,
+            w: v3,
+        },
+    }
+}
+
+/// The inverse of [`decode_quaternion`]: drop the largest-magnitude component
+/// (recoverable from unit length), store the other three 15-bit quantized with
+/// the dropped index in the flag bits, sign-flipping so the dropped component is
+/// non-negative (q and -q are the same rotation, and decode always rebuilds it
+/// non-negative).
+fn encode_quaternion(q: Quat) -> [u16; 3] {
+    let comps = [q.x, q.y, q.z, q.w];
+    let mut largest = 0usize;
+    for i in 1..4 {
+        if comps[i].abs() > comps[largest].abs() {
+            largest = i;
+        }
+    }
+    let sign = if comps[largest] < 0.0 { -1.0 } else { 1.0 };
+    let mut stored = [0f32; 3];
+    let mut k = 0;
+    for (i, &c) in comps.iter().enumerate() {
+        if i != largest {
+            stored[k] = c * sign;
+            k += 1;
+        }
+    }
+    let q15 = |v: f32| -> u16 {
+        let n = (v - QUAT_MIN) / (QUAT_RANGE / QUAT_QUANT_MAX);
+        n.round().clamp(0.0, QUAT_QUANT_MAX) as u16
+    };
+    let mut d0 = q15(stored[0]);
+    let mut d1 = q15(stored[1]);
+    let d2 = q15(stored[2]);
+    d0 |= ((largest as u16 >> 1) & 1) << 15;
+    d1 |= (largest as u16 & 1) << 15;
+    [d0, d1, d2]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +672,268 @@ mod tests {
     fn pose_requires_track_settings() {
         let data = obj(vec![("m_nNumFrames", Value::Int(1))]);
         assert!(nm_pose_from_value(&data).is_err());
+    }
+
+    // ---- pose codec ------------------------------------------------------
+
+    fn approx_quat(a: Quat, b: Quat, eps: f32) -> bool {
+        // Quantization error plus the q/-q ambiguity: compare both signs.
+        let d = |s: f32| {
+            (a.x - s * b.x).abs() < eps
+                && (a.y - s * b.y).abs() < eps
+                && (a.z - s * b.z).abs() < eps
+                && (a.w - s * b.w).abs() < eps
+        };
+        d(1.0) || d(-1.0)
+    }
+
+    #[test]
+    fn quaternion_round_trips_each_largest_component() {
+        // One quat per "largest component" case; encode then decode must return
+        // the same rotation within 15-bit quantization error.
+        let quats = [
+            Quat {
+                x: 0.9,
+                y: 0.1,
+                z: 0.2,
+                w: 0.3,
+            }, // x largest
+            Quat {
+                x: 0.1,
+                y: -0.9,
+                z: 0.2,
+                w: 0.3,
+            }, // y largest, negative
+            Quat {
+                x: 0.2,
+                y: 0.1,
+                z: 0.92,
+                w: 0.1,
+            }, // z largest
+            Quat {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            }, // identity, w largest
+        ];
+        for q0 in quats {
+            // normalize
+            let n = (q0.x * q0.x + q0.y * q0.y + q0.z * q0.z + q0.w * q0.w).sqrt();
+            let q = Quat {
+                x: q0.x / n,
+                y: q0.y / n,
+                z: q0.z / n,
+                w: q0.w / n,
+            };
+            let words = encode_quaternion(q);
+            let mut bytes = Vec::new();
+            for w in words {
+                bytes.extend_from_slice(&w.to_le_bytes());
+            }
+            let back = decode_quaternion(&bytes);
+            assert!(
+                approx_quat(q, back, 1e-3),
+                "quat {q:?} -> {words:x?} -> {back:?}"
+            );
+        }
+    }
+
+    fn quat_bytes(words: [u16; 3]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for w in words {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn quaternion_re_encode_is_stable() {
+        // The byte-faithful property: a *validly* encoded quaternion (one whose
+        // dropped component is genuinely the largest, i.e. exactly what Valve's
+        // encoder writes) round-trips encode -> decode -> encode to identical
+        // words, because decode rebuilds the dropped component as the largest.
+        let quats = [
+            Quat {
+                x: 0.9,
+                y: 0.1,
+                z: 0.2,
+                w: 0.3,
+            },
+            Quat {
+                x: 0.1,
+                y: -0.85,
+                z: 0.2,
+                w: 0.3,
+            },
+            Quat {
+                x: 0.2,
+                y: 0.1,
+                z: 0.94,
+                w: 0.1,
+            },
+            Quat {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+        ];
+        for q0 in quats {
+            let n = (q0.x * q0.x + q0.y * q0.y + q0.z * q0.z + q0.w * q0.w).sqrt();
+            let q = Quat {
+                x: q0.x / n,
+                y: q0.y / n,
+                z: q0.z / n,
+                w: q0.w / n,
+            };
+            let words = encode_quaternion(q);
+            let decoded = decode_quaternion(&quat_bytes(words));
+            let again = encode_quaternion(decoded);
+            assert_eq!(
+                again, words,
+                "quat words not stable: {words:x?} -> {again:x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn float_round_trips_within_range() {
+        let r = QuantRange {
+            start: -10.0,
+            length: 25.0,
+        };
+        for u in [0u16, 1, 12345, 32767, 40000, 65535] {
+            let v = decode_float(u, r);
+            assert_eq!(encode_float(v, r), u, "float u16 not stable for {u}");
+        }
+    }
+
+    /// A frame stream + offsets + settings round-trips: decode -> encode
+    /// reproduces the bytes and offsets exactly, and a re-decode is identical.
+    #[test]
+    fn frame_stream_round_trips() {
+        // bone 0: animated rotation only; bone 1: static; bone 2: animated
+        // translation + scale.
+        let r = |s: f32, l: f32| QuantRange {
+            start: s,
+            length: l,
+        };
+        let settings = vec![
+            TrackSettings {
+                translation_range: [r(0.0, 1.0); 3],
+                scale_range: r(1.0, 0.0),
+                constant_rotation: Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                rotation_static: false,
+                translation_static: true,
+                scale_static: true,
+            },
+            TrackSettings {
+                translation_range: [r(0.0, 1.0); 3],
+                scale_range: r(1.0, 0.0),
+                constant_rotation: Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                rotation_static: true,
+                translation_static: true,
+                scale_static: true,
+            },
+            TrackSettings {
+                translation_range: [r(-5.0, 10.0), r(-5.0, 10.0), r(-5.0, 10.0)],
+                scale_range: r(0.5, 2.0),
+                constant_rotation: Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                rotation_static: true,
+                translation_static: false,
+                scale_static: false,
+            },
+        ];
+        // Build a 2-frame stream: per frame, bone0 quat (3w), bone2
+        // translation (3w) + scale (1w) = 7 words/frame. The quat words come
+        // from encoding a real unit quaternion (a hand-picked word triple is not
+        // generally a valid smallest-three encoding).
+        let unit = |x: f32, y: f32, z: f32, w: f32| {
+            let n = (x * x + y * y + z * z + w * w).sqrt();
+            encode_quaternion(Quat {
+                x: x / n,
+                y: y / n,
+                z: z / n,
+                w: w / n,
+            })
+        };
+        let q0 = unit(0.8, 0.1, 0.2, 0.3);
+        let q1 = unit(0.1, 0.2, 0.9, 0.1);
+        let frame0 = [q0[0], q0[1], q0[2], 10000, 20000, 30000, 12345];
+        let frame1 = [q1[0], q1[1], q1[2], 40000, 50000, 60000, 54321];
+        let mut bytes = Vec::new();
+        for w in frame0.iter().chain(frame1.iter()) {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        let offsets = vec![0u32, 7];
+
+        let tracks = decode_frames(&settings, &bytes, &offsets, 2).expect("decode frames");
+        let clip = NmClip {
+            skeleton_ref: String::new(),
+            frame_count: 2,
+            additive: false,
+            tracks,
+            compressed_pose_data: bytes.clone(),
+            compressed_pose_offsets: offsets.clone(),
+        };
+        let (data2, offsets2) = encode_compressed_pose(&clip);
+        assert_eq!(offsets2, offsets, "offsets must match");
+        assert_eq!(data2, bytes, "re-encoded stream must be byte-identical");
+
+        // re-decode is identical track-for-track.
+        let tracks2 = decode_frames(&settings, &data2, &offsets2, 2).expect("re-decode");
+        assert_eq!(tracks2, clip.tracks);
+    }
+
+    #[test]
+    fn fully_static_clip_has_empty_stream() {
+        let settings = vec![TrackSettings {
+            translation_range: [QuantRange {
+                start: 0.0,
+                length: 0.0,
+            }; 3],
+            scale_range: QuantRange {
+                start: 1.0,
+                length: 0.0,
+            },
+            constant_rotation: Quat {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+            rotation_static: true,
+            translation_static: true,
+            scale_static: true,
+        }];
+        let tracks = decode_frames(&settings, &[], &[], 10).expect("static decode");
+        assert!(tracks[0].rotations.is_none());
+        let clip = NmClip {
+            skeleton_ref: String::new(),
+            frame_count: 10,
+            additive: false,
+            tracks,
+            compressed_pose_data: Vec::new(),
+            compressed_pose_offsets: Vec::new(),
+        };
+        let (data2, offsets2) = encode_compressed_pose(&clip);
+        assert!(data2.is_empty());
+        assert_eq!(offsets2, vec![0u32; 10]);
     }
 }

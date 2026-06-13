@@ -39,7 +39,10 @@ pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{
     assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, MeshPart, Primitive, VertexBuffer,
 };
-pub use nm::{bake_nm_pose, decode_nm_pose, decode_nm_skeleton, NmPose, NmSkeleton};
+pub use nm::{
+    bake_nm_pose, decode_nm_clip, decode_nm_pose, decode_nm_skeleton, decode_pose_stream,
+    encode_compressed_pose, NmClip, NmPose, NmSkeleton, NmTrack, QuantRange, TrackSettings,
+};
 pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
 pub use skeleton::{invert_remap, localize_joints, Bone, Skeleton};
 pub use topology::{

@@ -277,6 +277,36 @@ model codenames (`hornet`). Survey + probe plan:
 [docs/spike-npr-toon-shading.md](docs/spike-npr-toon-shading.md); survey tool
 `vpkmerge-core/examples/npr_vmat_survey.rs`.
 
+## NM animation pose codec (`.vnmclip_c`)
+
+The newer Source 2 "NM" (motion-matching) clips store animation as a quantized
+`m_compressedPoseData` blob. `morphic::model` decodes and **byte-faithfully
+re-encodes** it, a port of VRF `ModelAnimation2/AnimationClip`:
+
+- `decode_nm_clip(bytes) -> NmClip`: per-bone `NmTrack`s. Each track carries the
+  static `TrackSettings` (per-channel `QuantRange` + the constant rotation) plus
+  a per-frame `Vec` for every *animated* rotation/translation/scale channel
+  (`None` when that channel is static, its constant living in the settings).
+- `encode_compressed_pose(&NmClip) -> (data, offsets)`: the exact inverse.
+- `decode_pose_stream(settings, data, offsets, frames)`: re-decode helper.
+
+Layout: the stream is a flat little-endian `u16` array; `m_compressedPoseOffsets[f]`
+is frame `f`'s starting word; within a frame each track emits, in
+`m_trackCompressionSettings` order, 3 words for an animated rotation (the
+"smallest three" packed quaternion), 3 for a translation, 1 for a scale.
+Translation/scale dequantize as `start + (u16/65535)*length`. This is distinct
+from the older `.vmdl_c`-embedded `ANIM`/`AGRP` clip decoder
+(`morphic::model::animation`, the glb-export path); the static menu-pose reader
+(`decode_nm_pose`/`bake_nm_pose`) is the constants-only subset.
+
+Verified pak-wide (`tests/nm_clip_local.rs`, gated on `MORPHIC_MODEL_VPK`): all
+9008 animated clips re-encode with translation/scale byte-exact and rotation
+within 0.0012 rad; 90.7% are byte-for-byte identical. The rest differ only by the
+smallest-three quaternion's inherent largest-component tie (an equivalent
+encoding of the same rotation), not a codec error. CI round-trip on committed
+`morphic/fixtures/nm/*.vnmclip_c` lives in `tests/nm_clip.rs`. Recon + format
+writeup: [docs/handoff-nm-loose-clip-pose.md](docs/handoff-nm-loose-clip-pose.md).
+
 ## Related
 
 - `../grimoire/` is the mod manager that uses these VPKs. The user plans to eventually fold the GUI logic into the Grimoire desktop client; treat `gui/` as a prototype for that integration.

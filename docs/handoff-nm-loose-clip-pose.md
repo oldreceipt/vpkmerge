@@ -122,10 +122,36 @@ parent-consistency, and displacement invariants; CI-safe unit tests in
 ### Known limitations
 - Cloth/twist/helper bones not in the NM clip stay at bind pose in the still
   (same limitation the existing donor-pose path already has).
-- Only static NM tracks are decoded (every menu/idle clip observed is fully
-  static, so this is the whole pose). An animated NM clip would need the
-  `m_compressedPoseData` dequantizer; confirm the `m_flRangeStart`-is-the-constant
-  rule against VRF's `CNmAnimationClip` decoder before relying on it there.
+- The hero-card still-pose path (`decode_nm_pose`/`bake_nm_pose`) reads only the
+  static per-track constants, which is the whole pose for every menu/idle clip
+  (they are fully static). Animated clips are now handled by a separate codec:
+
+### Update (2026-06-13): the quantized-pose codec landed
+
+`m_compressedPoseData` is now decoded and re-encoded. `morphic::model`:
+- `decode_nm_clip(bytes) -> NmClip`: per-bone `NmTrack`s, each with the static
+  `TrackSettings` plus a per-frame `Vec` for every *animated* rotation /
+  translation / scale channel (`None` for a static channel, whose constant is in
+  the settings). Static clips decode with every channel vector `None`, identical
+  in spirit to `decode_nm_pose`.
+- `encode_compressed_pose(&NmClip) -> (Vec<u8>, Vec<u32>)`: re-quantizes to the
+  `(m_compressedPoseData, m_compressedPoseOffsets)` pair, the exact inverse.
+- `decode_pose_stream(settings, data, offsets, frames)`: re-decode helper for
+  round-trip proofs.
+
+Faithful port of VRF `ModelAnimation2/AnimationClip` (`ReadFrame`,
+`DecodeQuaternion` = 3-word "smallest three", `DecodeTranslation`/`DecodeFloat`
+= 16-bit unorm across `[start, start+length]`). Per frame, at the frame's `u16`
+offset, each track contributes 3 words for an animated rotation, 3 for a
+translation, 1 for a scale, in `m_trackCompressionSettings` order.
+
+Verified across the whole pak (`tests/nm_clip_local.rs`, gated on
+`MORPHIC_MODEL_VPK`): all 9008 animated clips re-encode with translation and
+scale **byte-exact** and rotation within **0.0012 rad** worst case; **90.7%**
+re-encode byte-for-byte. The ~9% that do not are the smallest-three quaternion's
+inherent largest-component tie (two near-equal components let an equivalent
+3-word encoding be chosen) and are pose-identical, not a codec error. Committed
+fixtures + CI round-trip: `tests/nm_clip.rs` over `fixtures/nm/*.vnmclip_c`.
 - Several heroes ship alternate UI face meshes (`head_ui_smug`/`_cocky`/...) and
   Apollo a long sword; the export includes all parts. Trimming alternate faces to
   one is a separate hero-card polish item (cf. the Viscous alt-form drop), not a
