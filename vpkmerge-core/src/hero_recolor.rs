@@ -302,12 +302,19 @@ fn inferno_recipe() -> HeroRecolorRecipe {
 /// Abrams (`abrams`): particles plus two hero-specific projected self-illum
 /// textures found by `examples/recolor_assets.rs`. The rest of the referenced
 /// ability textures are masks, normals, AO, or shared defaults.
+///
+/// Valve is migrating his asset basename to `bull` (his `hero_atlas` record
+/// points card art at `bull_card` and his kit's charge/leap/passive particles
+/// plus all weapon FX now live under the `bull` dirs; `weapon_fx/abrams/` is
+/// empty as of the 2026-06-11 update). Cover both namespaces until the
+/// `abilities/abrams/` tree is gone too.
 fn abrams_recipe() -> HeroRecolorRecipe {
     HeroRecolorRecipe {
         codename: "abrams".to_string(),
         particle_prefixes: vec![
             "particles/abilities/abrams/".to_string(),
-            "particles/weapon_fx/abrams/".to_string(),
+            "particles/abilities/bull/".to_string(),
+            "particles/weapon_fx/bull/".to_string(),
         ],
         texture_entries: [
             "materials/particle/abilities/abrams/abrams_leap_ground_impact_hot_symbol_projected_vmat_g_tselfillum_670d93d.vtex_c",
@@ -636,7 +643,9 @@ fn familiar_recipe() -> HeroRecolorRecipe {
     )
 }
 
-/// Victor (`frank`): high-saturation ground projections from the ability audit.
+/// Victor (`frank`): high-saturation ground projections from the ability audit,
+/// plus the Aura of Suffering membrane color map added by the 2026-06-11 update
+/// (`painaura_model_fade_color`, the chromatic layer of the green aura rework).
 fn frank_recipe() -> HeroRecolorRecipe {
     HeroRecolorRecipe {
         codename: "frank".to_string(),
@@ -646,6 +655,7 @@ fn frank_recipe() -> HeroRecolorRecipe {
         ],
         texture_entries: [
             "materials/particle/abilities/frank/frank_painaura_aoe_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
+            "materials/particle/abilities/frank/frank_painaura_model_fade_color_psd_807c6243.vtex_c",
             "materials/particle/abilities/frank/frank_revive_marker_ground_projected_vmat_g_tselfillum_670d93d.vtex_c",
             "materials/particle/projected/frank_shock_miss_projected_bright_vmat_g_tselfillum_670d93d.vtex_c",
         ]
@@ -1830,7 +1840,10 @@ impl From<PrismAnimStats> for ParticleTimingAnimationStats {
 #[allow(clippy::struct_field_names)]
 struct PrismAnimPlan {
     string_paths: Vec<Vec<Seg>>,
-    mult_paths: Vec<Vec<Seg>>,
+    /// Texture-offset multiplier leaves, each with its authored value so the
+    /// boost can scale it (preserving sign and relative speed) instead of
+    /// stamping an absolute that would flip an authored `-0.1` to `+2.5`.
+    mult_paths: Vec<(Vec<Seg>, f64)>,
     gradient_paths: Vec<(Vec<Seg>, f64)>,
 }
 
@@ -1892,7 +1905,9 @@ fn collect_prism_anim_plan(
         && lower.ends_with("/m_flmultfactor")
         && !skip_offset
     {
-        plan.mult_paths.push(path.clone());
+        if let Some(original) = v.as_f64() {
+            plan.mult_paths.push((path.clone(), original));
+        }
     }
 
     if lower.contains("/m_gradient/m_stops") && lower.ends_with("/m_flposition") {
@@ -1966,9 +1981,16 @@ fn apply_prism_animation(
         }
     }
 
-    let scroll_multiplier = 1.0 + 1.5 * intensity;
-    for path in plan.mult_paths {
-        let (patched, ok) = patch_one_number(out, path, scroll_multiplier);
+    // Scale the authored multiplier rather than stamping an absolute: an
+    // authored `-0.1` (slow reverse crawl) becomes `-0.4` at full intensity,
+    // never a sign-flipped `+2.5`. A `0.0` (static by design) stays static.
+    let scroll_boost = 1.0 + 1.5 * intensity;
+    for (path, original) in plan.mult_paths {
+        let target = original * scroll_boost;
+        if (target - original).abs() < f64::EPSILON {
+            continue;
+        }
+        let (patched, ok) = patch_one_number(out, path, target);
         out = patched;
         if ok {
             stats.multipliers += 1;
@@ -2966,11 +2988,20 @@ pub fn is_tiling_particle_texture(h_texture: &str) -> bool {
         "beam", "noise", "caustic", "voronoi", "scroll", "streak", "flow", "tiled", "warp",
         "perlin", "ramp", "gradient",
     ];
+    // Falloff art masquerading as tiling: beam_edge / beam_smoke / *_mask /
+    // *_shape / *_soft strips tile along the beam axis only. Offsetting across
+    // the falloff wraps the gradient into a hard seam (the squared-off Rem
+    // Helping Hand heal ring), so these stay non-tiling even when a TILING
+    // root also matches.
+    const FALLOFF: &[&str] = &["edge", "mask", "shape", "smoke", "soft"];
     let name = h_texture
         .rsplit('/')
         .next()
         .unwrap_or(h_texture)
         .to_ascii_lowercase();
+    if FALLOFF.iter().any(|root| name.contains(root)) {
+        return false;
+    }
     TILING.iter().any(|root| name.contains(root))
 }
 
@@ -3493,7 +3524,6 @@ mod tests {
         // at least one hero-specific chromatic texture; shared/default textures
         // from the audit are deliberately excluded.
         for (code, texture_count, required_marker) in [
-            ("abrams", 2, "abrams_leap_ground_impact"),
             ("fencer", 4, "fencer_ult_gradient_color"),
             ("ghost", 2, "ghost2_clothes_fx_prop_color"),
             ("nano", 2, "nano_ult_ground_dark_proj"),
@@ -3524,6 +3554,34 @@ mod tests {
             assert!(r.model_entries.is_empty());
             assert!(recipe_for(&code.to_uppercase()).is_some());
         }
+    }
+
+    #[test]
+    fn abrams_recipe_covers_the_bull_namespace_migration() {
+        // Abrams' asset basename is migrating to `bull` (his `hero_atlas`
+        // record points card art at `bull_card`; charge/leap/passive particles
+        // and all weapon FX moved to the `bull` dirs in the 2026-06-11 update,
+        // leaving `weapon_fx/abrams/` empty). The recipe must straddle both.
+        let r = recipe_for("abrams").expect("abrams recipe");
+        assert_eq!(r.codename, "abrams");
+        assert_eq!(
+            r.particle_prefixes,
+            [
+                "particles/abilities/abrams/",
+                "particles/abilities/bull/",
+                "particles/weapon_fx/bull/",
+            ]
+        );
+        assert_eq!(r.texture_entries.len(), 2);
+        assert!(r
+            .texture_entries
+            .iter()
+            .any(|t| t.contains("abrams_leap_ground_impact")));
+        let preview = r.preview_texture.expect("abrams has a preview texture");
+        assert!(r.texture_entries.contains(&preview));
+        assert!(r.material_entries.is_empty());
+        assert!(r.model_entries.is_empty());
+        assert!(recipe_for("ABRAMS").is_some());
     }
 
     #[test]
@@ -3558,7 +3616,7 @@ mod tests {
             ("drifter", 1, 0, "drifter_claw_ground_projected"),
             ("dynamo", 5, 2, "dynamo_void_sphere_projected"),
             ("familiar", 5, 0, "familiar_spotlight_ground_projected"),
-            ("frank", 3, 1, "frank_painaura_aoe_ground"),
+            ("frank", 4, 1, "frank_painaura_aoe_ground"),
             ("haze", 1, 0, "haze_tracer_self_illum"),
             ("kelvin", 3, 0, "kelvin_ice_dome_projected"),
             ("priest", 3, 0, "priest_snaptrap_ground"),
@@ -3826,6 +3884,22 @@ mod tests {
                 "{sprite} should be treated as a sprite (non-tiling)"
             );
         }
+        // Falloff strips that tile along the beam axis only: a TILING root
+        // matches their name, but scrolling across the falloff wraps the
+        // gradient into a hard seam (the squared-off Rem heal ring). All from
+        // real familiar_helpinghand_* renderer inputs.
+        for falloff in [
+            "materials/particle/beams/beam_edge_02.vtex",
+            "materials/particle/beam_smoke_01.vtex",
+            "materials/particle/beams/beam_fire_mask.vtex",
+            "materials/particle/beams/beam_flame_shape.vtex",
+            "materials/particles/lasers/beam_laser_soft_01.vtex",
+        ] {
+            assert!(
+                !is_tiling_particle_texture(falloff),
+                "{falloff} is falloff art and must not be scrolled"
+            );
+        }
     }
 
     #[test]
@@ -3863,6 +3937,67 @@ mod tests {
         // The beam (index 0) is animatable; the flare (1) and the textureless input
         // (2) are skipped.
         assert_eq!(skip, vec![input_path(1), input_path(2)]);
+    }
+
+    #[test]
+    fn anim_plan_scales_multipliers_and_skips_falloff_inputs() {
+        // Two renderer inputs, each with an offset control authored at -0.1:
+        // a genuinely tiling beam (animatable) and a beam_edge falloff strip
+        // (must be skipped: scrolling across the falloff wraps the gradient
+        // into a hard seam, the squared-off Rem heal ring). The plan must
+        // capture the authored value so the boost scales it instead of
+        // stamping an absolute.
+        let input = |tex: &str| {
+            Value::Object(vec![
+                ("m_hTexture".to_string(), Value::String(tex.to_string())),
+                (
+                    "m_TextureControls".to_string(),
+                    Value::Object(vec![(
+                        "m_flFinalTextureOffset".to_string(),
+                        Value::Object(vec![
+                            (
+                                "m_nType".to_string(),
+                                Value::String("PF_TYPE_COLLECTION_AGE".to_string()),
+                            ),
+                            ("m_flMultFactor".to_string(), Value::Double(-0.1)),
+                        ]),
+                    )]),
+                ),
+            ])
+        };
+        let tree = Value::Object(vec![(
+            "m_Renderers".to_string(),
+            Value::Array(vec![Value::Object(vec![(
+                "m_vecTexturesInput".to_string(),
+                Value::Array(vec![
+                    input("materials/particle/beam_hotwhite.vtex"),
+                    input("materials/particle/beams/beam_edge_02.vtex"),
+                ]),
+            )])]),
+        )]);
+
+        let skip = non_tiling_texture_inputs(&tree);
+        let mut plan = PrismAnimPlan::default();
+        collect_prism_anim_plan(&tree, &mut Vec::new(), &skip, &mut plan);
+
+        // Only the tiling input's offset is planned, with its authored value.
+        assert_eq!(plan.string_paths.len(), 1);
+        assert_eq!(plan.mult_paths.len(), 1);
+        let (path, original) = &plan.mult_paths[0];
+        assert!(path_starts_with(
+            path,
+            &[
+                Seg::Key("m_Renderers".to_string()),
+                Seg::Index(0),
+                Seg::Key("m_vecTexturesInput".to_string()),
+                Seg::Index(0),
+            ]
+        ));
+        assert!((original - -0.1).abs() < 1e-9);
+        // The boost preserves the authored sign: -0.1 scales toward -0.4 at
+        // full intensity, never a sign-flipped absolute like +2.5.
+        let boosted = original * (1.0 + 1.5 * 1.0);
+        assert!(boosted < 0.0 && (boosted - -0.25).abs() < 0.16);
     }
 
     fn fixture(name: &str) -> Vec<u8> {

@@ -7,8 +7,8 @@
 //! Two simplifications vs the reference, neither reached by soundevents data:
 //! - KV3 value flags (`Resource`, `SoundEvent`, ...) are consumed but discarded;
 //!   the [`Value`](super::Value) tree has no slot for them.
-//! - Binary blobs (`countBlocks > 0`) are rejected. No soundevents file ships
-//!   them, and our encoder never emits them for these trees.
+//! - Binary blobs (`countBlocks > 0`) decode for v5 and for uncompressed v4
+//!   (our own writer's output); other blob-bearing combinations are rejected.
 
 // The KV3 wire format reinterprets the same bytes as signed/unsigned of various
 // widths; these casts are the intended bit-for-bit reinterpretations.
@@ -124,6 +124,14 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
     } else {
         size_unc_buf1 = size_unc_total;
         size_comp_buf1 = size_comp_total;
+    }
+
+    // Binary blobs ship in v5 (model `ANIM` / `.vnmclip_c`) and in v4 (the
+    // uncompressed `.vpost_c`, and morphic's own re-encoded clips / materials
+    // carrying dynamic expressions). v1-v3 blobs are unsupported; the unified
+    // `read_blobs` path below handles both v4 and v5.
+    if count_blocks > 0 && version < 4 {
+        return Err(DecodeError::Kv3("binary blobs require KV3 v4+"));
     }
 
     // Decompress the buffers off the stream, in order.
