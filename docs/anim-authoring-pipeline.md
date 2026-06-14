@@ -58,11 +58,21 @@ Artist's view, three commands:
 2. **Animate in Blender.** Keyframe the armature. One rule: do not rename or
    reorder bones (mapping is by bone name). Export glTF with the animation.
 
-3. **Import + compile + pack** (the missing command):
+3. **Import + pack** (built 2026-06-14, as `examples/nm_clip_import_glb.rs`):
    ```
-   vpkmerge anim import --hero yamato --slot reload_idle --from my_taunt.glb \
-       --encode-vpk taunt_dir.vpk
+   cargo run --release -p vpkmerge-core --example nm_clip_import_glb -- \
+       pak01_dir.vpk \
+       models/heroes_wip/yamato/clips/reload_idle_quick.vnmclip_c my_taunt.glb \
+       taunt_dir.vpk \
+       models/heroes_wip/yamato/clips/reload_idle.vnmclip_c \
+       --mesh models/heroes_staging/yamato_v2/yamato.vmdl_c --preview taunt_preview.glb
    ```
+   Reads the slot's clip + its `.vnmskel_c`, imports the glTF animation onto it
+   (`morphic::model::import_glb_onto_nm_clip`, v5 in-place), and packs the result at
+   the slot path(s) into an addon VPK. The optional `--mesh`/`--preview` writes a
+   playable GLB to eyeball the imported motion first. (A first-class `vpkmerge anim
+   import` CLI subcommand is the eventual Grimoire-facing wrapper around the same
+   core call.)
 
 Then install in `game/citadel/addons/` (or let Grimoire number it) and trigger the
 slot in-game.
@@ -144,13 +154,23 @@ So the encoder is feature-complete for the importer:
 
 ## De-risking order
 
-Before the Blender importer, land the **full clip encoder** and prove it with a
-byte-faithful round-trip test: take a real clip, **rebuild it from scratch** through
-the new encoder (recompute static/animated flags + ranges + frames, write a fresh
-blob of possibly different length), and confirm it re-decodes identically (or
-pose-identically within quantization). Once that holds on the committed fixtures and
-across a full pak, the Blender importer is a thin layer: glTF animation -> sample ->
-`NmClip` -> the encoder.
+The full clip encoder landed first (`reencode_nm_clip` in-place + the offline
+`reencode_nm_clip_full`), proven byte-/pose-faithfully on the committed fixtures and
+across a full pak (`tests/nm_clip.rs`, `tests/nm_clip_local.rs`).
+
+**Blender importer -- DONE (2026-06-14).** `morphic::model::gltf_import` is the thin
+layer the encoder made possible: read a `.glb`'s animation back into per-bone-name
+TRS tracks (`read_glb_animation`, on the `gltf` reader crate), time-stretch them onto
+the slot's frame grid mapping bones by name (`apply_animation`), and splice via the
+v5 in-place `reencode_nm_clip` (`import_glb_onto_nm_clip`). It honors the in-place
+limits: rotations may be edited or **added**, translation/scale are edited only where
+the slot already animates them. CI (`tests/gltf_anim_roundtrip.rs`):
+`glb_writer_reader_round_trip` proves the writer/reader contract (author a skeleton +
+clip, `to_glb`, read it back, every TRS channel survives keyed by bone name), and
+`apply_animation_maps_by_name_and_respects_constraints` proves the map-and-edit logic
+against a real fixture clip. End-to-end pack: `examples/nm_clip_import_glb.rs`. Still
+offline-untested in-game on a *hand-keyed Blender* `.glb` specifically (the underlying
+v5 in-place re-encode is in-game confirmed; the new piece is just the glTF read).
 
 ## Grimoire integration (eventual)
 

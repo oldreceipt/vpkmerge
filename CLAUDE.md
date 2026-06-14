@@ -327,9 +327,25 @@ playable animated GLB. `NmClip::duration` / `fps()` set the rate. This is the
 grimoire animated-hero-preview primitive and the offline way to eyeball an edited
 clip before installing. Example: `examples/nm_clip_preview_glb.rs`.
 
+**Blender animation import:** `morphic::model::gltf_import` reads a
+Blender-authored `.glb` animation back onto a slot's clip, the inverse of the GLB
+preview. `read_glb_animation(glb, name)` groups the glTF animation's channels into
+per-bone-name TRS keyframes (on the already-present `gltf` reader crate; bones map
+by joint-node name, the contract the `.glb` writer upholds by naming each joint
+after its bone). `apply_animation(clip, nm_skel, anim)` time-stretches those keys
+onto the slot's fixed frame grid and maps them by name; `import_glb_onto_nm_clip`
+is the end-to-end `bytes -> reencode_nm_clip` (v5 in-place). It honors the in-place
+limits: rotations may be edited or **added** (a static bone becomes animated),
+translation/scale edited only where the slot already animates them. CI:
+`tests/gltf_anim_roundtrip.rs` (writer<->reader round-trip + map-and-edit against a
+fixture). End-to-end pack: `examples/nm_clip_import_glb.rs` (read clip + skeleton
+from a VPK, import the glb, pack an addon at the slot path(s), optional preview GLB).
+This is the engine side of the SDK-free Blender authoring loop.
+
 **End-state design** for hand-authoring animations in Blender (export rig to glTF,
-key it, import + compile + inject) and what's still missing (a full clip *encoder*
-that writes an arbitrary-length pose blob, vs. today's equal-length in-place patch):
+key it, import + pack) and what's still missing (a v5 clip *encoder* that writes an
+arbitrary-length pose blob in-engine, so translation/scale adds + frame-count
+changes become engine-viable, vs. today's equal-length in-place patch):
 [docs/anim-authoring-pipeline.md](docs/anim-authoring-pipeline.md).
 
 ## Related

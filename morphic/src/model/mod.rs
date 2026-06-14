@@ -16,6 +16,7 @@ mod animation;
 mod dxgi;
 mod edit;
 mod glb;
+mod gltf_import;
 mod math;
 mod mesh;
 mod nm;
@@ -35,6 +36,9 @@ pub use edit::{
     vertex_targets, EditedPrimitive, EncodedMesh, VertexTarget,
 };
 pub use glb::{to_glb, to_glb_textured, FileResolver};
+pub use gltf_import::{
+    apply_animation, import_glb_onto_nm_clip, read_glb_animation, GltfAnimation, GltfBoneTrack,
+};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{
     assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, MeshPart, Primitive, VertexBuffer,
