@@ -168,9 +168,20 @@ the slot already animates them. CI (`tests/gltf_anim_roundtrip.rs`):
 `glb_writer_reader_round_trip` proves the writer/reader contract (author a skeleton +
 clip, `to_glb`, read it back, every TRS channel survives keyed by bone name), and
 `apply_animation_maps_by_name_and_respects_constraints` proves the map-and-edit logic
-against a real fixture clip. End-to-end pack: `examples/nm_clip_import_glb.rs`. Still
-offline-untested in-game on a *hand-keyed Blender* `.glb` specifically (the underlying
-v5 in-place re-encode is in-game confirmed; the new piece is just the glTF read).
+against a real fixture clip. End-to-end pack: `examples/nm_clip_import_glb.rs`.
+
+**IN-GAME CONFIRMED (2026-06-14): the full Blender authoring loop works.** A torso
+swivel hand-keyed on Yamato's rig in Blender (via blender-mcp), exported to glTF,
+imported with `nm_clip_import_glb`, and packed at the reload slot loaded and played in
+the live engine. The decisive de-risk first: a **null round-trip** (import our
+reference GLB into Blender, re-export unchanged, run it back through `apply_animation`)
+measured **0.51 deg mean** per-bone rotation difference versus the original clip,
+proving Blender's glTF import/export preserves the per-bone coordinate frame our
+importer reads (so authored rotations map onto the game rig without a correction). Two
+helper examples support the loop: `gen_obvious_anim_glb.rs` (synthesize an exaggerated
+animation as a real `.glb` with no Blender, for testing the read path) and
+`anim_glb_diff.rs` (the null-round-trip diff tool: per-bone angle difference between a
+clip and a glb after import-mapping).
 
 ## Grimoire integration (eventual)
 

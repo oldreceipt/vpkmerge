@@ -340,7 +340,13 @@ translation/scale edited only where the slot already animates them. CI:
 `tests/gltf_anim_roundtrip.rs` (writer<->reader round-trip + map-and-edit against a
 fixture). End-to-end pack: `examples/nm_clip_import_glb.rs` (read clip + skeleton
 from a VPK, import the glb, pack an addon at the slot path(s), optional preview GLB).
-This is the engine side of the SDK-free Blender authoring loop.
+This is the engine side of the SDK-free Blender authoring loop. **In-game confirmed
+(2026-06-14):** a torso swivel hand-keyed on Yamato's rig in Blender (driven via
+blender-mcp), exported to glTF, imported, and packed at the reload slot played in the
+live engine. Blender preserves the per-bone coordinate frame our importer reads (a
+null round-trip measured 0.51 deg mean rotation diff). Helper examples:
+`gen_obvious_anim_glb.rs` (synthesize an exaggerated `.glb` with no Blender) and
+`anim_glb_diff.rs` (the null-round-trip per-bone angle diff tool).
 
 **End-state design** for hand-authoring animations in Blender (export rig to glTF,
 key it, import + pack) and what's still missing (a v5 clip *encoder* that writes an
