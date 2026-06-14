@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.13.0
+
+Adds custom icon/hero-card import: build an addon that overrides Deadlock card art with a user PNG, no encoder that has to reproduce Valve's exact `.vtex_c` header. The new `icon` command reuses the base game's texture at each target path as a template: it reads that texture's format and dimensions, resizes the PNG to match, and splices it into the template's mip chain (the same in-place mechanism the recolor path uses), then packs every result at its entry path into one addon so it overrides in place. Built for Grimoire's Locker custom hero-card upload (one `--set` per card variant: minimap, small, card, card_critical, card_gloat, vertical). Existing commands are unchanged.
+
+### CLI (`vpkmerge` 0.13)
+
+- New `icon` subcommand: `vpkmerge icon --template-vpk <VPK> --set ENTRY=PNG [--set ENTRY=PNG ...] --encode-vpk OUT_dir.vpk`. Each `--set` reads the template `.vtex_c` at ENTRY from `--template-vpk` (e.g. the base `pak01_dir.vpk`), resizes the PNG (Lanczos3) to that texture's own dimensions, and packs the result back at ENTRY. HDR (`Bc6h`/`Rgba16161616F`) templates are rejected with a clear message; 8-bit card formats (`BGRA8888`, `RGBA8888`, embedded PNG, `BCn`) are supported and re-encoded in the template's own format.
+
+### Library (`vpkmerge-core` 0.13)
+
+- New `icon` module: `build_icon_from_template(template_vtex, png_bytes)` decodes + resizes a PNG to the template's dimensions and returns a new `.vtex_c` with the template's format/header/mip-count preserved (via `morphic::replace_mip_chain`); `png_to_rgba8_image(png_bytes, w, h)` exposes the decode+resize step. Promotes the `image` crate from a dev-dependency to a real dependency.
+
 ## v0.12.0
 
 Adds material shader-param styling (`vmat`), exposes the trippy live preview to CLI callers, and grows the trippy style catalog from 8 to 14. The new `vmat` command edits `.vmat_c` shader params byte-faithfully and ships five presets (gem, glass, pbr, unlit, ink) modeled on shipped Valve materials, built on the finding that Deadlock heroes already render through an NPR toon path in `pbr.vfx` whose controls are plain per-material params. The v0.11.0 `trippy_preview_frames` pattern renderer (used by the GUI Locker tab) gains a sprite-sheet variant and a `trippy-preview` subcommand, so an external UI (Grimoire's Locker) can show an animated swatch of a trippy style without linking the library or touching a VPK. Six classic skin styles join the roster: camo, carbon, galaxy, halftone, lava, and vaporwave. Existing bake paths are unchanged: `trippy-skin`, `trippy-vfx`, `prism`, recolor, merge, and model outputs for the original 8 styles are byte-identical to v0.11.0.

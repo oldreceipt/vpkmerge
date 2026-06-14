@@ -39,6 +39,9 @@ pub use recolor::{
     recolor_texture_preview_png, ModelRecolorStats, Recolor, TextureSummary,
 };
 
+pub mod icon;
+pub use icon::{build_icon_from_template, png_to_rgba8_image};
+
 pub mod hero_recolor;
 pub use hero_recolor::{
     animate_particle_timing_bytes, insert_color_cycle_operator,

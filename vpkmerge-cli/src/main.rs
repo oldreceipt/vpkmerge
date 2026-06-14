@@ -103,6 +103,34 @@ enum Command {
     /// `--set-*` edits packed into an addon VPK. `--list` surveys the targeted
     /// materials (shader, feature flags, bound texture channels) first.
     Vmat(VmatCmd),
+
+    /// Build a custom icon/hero-card addon from user PNGs. Each `--set
+    /// ENTRY=PNG` replaces the image of the base game's texture at ENTRY (read
+    /// from `--template-vpk`, e.g. `pak01_dir.vpk`) with the PNG, resized to
+    /// that texture's own dimensions, then packs every result at its entry path
+    /// into one addon VPK so it overrides the base art in place. Built for the
+    /// Locker custom hero-card upload: pass one `--set` per card variant.
+    Icon(IconCmd),
+}
+
+#[derive(Args)]
+struct IconCmd {
+    /// VPK to read each template texture from (the base `pak01_dir.vpk`, or any
+    /// VPK that ships the entries you target). Each `--set ENTRY=PNG` reads the
+    /// `.vtex_c` at ENTRY here for its format and dimensions.
+    #[arg(long, value_name = "VPK")]
+    template_vpk: PathBuf,
+
+    /// Replace one texture: `--set ENTRY=PNG` (repeatable), where ENTRY is the
+    /// VPK entry path of the template `.vtex_c` and PNG is a file on disk. The
+    /// PNG is resized to the template's dimensions and packed back at ENTRY.
+    #[arg(long = "set", value_name = "ENTRY=PNG", required = true)]
+    set: Vec<String>,
+
+    /// Pack every built texture into this one addon VPK, each at its ENTRY path
+    /// so it overrides the base art in place.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
 }
 
 #[derive(Args)]
@@ -905,6 +933,7 @@ fn main() -> Result<()> {
         Some(Command::TrippyPreview(args)) => run_trippy_preview(&args),
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         Some(Command::Vmat(args)) => run_vmat(&args),
+        Some(Command::Icon(args)) => run_icon(&args),
         None => run_merge(cli),
     }
 }
@@ -1904,6 +1933,63 @@ fn run_texture(args: TextureCmd) -> Result<()> {
              or --preview <PNG> to write output"
         );
     }
+    Ok(())
+}
+
+/// Build a custom icon/hero-card addon: for each `--set ENTRY=PNG`, splice the
+/// PNG (resized) into the template `.vtex_c` read from `--template-vpk`, then
+/// pack all results at their entry paths into one addon VPK.
+fn run_icon(args: &IconCmd) -> Result<()> {
+    // Parse each ENTRY=PNG up front so a typo fails before any work.
+    let mut jobs: Vec<(String, PathBuf)> = Vec::with_capacity(args.set.len());
+    for spec in &args.set {
+        let (entry, png) = spec.split_once('=').with_context(|| {
+            format!("--set must be ENTRY=PNG (got {spec:?}); ENTRY is a VPK entry path, PNG a file")
+        })?;
+        if entry.is_empty() || png.is_empty() {
+            anyhow::bail!("--set must be ENTRY=PNG with both sides non-empty (got {spec:?})");
+        }
+        jobs.push((entry.to_string(), PathBuf::from(png)));
+    }
+
+    let mut built: Vec<(String, Vec<u8>)> = Vec::with_capacity(jobs.len());
+    for (entry, png_path) in &jobs {
+        let template =
+            vpkmerge_core::read_vpk_entry(&args.template_vpk, entry).with_context(|| {
+                format!(
+                    "reading template {entry} from {}",
+                    args.template_vpk.display()
+                )
+            })?;
+        let summary = vpkmerge_core::inspect_texture(&template)
+            .with_context(|| format!("{entry} is not a readable .vtex_c"))?;
+        let png = std::fs::read(png_path)
+            .with_context(|| format!("reading PNG {}", png_path.display()))?;
+        let vtex = vpkmerge_core::build_icon_from_template(&template, &png)
+            .with_context(|| format!("building {entry} from {}", png_path.display()))?;
+        eprintln!(
+            "{entry}: {} {}x{} <- {} ({} bytes)",
+            summary.format,
+            summary.width,
+            summary.height,
+            png_path.display(),
+            png.len()
+        );
+        built.push((entry.clone(), vtex));
+    }
+
+    // pack() borrows entry as &str and bytes as &[u8].
+    let refs: Vec<(&str, &[u8])> = built
+        .iter()
+        .map(|(entry, bytes)| (entry.as_str(), bytes.as_slice()))
+        .collect();
+    vpkmerge_core::pack(&refs, &args.encode_vpk)?;
+    eprintln!(
+        "wrote {}: {} entr{} override the base art in place",
+        args.encode_vpk.display(),
+        refs.len(),
+        if refs.len() == 1 { "y" } else { "ies" }
+    );
     Ok(())
 }
 
