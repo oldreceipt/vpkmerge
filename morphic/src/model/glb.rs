@@ -28,11 +28,12 @@
     clippy::default_trait_access
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gltf_json as json;
 use json::validation::Checked::Valid;
 use json::validation::USize64;
+use serde_json::json as jval;
 
 use crate::error::DecodeError;
 
@@ -225,6 +226,11 @@ struct Builder {
     bin: Vec<u8>,
     /// Shared sampler for all textures, created lazily.
     sampler: Option<json::Index<json::texture::Sampler>>,
+    /// KHR material extensions gltf-json 1.x cannot represent with our feature
+    /// set (sheen has no cargo feature at all), keyed by material index. They
+    /// are injected into the serialized JSON by [`inject_material_extensions`]
+    /// in [`Builder::finish`]; one mechanism covers every extension we emit.
+    material_extensions: BTreeMap<usize, serde_json::Map<String, serde_json::Value>>,
 }
 
 struct SkinRefs {
@@ -527,8 +533,8 @@ impl Builder {
             if let Some(a) = attrs.tangent {
                 attributes.insert(Valid(json::mesh::Semantic::Tangents), a);
             }
-            if let Some(a) = attrs.texcoord0 {
-                attributes.insert(Valid(json::mesh::Semantic::TexCoords(0)), a);
+            for (i, a) in attrs.texcoords.iter().enumerate() {
+                attributes.insert(Valid(json::mesh::Semantic::TexCoords(i as u32)), *a);
             }
             if material_uses_vertex_color(&prim.material, files) {
                 let mut colors = Vec::new();
@@ -632,9 +638,11 @@ impl Builder {
                 None,
             )
         });
-        let texcoord0 = vb
+        // Every decoded TEXCOORD stream is emitted (TEXCOORD_0, TEXCOORD_1,
+        // ...); detail/AO passes sample the second set.
+        let texcoords: Vec<_> = vb
             .texcoords
-            .first()
+            .iter()
             .filter(|uv| uv.len() == count)
             .map(|uv| {
                 let bytes: Vec<u8> = uv.iter().flat_map(f32x).collect();
@@ -646,7 +654,8 @@ impl Builder {
                     json::accessor::Type::Vec2,
                     None,
                 )
-            });
+            })
+            .collect();
         let colors = vb
             .colors
             .iter()
@@ -702,7 +711,7 @@ impl Builder {
             position,
             normal,
             tangent,
-            texcoord0,
+            texcoords,
             colors,
             joints0,
             weights0,
@@ -733,11 +742,15 @@ impl Builder {
             ..Default::default()
         };
 
+        let mut extensions = serde_json::Map::new();
         if let Some(files) = files {
-            self.apply_textures(&mut material, path, files);
+            extensions = self.apply_textures(&mut material, path, files);
         }
 
         let index = self.root.push(material);
+        if !extensions.is_empty() {
+            self.material_extensions.insert(index.value(), extensions);
+        }
         mat_index.insert(path.to_owned(), index);
         index
     }
@@ -745,23 +758,37 @@ impl Builder {
     /// Resolves `path`'s `.vmat_c`, decodes its PBR-slot `.vtex_c` textures, and
     /// wires them onto `material`. Best-effort: any slot that fails to resolve
     /// or decode is simply left off (the material keeps its default factors).
+    ///
+    /// Returns the material's KHR extension objects (emissive strength, sheen,
+    /// transmission/ior, unlit) for [`inject_material_extensions`]; gltf-json
+    /// 1.x has no `KHR_materials_sheen` support at all, so every extension goes
+    /// through the one serialized-JSON injection pass. Also attaches the
+    /// `morphic` extras payload (NPR shader params + mask textures) the viewer
+    /// reads back as `material.userData.morphic`.
+    #[allow(clippy::too_many_lines)]
     fn apply_textures(
         &mut self,
         material: &mut json::Material,
         mat_path: &str,
         files: &dyn FileResolver,
-    ) {
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut extensions = serde_json::Map::new();
         let Some(vmat) = files.resolve(&compiled(mat_path)) else {
-            return;
+            return extensions;
         };
         let Ok(mat) = crate::material::parse(&vmat) else {
-            return;
+            return extensions;
         };
         let pbr = mat.pbr();
         let alpha_mode = mat.alpha_mode();
+        // Glass surfaces render through transmission + ior, not alpha blending
+        // (same dispatch as the alpha-mode path: the flag or a *_glass shader).
+        let is_glass = mat.int_params.get("F_GLASS").copied().unwrap_or(0) > 0
+            || mat.shader_name.ends_with("_glass.vfx");
         // Source 2 albedo carries non-opacity data in its alpha channel (masks);
         // for non-blended materials that alpha must not become glTF transparency.
-        let opaque = !matches!(alpha_mode, crate::material::AlphaMode::Blend);
+        // Glass counts as non-blended here: its final alphaMode is OPAQUE.
+        let opaque = !matches!(alpha_mode, crate::material::AlphaMode::Blend) || is_glass;
 
         // Base color (sRGB albedo).
         if let Some(p) = pbr.base_color {
@@ -779,6 +806,15 @@ impl Builder {
             }
         }
 
+        // Metalness mask (R channel) for the ORM blue channel. Decoded up
+        // front so the metallic-roughness image below can pack it; like the
+        // other non-albedo slots, a 4x4 `default_*` placeholder is skipped.
+        let metalness = pbr
+            .metalness
+            .and_then(|p| decode_slot(files, p))
+            .filter(|&(w, h, _)| w.min(h) > 4);
+        let mut metalness_wired = false;
+
         // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
         // Skip the 4x4 default_normal placeholder (a flat normal is a no-op).
         if let Some(p) = pbr.normal {
@@ -792,11 +828,26 @@ impl Builder {
                         extras: Default::default(),
                     });
                 }
-                if let Some(t) = self.texture_png(&metal_rough_png(w, h, &rgba)) {
+                if let Some(t) = self.texture_png(&metal_rough_png(w, h, &rgba, metalness.as_ref()))
+                {
                     material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
                     material.pbr_metallic_roughness.roughness_factor =
                         json::material::StrengthFactor(1.0);
+                    if metalness.is_some() {
+                        // The texture multiplies the factor; a wired metalness
+                        // mask needs metallicFactor 1.0, not the 0.0 default.
+                        material.pbr_metallic_roughness.metallic_factor =
+                            json::material::StrengthFactor(1.0);
+                        metalness_wired = true;
+                    }
                 }
+            }
+        }
+        if !metalness_wired && metalness.is_none() {
+            // No metalness mask: a constant g_flMetalness still sets the factor.
+            if let Some(&m) = mat.float_params.get("g_flMetalness") {
+                material.pbr_metallic_roughness.metallic_factor =
+                    json::material::StrengthFactor(m.clamp(0.0, 1.0));
             }
         }
 
@@ -811,20 +862,119 @@ impl Builder {
             });
         }
 
-        // Emissive (self-illum mask).
+        // Emissive (self-illum mask). g_flSelfIllumScale1 can run well past 1
+        // (Chrono's clock face: 3.649); KHR_materials_emissive_strength carries
+        // the overbright part, since emissiveFactor clamps at 1.
         if let Some(tex) = pbr.emissive.and_then(|p| self.texture_from(files, p)) {
             material.emissive_texture = Some(tex_info(tex));
             material.emissive_factor = json::material::EmissiveFactor([1.0, 1.0, 1.0]);
+            let scale = mat
+                .float_params
+                .get("g_flSelfIllumScale1")
+                .or_else(|| mat.float_params.get("g_flSelfIllumScale"))
+                .copied();
+            if let Some(s) = scale.filter(|&s| s > 1.0) {
+                extensions.insert(
+                    "KHR_materials_emissive_strength".to_owned(),
+                    jval!({ "emissiveStrength": s }),
+                );
+            }
         }
 
-        material.alpha_mode = Valid(match alpha_mode {
-            crate::material::AlphaMode::Blend => json::material::AlphaMode::Blend,
-            crate::material::AlphaMode::Mask => json::material::AlphaMode::Mask,
-            crate::material::AlphaMode::Opaque => json::material::AlphaMode::Opaque,
+        // F_SHEEN: the Charlie-sheen cloth lobe maps 1:1 onto
+        // KHR_materials_sheen. Param names per the shipped recipe
+        // (xmas_vindicta_dress, see vpkmerge-core vmat_style's gem preset):
+        // g_vSheenColorTint1 tints the lobe; TextureSheenRoughness1 is the
+        // constant fallback for the unbound sheen-roughness sampler.
+        if mat.int_params.get("F_SHEEN").copied().unwrap_or(0) > 0 {
+            let color = mat
+                .vector_params
+                .get("g_vSheenColorTint1")
+                .or_else(|| mat.vector_params.get("g_vSheenColorTint"))
+                .map_or([1.0f32; 3], |v| {
+                    [
+                        v[0].clamp(0.0, 1.0),
+                        v[1].clamp(0.0, 1.0),
+                        v[2].clamp(0.0, 1.0),
+                    ]
+                });
+            let roughness = mat
+                .vector_params
+                .get("TextureSheenRoughness1")
+                .map(|v| v[0])
+                .or_else(|| mat.float_params.get("g_flSheenRoughness").copied())
+                .map_or(0.5, |r| r.clamp(0.0, 1.0));
+            extensions.insert(
+                "KHR_materials_sheen".to_owned(),
+                jval!({
+                    "sheenColorFactor": color,
+                    "sheenRoughnessFactor": roughness,
+                }),
+            );
+        }
+
+        // Glass: transmission + ior replace alpha blending entirely.
+        if is_glass {
+            extensions.insert(
+                "KHR_materials_transmission".to_owned(),
+                jval!({ "transmissionFactor": 0.9 }),
+            );
+            extensions.insert("KHR_materials_ior".to_owned(), jval!({ "ior": 1.5 }));
+        }
+
+        // F_UNLIT: lighting ignored, albedo as-is.
+        if mat.int_params.get("F_UNLIT").copied().unwrap_or(0) > 0 {
+            extensions.insert("KHR_materials_unlit".to_owned(), jval!({}));
+        }
+
+        material.alpha_mode = Valid(if is_glass {
+            json::material::AlphaMode::Opaque
+        } else {
+            match alpha_mode {
+                crate::material::AlphaMode::Blend => json::material::AlphaMode::Blend,
+                crate::material::AlphaMode::Mask => json::material::AlphaMode::Mask,
+                crate::material::AlphaMode::Opaque => json::material::AlphaMode::Opaque,
+            }
         });
         if let Some(c) = mat.alpha_cutoff() {
             material.alpha_cutoff = Some(json::material::AlphaCutoff(c));
         }
+
+        material.extras = self.morphic_extras(&mat, files);
+        extensions
+    }
+
+    /// Builds the `morphic` extras payload the Grimoire viewer reads as
+    /// `material.userData.morphic`: the full shader name + int/float/vector
+    /// param tables, plus the NPR mask textures embedded exactly like the PBR
+    /// ones and referenced by glTF texture index. (glTF validators flag
+    /// textures referenced only from extras as unused; that is intentional,
+    /// matching VRF's exporter.) The masks are data textures (linear); the PNG
+    /// embed path applies no color-space conversion.
+    fn morphic_extras(
+        &mut self,
+        mat: &crate::material::Material,
+        files: &dyn FileResolver,
+    ) -> json::Extras {
+        let mut textures = serde_json::Map::new();
+        for slot in NPR_TEXTURE_SLOTS {
+            if let Some(tex) = mat
+                .texture(slot)
+                .and_then(|p| self.texture_from_any(files, p))
+            {
+                textures.insert((*slot).to_owned(), jval!(tex.value()));
+            }
+        }
+        let extras = jval!({
+            "morphic": {
+                "shader": mat.shader_name,
+                "ints": mat.int_params,
+                "floats": mat.float_params,
+                "vectors": mat.vector_params,
+                "textures": textures,
+            }
+        });
+        serde_json::value::to_raw_value(&extras).ok()
     }
 
     /// Resolves + decodes a `.vtex` slot and embeds it verbatim as a glTF
@@ -840,7 +990,29 @@ impl Builder {
         if w.min(h) <= 4 {
             return None;
         }
-        let png = png_encode(w, h, &rgba)?;
+        self.embed_rgba_png(w, h, &rgba)
+    }
+
+    /// Like `texture_from`, but keeps placeholder-sized textures. Used for the
+    /// NPR mask slots, where every shipped skin binds a flat 4x4: there the
+    /// texel values are the actual per-material constants (e.g. the rim light
+    /// strength in G), so small means data, not a no-op placeholder.
+    fn texture_from_any(
+        &mut self,
+        files: &dyn FileResolver,
+        vtex_path: &str,
+    ) -> Option<json::Index<json::Texture>> {
+        let (w, h, rgba) = decode_slot(files, vtex_path)?;
+        self.embed_rgba_png(w, h, &rgba)
+    }
+
+    fn embed_rgba_png(
+        &mut self,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+    ) -> Option<json::Index<json::Texture>> {
+        let png = png_encode(w, h, rgba)?;
         self.texture_png(&png)
     }
 
@@ -907,8 +1079,11 @@ impl Builder {
             extras: Default::default(),
         });
 
-        let json_string = json::serialize::to_string(&self.root)
+        let mut json_string = json::serialize::to_string(&self.root)
             .map_err(|_| DecodeError::Model("glTF JSON serialize failed"))?;
+        if !self.material_extensions.is_empty() {
+            json_string = inject_material_extensions(&json_string, &self.material_extensions)?;
+        }
         let mut json_bytes = json_string.into_bytes();
         while !json_bytes.len().is_multiple_of(4) {
             json_bytes.push(b' ');
@@ -1055,13 +1230,93 @@ fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// glTF metallic-roughness texture: G = roughness (from the normal texture's
-/// alpha), B = metalness (0; Deadlock hero surfaces are treated as non-metal).
-fn metal_rough_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+/// alpha), B = metalness (the metalness mask's R channel, nearest-neighbor
+/// resampled to the roughness image's dimensions; 0 without a mask).
+pub(super) fn metal_rough_png(
+    w: u32,
+    h: u32,
+    rgba: &[u8],
+    metalness: Option<&(u32, u32, Vec<u8>)>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len());
-    for px in rgba.chunks_exact(4) {
-        out.extend_from_slice(&[0, px[3], 0, 255]);
+    for (i, px) in rgba.chunks_exact(4).enumerate() {
+        let metal = metalness.map_or(0, |&(mw, mh, ref m)| {
+            let x = i as u64 % u64::from(w);
+            let y = i as u64 / u64::from(w);
+            let mx = x * u64::from(mw) / u64::from(w);
+            let my = y * u64::from(mh) / u64::from(h);
+            m[((my * u64::from(mw) + mx) * 4) as usize]
+        });
+        out.extend_from_slice(&[0, px[3], metal, 255]);
     }
     png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// NPR mask texture slots embedded for the viewer and referenced from the
+/// `morphic` extras payload (R = tint enable, G = rim light constant for the
+/// first; outline + transmissive color for the others).
+const NPR_TEXTURE_SLOTS: &[&str] = &[
+    "g_tTintMaskRimLightMask",
+    "g_tNprOutlineMask",
+    "g_tNprTransmissiveColor",
+];
+
+/// Injects per-material KHR extension objects into the serialized glTF JSON
+/// and lists their names in the root `extensionsUsed` array (required for
+/// validity). One post-pass covers every extension this writer emits: gltf-json
+/// 1.x exposes some of them behind cargo features but has no
+/// `KHR_materials_sheen` at all, so a single `serde_json` mechanism beats mixing
+/// two. `per_material` is keyed by material index.
+pub(super) fn inject_material_extensions(
+    json_str: &str,
+    per_material: &BTreeMap<usize, serde_json::Map<String, serde_json::Value>>,
+) -> Result<String, DecodeError> {
+    let mut doc: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|_| DecodeError::Model("glTF JSON reparse failed"))?;
+
+    let used: BTreeSet<&String> = per_material
+        .values()
+        .flat_map(serde_json::Map::keys)
+        .collect();
+
+    {
+        let materials = doc
+            .get_mut("materials")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or(DecodeError::Model("glTF materials array missing"))?;
+        for (&i, ext) in per_material {
+            let slot = materials
+                .get_mut(i)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(DecodeError::Model("glTF material index out of range"))?;
+            let entry = slot
+                .entry("extensions")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            let obj = entry
+                .as_object_mut()
+                .ok_or(DecodeError::Model("glTF material extensions not an object"))?;
+            for (name, value) in ext {
+                obj.insert(name.clone(), value.clone());
+            }
+        }
+    }
+
+    let root = doc
+        .as_object_mut()
+        .ok_or(DecodeError::Model("glTF root not an object"))?;
+    let list = root
+        .entry("extensionsUsed")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let arr = list
+        .as_array_mut()
+        .ok_or(DecodeError::Model("glTF extensionsUsed not an array"))?;
+    for name in used {
+        if !arr.iter().any(|v| v.as_str() == Some(name)) {
+            arr.push(jval!(name));
+        }
+    }
+
+    serde_json::to_string(&doc).map_err(|_| DecodeError::Model("glTF JSON re-serialize failed"))
 }
 
 /// The accessors written for one vertex buffer, shared across its primitives.
@@ -1069,7 +1324,7 @@ struct VertexAccessors {
     position: Option<json::Index<json::Accessor>>,
     normal: Option<json::Index<json::Accessor>>,
     tangent: Option<json::Index<json::Accessor>>,
-    texcoord0: Option<json::Index<json::Accessor>>,
+    texcoords: Vec<json::Index<json::Accessor>>,
     colors: Vec<json::Index<json::Accessor>>,
     joints0: Option<json::Index<json::Accessor>>,
     weights0: Option<json::Index<json::Accessor>>,

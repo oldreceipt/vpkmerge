@@ -1,6 +1,6 @@
 [package]
 name = "morphic"
-version = "0.4.0"
+version = "0.7.0"
 edition = "2021"
 description = "Pure-Rust Source 2 .vtex_c texture decoder. Algorithms adapted from ValveResourceFormat (MIT)."
 license = "MIT"
@@ -42,12 +42,15 @@ gltf-json = { version = "1", features = ["names", "extras"] }
 # glTF reader: round-trips the .glb the writer produces in tests, and reads an
 # edited .glb back in on the model-edit import path.
 gltf = { version = "1", features = ["names", "extras"] }
+# Builds the glTF `extras` payloads (NPR shader params for the viewer) and the
+# post-serialize injection of KHR material extensions gltf-json cannot
+# represent (sheen). `raw_value` matches gltf-json's `Extras` type.
+serde_json = { version = "1", features = ["raw_value"] }
 ruzstd = "0.8.3"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 sha2 = "0.10"
 walkdir = "2"
 valve_pak = "0.1"

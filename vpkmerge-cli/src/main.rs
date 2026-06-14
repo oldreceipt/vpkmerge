@@ -66,6 +66,14 @@ enum Command {
     /// the base entry path and it overrides in place, no `.vmat_c` edit needed.
     Texture(TextureCmd),
 
+    /// Export a Source 2 cubemap texture (`.vtex_c`) to six Radiance `.hdr`
+    /// face files (px/nx/py/ny/pz/nz.hdr, in `[+X, -X, +Y, -Y, +Z, -Z]` order).
+    /// Decode-only: ships a real Deadlock IBL probe to the grimoire three.js
+    /// viewer, e.g. `vpkmerge cubemap
+    /// materials/skybox/sky_dl_dusk_ibl_exr_3dabb6cd.vtex_c --from-vpk
+    /// pak01_dir.vpk --out-dir dusk-ibl`.
+    Cubemap(CubemapCmd),
+
     /// Recolor a hero's full ability VFX (particles + color textures + baked
     /// vertex colors) to one hue and pack it into a single addon VPK. The
     /// one-call bridge for a mod manager: composes all three recolor mechanisms
@@ -216,6 +224,23 @@ struct TextureCmd {
     /// reading with --from-vpk; required for a loose-file INPUT. Single input only.
     #[arg(long = "vpk-entry", value_name = "PATH")]
     vpk_entry: Option<String>,
+}
+
+#[derive(Args)]
+struct CubemapCmd {
+    /// A cubemap `.vtex_c` file, or (with --from-vpk) an entry path inside a
+    /// VPK. Must carry the `CUBE_TEXTURE` flag (e.g. the BC6H IBL probes under
+    /// `materials/skybox/`).
+    input: PathBuf,
+
+    /// Read INPUT as an entry path inside this VPK instead of a file on disk
+    /// (e.g. `--from-vpk pak01_dir.vpk materials/skybox/sky_dl_dusk_ibl_exr_3dabb6cd.vtex_c`).
+    #[arg(long, value_name = "VPK")]
+    from_vpk: Option<PathBuf>,
+
+    /// Directory to write the six face files into (created if missing).
+    #[arg(long = "out-dir", value_name = "DIR")]
+    out_dir: PathBuf,
 }
 
 #[derive(Args)]
@@ -926,6 +951,7 @@ fn main() -> Result<()> {
         Some(Command::Model(args)) => run_model(args),
         Some(Command::Soundevents(args)) => run_soundevents(args),
         Some(Command::Texture(args)) => run_texture(args),
+        Some(Command::Cubemap(args)) => run_cubemap(&args),
         Some(Command::RecolorHero(args)) => run_recolor_hero(&args),
         Some(Command::Prism(args)) => run_prism(&args),
         Some(Command::TrippySkin(args)) => run_trippy_skin(&args),
@@ -1933,6 +1959,30 @@ fn run_texture(args: TextureCmd) -> Result<()> {
              or --preview <PNG> to write output"
         );
     }
+    Ok(())
+}
+
+/// Export a cubemap `.vtex_c` to six Radiance `.hdr` faces and print a
+/// per-face orientation table (the `py` face should be the sky).
+fn run_cubemap(args: &CubemapCmd) -> Result<()> {
+    let label = match &args.from_vpk {
+        Some(vpk) => format!("{} @ {}", args.input.display(), vpk.display()),
+        None => args.input.display().to_string(),
+    };
+    let reports =
+        vpkmerge_core::export_cubemap_hdr(&args.input, args.from_vpk.as_deref(), &args.out_dir)?;
+    eprintln!("{label}: {} faces decoded at mip 0", reports.len());
+    for r in &reports {
+        eprintln!(
+            "  {}.hdr  {}x{}  mean luminance {:.5}",
+            r.face, r.width, r.height, r.mean_luminance
+        );
+    }
+    eprintln!(
+        "wrote {} faces to {} (order +X -X +Y -Y +Z -Z; py.hdr should be the sky)",
+        reports.len(),
+        args.out_dir.display()
+    );
     Ok(())
 }
 

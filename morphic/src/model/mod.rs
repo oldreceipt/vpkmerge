@@ -16,6 +16,7 @@ mod animation;
 mod dxgi;
 mod edit;
 mod glb;
+mod gltf_import;
 mod math;
 mod mesh;
 mod nm;
@@ -35,11 +36,18 @@ pub use edit::{
     vertex_targets, EditedPrimitive, EncodedMesh, VertexTarget,
 };
 pub use glb::{to_glb, to_glb_textured, FileResolver};
+pub use gltf_import::{
+    apply_animation, import_glb_onto_nm_clip, read_glb_animation, GltfAnimation, GltfBoneTrack,
+};
 pub use math::{Mat4, Quat, Vec3};
 pub use mesh::{
     assemble_to_layout, assemble_vertex_buffer, AssembledBuffer, MeshPart, Primitive, VertexBuffer,
 };
-pub use nm::{bake_nm_pose, decode_nm_pose, decode_nm_skeleton, NmPose, NmSkeleton};
+pub use nm::{
+    bake_nm_pose, decode_nm_clip, decode_nm_pose, decode_nm_skeleton, decode_pose_stream,
+    encode_compressed_pose, nm_clip_to_clip, reencode_nm_clip, reencode_nm_clip_full, NmClip,
+    NmPose, NmSkeleton, NmTrack, QuantRange, TrackSettings,
+};
 pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
 pub use skeleton::{invert_remap, localize_joints, Bone, Skeleton};
 pub use topology::{

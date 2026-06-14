@@ -126,11 +126,12 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
         size_comp_buf1 = size_comp_total;
     }
 
-    // Binary blobs ship in v5 (model `ANIM`) and in our own writer's
-    // uncompressed v4 output (re-encoded materials carrying dynamic
-    // expressions). Other combinations stay rejected.
-    if count_blocks > 0 && version < 5 && (version != 4 || compression != 0) {
-        return Err(DecodeError::Kv3("binary blobs require KV3 v5"));
+    // Binary blobs ship in v5 (model `ANIM` / `.vnmclip_c`) and in v4 (the
+    // uncompressed `.vpost_c`, and morphic's own re-encoded clips / materials
+    // carrying dynamic expressions). v1-v3 blobs are unsupported; the unified
+    // `read_blobs` path below handles both v4 and v5.
+    if count_blocks > 0 && version < 4 {
+        return Err(DecodeError::Kv3("binary blobs require KV3 v4+"));
     }
 
     // Decompress the buffers off the stream, in order.
@@ -180,7 +181,11 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
             next_blob: 0,
         }
     } else {
-        let (mut ctx, blob_lengths) = layout_single(
+        // v1/v4: a single buffer. Binary blobs (v4 `.vpost_c`, and morphic's own
+        // re-encoded `.vnmclip_c`) sit after the type stream as a length table +
+        // trailer, with the blob bytes following the buffer in the stream -- the
+        // same shape `read_blobs` reads for v5.
+        let (mut ctx, after_types) = layout_single(
             &buf1,
             version,
             count_b1,
@@ -191,20 +196,17 @@ pub(super) fn decode(data: &[u8]) -> Result<Value, DecodeError> {
             size_unc_total,
             count_blocks,
         )?;
-        // Uncompressed v4 blob data follows the main buffer in the stream.
-        if !blob_lengths.is_empty() {
-            let blob_buf = h.bytes(usize_of(size_blobs)?)?;
-            let mut p = 0usize;
-            for len in blob_lengths {
-                let end = p
-                    .checked_add(len)
-                    .ok_or(DecodeError::Kv3("blob slice overflow"))?;
-                let bytes = blob_buf
-                    .get(p..end)
-                    .ok_or(DecodeError::Kv3("blob region underrun"))?;
-                ctx.blobs.push(bytes.to_vec());
-                p = end;
-            }
+        if count_blocks > 0 {
+            ctx.blobs = read_blobs(
+                &mut h,
+                &buf1,
+                after_types,
+                compression,
+                usize::from(frame),
+                count_blocks,
+                size_blobs,
+                size_block_compressed,
+            )?;
         }
         ctx
     };
@@ -483,7 +485,7 @@ fn layout_single(
     count_types: i64,
     size_unc_total: i64,
     count_blocks: i64,
-) -> Result<(Ctx<'_>, Vec<usize>), DecodeError> {
+) -> Result<(Ctx<'_>, usize), DecodeError> {
     let mut off = 0usize;
     let b1_start = off;
     off += usize_of(count_b1)?;
@@ -516,24 +518,13 @@ fn layout_single(
     };
     let types = slice(buf, off, types_len)?;
     off += types_len;
-    // v4 blob lengths (i32 each) sit between the type stream and the trailer.
-    let mut blob_lengths = Vec::new();
-    if count_blocks > 0 {
-        let lengths_region = slice(
-            buf,
-            off,
-            usize_of(count_blocks)?
-                .checked_mul(4)
-                .ok_or(DecodeError::Kv3("blob length table overflow"))?,
-        )?;
-        for b in lengths_region.chunks_exact(4) {
-            blob_lengths.push(usize_of(i64::from(i32::from_le_bytes([
-                b[0], b[1], b[2], b[3],
-            ])))?);
-        }
-        off += lengths_region.len();
+    // No-blob: the document trailer is right after the types. With blobs, the
+    // per-blob length table + trailer follow instead, read by `read_blobs` from
+    // this `after_types` offset.
+    let after_types = off;
+    if count_blocks == 0 {
+        check_trailer(buf, off)?;
     }
-    check_trailer(buf, off)?;
 
     let main = Buffers {
         b1: Cursor::new(slice(buf, b1_start, usize_of(count_b1)?)?),
@@ -542,24 +533,22 @@ fn layout_single(
         b4: Cursor::new(slice(buf, b4_start + 4, b4_len.saturating_sub(4))?),
         b8: Cursor::new(slice(buf, b8_start, b8_len)?),
     };
-    Ok((
-        Ctx {
-            version,
-            strings,
-            types: Cursor::new(types),
-            object_lengths: Cursor::new(&[]),
-            main,
-            aux: Buffers {
-                b1: Cursor::new(&[]),
-                b2: Cursor::new(&[]),
-                b4: Cursor::new(&[]),
-                b8: Cursor::new(&[]),
-            },
-            blobs: Vec::new(),
-            next_blob: 0,
+    let ctx = Ctx {
+        version,
+        strings,
+        types: Cursor::new(types),
+        object_lengths: Cursor::new(&[]),
+        main,
+        aux: Buffers {
+            b1: Cursor::new(&[]),
+            b2: Cursor::new(&[]),
+            b4: Cursor::new(&[]),
+            b8: Cursor::new(&[]),
         },
-        blob_lengths,
-    ))
+        blobs: Vec::new(),
+        next_blob: 0,
+    };
+    Ok((ctx, after_types))
 }
 
 fn read_type(ctx: &mut Ctx) -> Result<(u8, u8), DecodeError> {

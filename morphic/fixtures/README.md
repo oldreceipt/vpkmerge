@@ -25,6 +25,7 @@ fixtures/
   rgba16f/                (M8)
   kv3/                    raw KV3 blocks + .kv3.json goldens (model exporter M1)
   meshopt/                raw MVTX/MIDX blocks + .meshopt.json goldens (M2)
+  nm/                     whole .vnmclip_c resources for the NM pose codec
   _local/                 gitignored, oracle-populated stress corpus
 ```
 
@@ -69,6 +70,17 @@ hornet's embedded meshes, each with a sibling `*.meshopt.json` golden
 byte-for-byte against these. Committed fixtures span vertex strides 52/56/60
 and both index buffers. Re-bless with `just mesh-buffers`.
 
+The `nm/` tier holds whole `.vnmclip_c` resources (not sliced blocks) for the
+NM quantized-pose codec (`m_compressedPoseData`). The golden is intrinsic, no
+oracle JSON: `tests/nm_clip.rs` decodes each clip, re-encodes the pose stream,
+and asserts the re-encode is byte-identical and a re-decode reproduces the
+tracks. The four committed clips are all yamato's: `rope_climb_idle`
+(translation-only animated), `reload_idle_quick` (rotation+translation; the
+press-R taunt slot), `flinch_back` (additive), and `ui_hero_select` (fully
+static, the no-compressed-stream degenerate case). The animated-scale channel
+(rare; no yamato clip uses it) is covered by a `model::nm` unit test, and the
+broad pak-wide round-trip by the gated `tests/nm_clip_local.rs`.
+
 ## Provenance
 
 | Path                                          | Source (Deadlock pak01 entry)                                        |
@@ -84,6 +96,10 @@ and both index buffers. Re-bless with `just mesh-buffers`.
 | `material/necro_picker_hand_effect.vmat_c`    | `models/heroes_wip/necro/materials/necro_picker_hand_effect.vmat_c` |
 | `material/picker_hand_glow.vmat_c`            | `models/heroes_wip/necro/materials/picker_hand_glow.vmat_c`         |
 | `material/necro_gravestone.vmat_c`            | `models/heroes_wip/necro/materials/necro_gravestone.vmat_c`         |
+| `nm/yamato_rope_climb_idle.vnmclip_c`         | `models/heroes_wip/yamato/clips/rope_climb_idle.vnmclip_c`          |
+| `nm/yamato_reload_idle_quick.vnmclip_c`       | `models/heroes_wip/yamato/clips/reload_idle_quick.vnmclip_c`        |
+| `nm/yamato_flinch_back.vnmclip_c`             | `models/heroes_wip/yamato/clips/flinch_back.vnmclip_c`              |
+| `nm/yamato_ui_hero_select.vnmclip_c`          | `models/heroes_wip/yamato/clips/ui_hero_select.vnmclip_c`           |
 
 Extracted via `tools/morphic-oracle` from a local Steam install. Re-extract
 with `just fixture <entry> <subdir>`. See `tools/format-counts.csv` for the

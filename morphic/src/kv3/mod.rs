@@ -19,8 +19,8 @@ mod types;
 mod writer;
 
 pub use patch::{
-    insert_array_element_adding, neutralize_draw_calls, set_bools, set_doubles, set_floats,
-    set_scalars, set_strings, set_strings_adding, Seg,
+    insert_array_element_adding, neutralize_draw_calls, set_blob, set_bools, set_doubles,
+    set_floats, set_scalars, set_sole_blob, set_strings, set_strings_adding, Seg,
 };
 pub use rewrap::rewrap_uncompressed;
 pub use types::Value;

@@ -97,7 +97,16 @@ pub enum Seg {
 /// Errors if the block is not v4/v5, if any path is missing / not an integer
 /// scalar / ambiguous, or if a value does not fit its field's width.
 pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, DecodeError> {
-    let mut out = rewrap_uncompressed(block)?;
+    // A blobbed-LZ4 v5 block (a `.vnmclip_c` with its pose blob) is decompressed to
+    // a walkable working copy and re-emitted still compressed (the blob frames
+    // carried through verbatim), exactly as [`set_doubles`] does; otherwise rewrap
+    // to an uncompressed block. Either way the in-place patch is identical.
+    let blobbed = is_blobbed_lz4_v5(block);
+    let mut out = if blobbed {
+        decompress_v5_working(block)?
+    } else {
+        rewrap_uncompressed(block)?
+    };
     // v5 uses a two-buffer layout (120-byte header); v4 a single buffer (72-byte
     // header). Both patch in place once decompressed; only the lane math differs.
     let version = u32_at(&out, 0)? & 0xFF;
@@ -137,7 +146,11 @@ pub fn set_scalars(block: &[u8], edits: &[(Vec<Seg>, i64)]) -> Result<Vec<u8>, D
             .ok_or(DecodeError::Kv3("scalar patch offset out of range"))?
             .copy_from_slice(&bytes);
     }
-    Ok(out)
+    if blobbed {
+        reassemble_blobbed_v5(block, &out)
+    } else {
+        Ok(out)
+    }
 }
 
 /// Sets `DOUBLE` (f64) fields located by KV3 path, in place, on a byte-faithful
@@ -1722,7 +1735,15 @@ fn write_i32_at(b: &mut [u8], o: usize, v: i32) {
 ///
 /// Errors if the block is not v5, or if a path is missing / not a bool / ambiguous.
 pub fn set_bools(block: &[u8], edits: &[(Vec<Seg>, bool)]) -> Result<Vec<u8>, DecodeError> {
-    let mut out = rewrap_uncompressed(block)?;
+    // Blobbed-LZ4 v5 (a `.vnmclip_c` with its pose blob) decompresses to a walkable
+    // working copy and re-emits still compressed, like [`set_doubles`]; otherwise
+    // rewrap uncompressed. The in-place flip is identical either way.
+    let blobbed = is_blobbed_lz4_v5(block);
+    let mut out = if blobbed {
+        decompress_v5_working(block)?
+    } else {
+        rewrap_uncompressed(block)?
+    };
     if out.len() < 120 || u32::from_le_bytes([out[0], out[1], out[2], out[3]]) & 0xFF != 5 {
         return Err(DecodeError::Kv3("bool patch requires KV3 v5"));
     }
@@ -1765,7 +1786,11 @@ pub fn set_bools(block: &[u8], edits: &[(Vec<Seg>, bool)]) -> Result<Vec<u8>, De
             BoolKind::ValueByte => *b = u8::from(want),
         }
     }
-    Ok(out)
+    if blobbed {
+        reassemble_blobbed_v5(block, &out)
+    } else {
+        Ok(out)
+    }
 }
 
 /// Encodes `value` to the little-endian bytes of an integer scalar of node type
@@ -2536,6 +2561,68 @@ fn read_cstr(buf: &[u8], pos: &mut usize) -> Result<String, DecodeError> {
     let s = String::from_utf8_lossy(&buf[start..*pos]).into_owned();
     *pos += 1;
     Ok(s)
+}
+
+/// Replaces a binary-blob value's bytes in place, on a byte-faithful uncompressed
+/// re-wrap of `block`. `old` must appear exactly once in the (uncompressed) block
+/// and `new` must be the same length, so every other byte (including the blob's
+/// recorded length, which lives elsewhere in the structure) is preserved.
+///
+/// Unlike the path-keyed setters, this locates the blob by its (unique) content
+/// rather than by KV3 path: a blob is the only large opaque byte run in these
+/// resources, so an exact-content match is unambiguous and avoids walking the
+/// v5 blob-buffer layout. Built to write a re-encoded `m_compressedPoseData`
+/// stream back into a `.vnmclip_c` (the new stream is the same length as the old
+/// whenever the set of animated channels is unchanged).
+///
+/// Errors if lengths differ, if `old` is empty, or if `old` is absent or occurs
+/// more than once in the block.
+pub fn set_blob(block: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    if old.len() != new.len() {
+        return Err(DecodeError::Kv3("blob replace requires equal length"));
+    }
+    if old.is_empty() {
+        return Err(DecodeError::Kv3("blob replace: empty blob"));
+    }
+
+    // The common case (Deadlock `.vnmclip_c`): a blobbed-LZ4 v5 block whose blob
+    // lives in a compressed frame. Recompress the frame in place, keeping the
+    // block compressed (the engine misreads a blobbed block flipped to raw).
+    if super::rewrap::is_blobbed_lz4_v5(block) {
+        return super::rewrap::replace_blob_v5(block, new, Some(old));
+    }
+
+    // Otherwise the block has no compressed blob frames: re-wrap it uncompressed
+    // (a no-op if already raw) and overwrite the blob bytes where they sit. The
+    // blob is the only large opaque run, so an exact-content match is unambiguous.
+    let mut out = rewrap_uncompressed(block)?;
+    let mut found = None;
+    for start in 0..=out.len().saturating_sub(old.len()) {
+        if &out[start..start + old.len()] == old {
+            if found.is_some() {
+                return Err(DecodeError::Kv3("blob occurs more than once; ambiguous"));
+            }
+            found = Some(start);
+        }
+    }
+    let start = found.ok_or(DecodeError::Kv3("blob not found in block"))?;
+    out[start..start + new.len()].copy_from_slice(new);
+    Ok(out)
+}
+
+/// Replace the sole binary blob of a blobbed-LZ4 v5 block (a `.vnmclip_c`'s
+/// `m_compressedPoseData`) with `new` of **any** length up to one LZ4 frame
+/// (16 KB), unlike [`set_blob`] which is content-keyed and equal-length. Built for
+/// re-encoding a clip whose animated-channel set changed (so the pose stream grew
+/// or shrank). Errors on a non-blobbed block or a `new` larger than one frame; see
+/// [`super::rewrap::replace_blob_v5`].
+pub fn set_sole_blob(block: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    if !super::rewrap::is_blobbed_lz4_v5(block) {
+        return Err(DecodeError::Kv3(
+            "set_sole_blob: not a blobbed LZ4 v5 block",
+        ));
+    }
+    super::rewrap::replace_blob_v5(block, new, None)
 }
 
 #[cfg(test)]

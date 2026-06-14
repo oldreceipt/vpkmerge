@@ -169,6 +169,19 @@ Exposed as `vpkmerge texture <file|entry> [--from-vpk <vpk>] --hue <DEG> [--prev
 ability-VFX recolor (ult dragon, projectile self-illum), the texture half of the particle
 recolor. Full writeup: [../grimoire/docs/ability-vfx-recolor.md](../grimoire/docs/ability-vfx-recolor.md).
 
+## Cubemap export (`.vtex_c` to `.hdr`)
+
+`vpkmerge cubemap <file|entry> [--from-vpk <vpk>] --out-dir <DIR>` decodes a Source 2
+cube texture at mip 0 and writes six Radiance `.hdr` faces (flat RGBE, no RLE) named
+`px/nx/py/ny/pz/nz.hdr`, in morphic's cubemap storage order `[+X, -X, +Y, -Y, +Z, -Z]`,
+which is also the order three.js `CubeTextureLoader` expects. Decode-only (nothing is
+re-encoded or packed): built to ship real Deadlock IBL probes (the BC6H cube textures
+under `materials/skybox/`, e.g. `sky_dl_dusk_ibl_exr_3dabb6cd.vtex_c`) to the grimoire
+viewer's image-based lighting. f16 sources pass through as linear light; 8-bit sources
+are treated as sRGB and linearized. Refuses non-cubemap textures (no `CUBE_TEXTURE`
+flag). API: `vpkmerge_core::export_cubemap_hdr`, returning per-face mean luminance so
+a caller can sanity-check orientation (`py` should be the brightest sky face).
+
 ## Model vertex-color recolor (`.vmdl_c`)
 
 The **third** VFX recolor mechanism (after particle params + texture hue): some effects
@@ -301,6 +314,87 @@ the lane buffers/type stream/strings), but it is in-game-gated binary surgery.
 `$ent_origin`, ... + scene-side `$camera_origin`) enumerate from `strings` over
 `game/citadel/bin/win64/client.dll`. `oracle dynexpr hash|brute` reverses
 attribute tokens (murmur2, seed 0x31415926, lowercased, `$` included).
+
+## NM animation pose codec (`.vnmclip_c`)
+
+The newer Source 2 "NM" (motion-matching) clips store animation as a quantized
+`m_compressedPoseData` blob. `morphic::model` decodes and **byte-faithfully
+re-encodes** it, a port of VRF `ModelAnimation2/AnimationClip`:
+
+- `decode_nm_clip(bytes) -> NmClip`: per-bone `NmTrack`s. Each track carries the
+  static `TrackSettings` (per-channel `QuantRange` + the constant rotation) plus
+  a per-frame `Vec` for every *animated* rotation/translation/scale channel
+  (`None` when that channel is static, its constant living in the settings).
+- `encode_compressed_pose(&NmClip) -> (data, offsets)`: the exact inverse.
+- `decode_pose_stream(settings, data, offsets, frames)`: re-decode helper.
+
+Layout: the stream is a flat little-endian `u16` array; `m_compressedPoseOffsets[f]`
+is frame `f`'s starting word; within a frame each track emits, in
+`m_trackCompressionSettings` order, 3 words for an animated rotation (the
+"smallest three" packed quaternion), 3 for a translation, 1 for a scale.
+Translation/scale dequantize as `start + (u16/65535)*length`. This is distinct
+from the older `.vmdl_c`-embedded `ANIM`/`AGRP` clip decoder
+(`morphic::model::animation`, the glb-export path); the static menu-pose reader
+(`decode_nm_pose`/`bake_nm_pose`) is the constants-only subset.
+
+Verified pak-wide (`tests/nm_clip_local.rs`, gated on `MORPHIC_MODEL_VPK`): all
+9008 animated clips re-encode with translation/scale byte-exact and rotation
+within 0.0012 rad; 90.7% are byte-for-byte identical. The rest differ only by the
+smallest-three quaternion's inherent largest-component tie (an equivalent
+encoding of the same rotation), not a codec error. CI round-trip on committed
+`morphic/fixtures/nm/*.vnmclip_c` lives in `tests/nm_clip.rs`. Recon + format
+writeup: [docs/handoff-nm-loose-clip-pose.md](docs/handoff-nm-loose-clip-pose.md).
+
+**Editing an animated clip** writes the re-encoded stream back with
+`morphic::patch_kv3_resource_blob` (-> `kv3::set_blob`) / `patch_kv3_resource_sole_blob`
+(-> `kv3::set_sole_blob`): for a blobbed-LZ4 v5 block (`.vnmclip_c`) it recompresses
+the pose blob into LZ4 frames, rewrites the per-frame size table in buf2's tail, and
+keeps the block compressed (the engine misreads a blobbed block flipped to raw; same
+constraint as the vmat recolor's `reassemble_blobbed_v5`). **Multi-frame blobs are
+supported** (`replace_blob_v5` chunks the blob into 16 KB LZ4 frames and grows the
+frame table + `unc2`/`sizeBlockCompressed`), so long clips whose pose stream exceeds
+one frame -- `reload_idle` (61f), `sleep_idle` (121f), the stand idles -- are editable
+in place, not just short single-frame ones. Single-blob only (every pose stream is one
+blob). CI: `sole_blob_multi_frame_round_trips`. Examples: `yamato_custom_pose.rs` (static
+pose edit via `m_constantRotation` patch) and `yamato_animated_taunt.rs` (animated
+"bow" layered onto rotation tracks via the codec + blob splice). **In-game
+confirmed (2026-06-13):** an edited animated pose stream loads and plays in the
+live engine.
+
+**Animated GLB preview:** `morphic::model::nm_clip_to_clip(clip, nm_skel,
+model_skeleton, name)` converts a decoded `NmClip` into a glTF [`Clip`] mapped onto
+the mesh skeleton by bone name (animated channels use their samples, static ones
+hold their constant); attach it as the model's `animations` and `to_glb` emits a
+playable animated GLB. `NmClip::duration` / `fps()` set the rate. This is the
+grimoire animated-hero-preview primitive and the offline way to eyeball an edited
+clip before installing. Example: `examples/nm_clip_preview_glb.rs`.
+
+**Blender animation import:** `morphic::model::gltf_import` reads a
+Blender-authored `.glb` animation back onto a slot's clip, the inverse of the GLB
+preview. `read_glb_animation(glb, name)` groups the glTF animation's channels into
+per-bone-name TRS keyframes (on the already-present `gltf` reader crate; bones map
+by joint-node name, the contract the `.glb` writer upholds by naming each joint
+after its bone). `apply_animation(clip, nm_skel, anim)` time-stretches those keys
+onto the slot's fixed frame grid and maps them by name; `import_glb_onto_nm_clip`
+is the end-to-end `bytes -> reencode_nm_clip` (v5 in-place). It honors the in-place
+limits: rotations may be edited or **added** (a static bone becomes animated),
+translation/scale edited only where the slot already animates them. CI:
+`tests/gltf_anim_roundtrip.rs` (writer<->reader round-trip + map-and-edit against a
+fixture). End-to-end pack: `examples/nm_clip_import_glb.rs` (read clip + skeleton
+from a VPK, import the glb, pack an addon at the slot path(s), optional preview GLB).
+This is the engine side of the SDK-free Blender authoring loop. **In-game confirmed
+(2026-06-14):** a torso swivel hand-keyed on Yamato's rig in Blender (driven via
+blender-mcp), exported to glTF, imported, and packed at the reload slot played in the
+live engine. Blender preserves the per-bone coordinate frame our importer reads (a
+null round-trip measured 0.51 deg mean rotation diff). Helper examples:
+`gen_obvious_anim_glb.rs` (synthesize an exaggerated `.glb` with no Blender) and
+`anim_glb_diff.rs` (the null-round-trip per-bone angle diff tool).
+
+**End-state design** for hand-authoring animations in Blender (export rig to glTF,
+key it, import + pack) and what's still missing (a v5 clip *encoder* that writes an
+arbitrary-length pose blob in-engine, so translation/scale adds + frame-count
+changes become engine-viable, vs. today's equal-length in-place patch):
+[docs/anim-authoring-pipeline.md](docs/anim-authoring-pipeline.md).
 
 ## Related
 

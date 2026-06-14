@@ -122,10 +122,76 @@ parent-consistency, and displacement invariants; CI-safe unit tests in
 ### Known limitations
 - Cloth/twist/helper bones not in the NM clip stay at bind pose in the still
   (same limitation the existing donor-pose path already has).
-- Only static NM tracks are decoded (every menu/idle clip observed is fully
-  static, so this is the whole pose). An animated NM clip would need the
-  `m_compressedPoseData` dequantizer; confirm the `m_flRangeStart`-is-the-constant
-  rule against VRF's `CNmAnimationClip` decoder before relying on it there.
+- The hero-card still-pose path (`decode_nm_pose`/`bake_nm_pose`) reads only the
+  static per-track constants, which is the whole pose for every menu/idle clip
+  (they are fully static). Animated clips are now handled by a separate codec:
+
+### Update (2026-06-13): the quantized-pose codec landed
+
+`m_compressedPoseData` is now decoded and re-encoded. `morphic::model`:
+- `decode_nm_clip(bytes) -> NmClip`: per-bone `NmTrack`s, each with the static
+  `TrackSettings` plus a per-frame `Vec` for every *animated* rotation /
+  translation / scale channel (`None` for a static channel, whose constant is in
+  the settings). Static clips decode with every channel vector `None`, identical
+  in spirit to `decode_nm_pose`.
+- `encode_compressed_pose(&NmClip) -> (Vec<u8>, Vec<u32>)`: re-quantizes to the
+  `(m_compressedPoseData, m_compressedPoseOffsets)` pair, the exact inverse.
+- `decode_pose_stream(settings, data, offsets, frames)`: re-decode helper for
+  round-trip proofs.
+
+Faithful port of VRF `ModelAnimation2/AnimationClip` (`ReadFrame`,
+`DecodeQuaternion` = 3-word "smallest three", `DecodeTranslation`/`DecodeFloat`
+= 16-bit unorm across `[start, start+length]`). Per frame, at the frame's `u16`
+offset, each track contributes 3 words for an animated rotation, 3 for a
+translation, 1 for a scale, in `m_trackCompressionSettings` order.
+
+Verified across the whole pak (`tests/nm_clip_local.rs`, gated on
+`MORPHIC_MODEL_VPK`): all 9008 animated clips re-encode with translation and
+scale **byte-exact** and rotation within **0.0012 rad** worst case; **90.7%**
+re-encode byte-for-byte. The ~9% that do not are the smallest-three quaternion's
+inherent largest-component tie (two near-equal components let an equivalent
+3-word encoding be chosen) and are pose-identical, not a codec error. Committed
+fixtures + CI round-trip: `tests/nm_clip.rs` over `fixtures/nm/*.vnmclip_c`.
+
+### First authored custom animation (2026-06-13, pending in-game verify)
+
+`vpkmerge-core/examples/yamato_custom_pose.rs` authors the first hand-made
+Deadlock pose: it edits Yamato's static `ui_hero_select` clip (raise
+`arm_upper_L` 75 degrees, tilt `head` 25, lean `spine_2` 20) by **byte-faithfully
+patching the `m_constantRotation` quaternions in place**
+(`patch_kv3_resource_doubles`/`_floats`, the same structural patch the vpost /
+material recolors use, so the v5 envelope is preserved), then packs the edited
+clip at her `reload_idle` + `reload_idle_quick` paths (the proven press-R taunt
+slots from the experiment rounds). Offline it bakes the edited pose onto Yamato's
+mesh (`bake_nm_pose`): 58.5% of vertices move from the unedited pose (max ~29u),
+and a re-decode of the patched clip confirms the targeted rotations, so the edit
+is well-formed. Staged addon: `.scratch/yamato_taunt/yamato_reload_taunt_dir.vpk`
+(+ a `yamato_custom_pose.glb` to eyeball). Install as a free `pakNN_dir.vpk` in
+`game/citadel/addons/` and press R. (This edits a *static* clip, so it exercises
+the KV3 patch path, not the compressed-pose codec.)
+
+### First authored custom *motion* (2026-06-13, pending in-game verify)
+
+`vpkmerge-core/examples/yamato_animated_taunt.rs` goes further: it edits an
+*animated* clip with the codec. It decodes Yamato's `reload_idle_quick` (21
+frames, 4914-byte pose stream), layers an authored "bow" onto the spine/neck/head
+**rotation tracks across all frames** (a tilt ramping 0 -> peak -> 0 over the
+clip, accumulating to ~38.5 degrees at the head), `encode_compressed_pose`s the
+edited tracks, and splices the (equal-length) stream back with the new
+**`patch_kv3_resource_blob`** -> `kv3::set_blob` -> `rewrap::replace_single_blob_v5`:
+the blob lives in one LZ4 frame in a blobbed-v5 block, so it recompresses just that
+frame, rewrites the one-entry per-frame size table in buf2's tail, recompresses
+buf2, and fixes the two header sizes, keeping the block `compressionMethod = 1`
+(the engine misreads a blobbed block flipped to raw; same constraint the vmat
+recolor's `reassemble_blobbed_v5` lives under). Re-decode confirms only the
+targeted tracks moved and the edit survives quantization; frame-0 and apex GLBs are
+written to eyeball. Staged addon:
+`.scratch/yamato_taunt/yamato_reload_bow_dir.vpk`. CI coverage:
+`animated_edit_splices_back_into_the_resource` in `tests/nm_clip.rs` runs the whole
+pipeline on the committed `reload_idle_quick` fixture. Only the single-blob,
+single-frame shape (every `.vnmclip_c` pose stream: one blob < 16 KB) is handled;
+multi-frame blobs error rather than corrupt.
+
 - Several heroes ship alternate UI face meshes (`head_ui_smug`/`_cocky`/...) and
   Apollo a long sword; the export includes all parts. Trimming alternate faces to
   one is a separate hero-card polish item (cf. the Viscous alt-form drop), not a
