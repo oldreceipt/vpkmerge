@@ -253,6 +253,48 @@ fn sole_blob_resize_round_trips() {
 }
 
 #[test]
+fn sole_blob_multi_frame_round_trips() {
+    // A pose blob LARGER than one 16 KB LZ4 frame must split into multiple frames
+    // (the per-frame u16 table grows, which grows buf2's uncompressed size). Build a
+    // ~40 KB blob (3 frames), write it back, and confirm the resource re-reads it
+    // byte-for-byte. This is what unlocks long clips (reload_idle 61f, the idles)
+    // for in-place editing: previously the writer refused anything over one frame.
+    // The content is mixed (compressible run + pseudo-random) so each frame's
+    // independent LZ4 block is non-trivial and the chained-dictionary read path is
+    // genuinely exercised.
+    let bytes = fixture("yamato_reload_idle_quick.vnmclip_c");
+    let clip = decode_nm_clip(&bytes).expect("decode");
+
+    let mut big = clip.compressed_pose_data.clone();
+    let mut x: u32 = 0x1234_5678;
+    while big.len() < 40_000 {
+        // xorshift so the bytes are not a single run (forces real LZ4 work / frames)
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        big.push((x & 0xFF) as u8);
+    }
+    assert!(big.len() > 16384 * 2, "must span at least 3 frames");
+
+    let patched =
+        morphic::patch_kv3_resource_sole_blob(&bytes, &big).expect("write a multi-frame blob");
+    let redec = decode_nm_clip(&patched).expect("re-decode multi-frame blob");
+    assert_eq!(
+        redec.compressed_pose_data, big,
+        "multi-frame blob round-trips byte-for-byte"
+    );
+    assert_eq!(redec.frame_count, clip.frame_count);
+
+    // The end-of-block document trailer must still terminate the block.
+    let trailer = [0x00u8, 0xDD, 0xEE, 0xFF];
+    let tail = &patched[patched.len().saturating_sub(64)..];
+    assert!(
+        tail.windows(4).any(|w| w == trailer),
+        "end-of-block trailer missing after multi-frame re-encode"
+    );
+}
+
+#[test]
 fn reencode_adds_a_rotation_channel() {
     // The encoder step toward authoring: animate a bone whose rotation was static
     // in the slot (the common Blender case), at a fixed frame count. The pose

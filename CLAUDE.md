@@ -307,13 +307,17 @@ encoding of the same rotation), not a codec error. CI round-trip on committed
 `morphic/fixtures/nm/*.vnmclip_c` lives in `tests/nm_clip.rs`. Recon + format
 writeup: [docs/handoff-nm-loose-clip-pose.md](docs/handoff-nm-loose-clip-pose.md).
 
-**Editing an animated clip** writes the re-encoded (equal-length) stream back with
-`morphic::patch_kv3_resource_blob` (-> `kv3::set_blob`): for a blobbed-LZ4 v5 block
-(`.vnmclip_c`) it recompresses the single LZ4 blob frame, rewrites the per-frame
-size table in buf2's tail, and keeps the block compressed (the engine misreads a
-blobbed block flipped to raw; same constraint as the vmat recolor's
-`reassemble_blobbed_v5`). Only the single-blob/single-frame shape (every pose
-stream: one blob < 16 KB) is handled. Examples: `yamato_custom_pose.rs` (static
+**Editing an animated clip** writes the re-encoded stream back with
+`morphic::patch_kv3_resource_blob` (-> `kv3::set_blob`) / `patch_kv3_resource_sole_blob`
+(-> `kv3::set_sole_blob`): for a blobbed-LZ4 v5 block (`.vnmclip_c`) it recompresses
+the pose blob into LZ4 frames, rewrites the per-frame size table in buf2's tail, and
+keeps the block compressed (the engine misreads a blobbed block flipped to raw; same
+constraint as the vmat recolor's `reassemble_blobbed_v5`). **Multi-frame blobs are
+supported** (`replace_blob_v5` chunks the blob into 16 KB LZ4 frames and grows the
+frame table + `unc2`/`sizeBlockCompressed`), so long clips whose pose stream exceeds
+one frame -- `reload_idle` (61f), `sleep_idle` (121f), the stand idles -- are editable
+in place, not just short single-frame ones. Single-blob only (every pose stream is one
+blob). CI: `sole_blob_multi_frame_round_trips`. Examples: `yamato_custom_pose.rs` (static
 pose edit via `m_constantRotation` patch) and `yamato_animated_taunt.rs` (animated
 "bow" layered onto rotation tracks via the codec + blob splice). **In-game
 confirmed (2026-06-13):** an edited animated pose stream loads and plays in the

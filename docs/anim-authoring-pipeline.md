@@ -85,14 +85,21 @@ blob splice (`patch_kv3_resource_blob`), glTF export + preview (`nm_clip_to_clip
 moonwalk, slow-mo all confirmed). The codec round-trips (decode -> encode -> decode
 pose-identical, 90%+ byte-exact).
 
-**Arbitrary-length blob write — DONE (2026-06-14).** `replace_blob_v5` (via
-`kv3::set_sole_blob` / `morphic::patch_kv3_resource_sole_blob`) writes a pose blob
-of any length up to one LZ4 frame (16 KB; ~70 frames of 29 channels, more for
-fewer), updating `sizeBlobs`/`comp2`/`comp_total` + the per-blob length + the
-frame-size table. Staying within one frame keeps buf2's uncompressed size fixed, so
-no document-array reshaping. CI: `sole_blob_resize_round_trips`. `set_scalars` and
-`set_bools` gained the blobbed-LZ4-v5 branch (decompress-working + reassemble) they
-were missing, so offsets and flags can be patched on a clip.
+**Arbitrary-length blob write — DONE (2026-06-14), multi-frame DONE (2026-06-14).**
+`replace_blob_v5` (via `kv3::set_sole_blob` / `morphic::patch_kv3_resource_sole_blob`)
+writes a pose blob of **any length**: it chunks the blob into 16 KB LZ4 frames
+(each an independent block; the dict-aware reader decodes them), grows the per-frame
+size table, and updates `sizeBlobs`/`comp2`/`comp_total`/`sizeBlockCompressed` and
+`unc2` (the table lives in buf2's tail, so a changed frame count changes buf2's
+uncompressed size). This removed the earlier single-frame (~16 KB) cap, so **long
+clips edit in place**: `reload_idle` (61f), `sleep_idle` (121f), and the stand idles
+were previously rejected ("exceeds one LZ4 frame") and now re-encode fine. CI:
+`sole_blob_resize_round_trips` (single-frame) and `sole_blob_multi_frame_round_trips`
+(~40 KB / 3 frames, byte-exact round-trip). In-game confirmed via the 6-7 gesture
+authored onto Yamato's reload + sleep slots and Haze's weapon-stand + sleep slots
+(multi-frame blobs). `set_scalars` and `set_bools` gained the blobbed-LZ4-v5 branch
+(decompress-working + reassemble) they were missing, so offsets and flags can be
+patched on a clip.
 
 **Encoder v1 — DONE, IN-GAME CONFIRMED (2026-06-14).**
 `morphic::model::reencode_nm_clip(original, &NmClip)` re-encodes a clip with a
