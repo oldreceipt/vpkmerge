@@ -335,8 +335,16 @@ pub fn assemble(
             if dc.vertex_buffer >= vertex_buffers.len() {
                 return Err(DecodeError::Model("draw call vertex buffer out of range"));
             }
-            let index_offset = dc.base_vertex.wrapping_add(dc.applied_index_offset);
-            let indices = ib.read_indices(dc.start_index, dc.index_count, index_offset)?;
+            let mut indices = ib.read_indices(dc.start_index, dc.index_count, dc.base_vertex)?;
+            if should_apply_index_offset(
+                dc,
+                &indices,
+                vertex_buffers[dc.vertex_buffer].element_count,
+            ) {
+                for index in &mut indices {
+                    *index = index.wrapping_add(dc.applied_index_offset);
+                }
+            }
             primitives.push(Primitive {
                 vertex_buffer: dc.vertex_buffer,
                 vertex_buffers: dc.vertex_buffers.clone(),
@@ -738,6 +746,37 @@ fn uncompressed_format_for(semantic: &str) -> Result<DxgiFormat, DecodeError> {
 
 fn unsupported_target_semantic(_name: &str) -> DecodeError {
     DecodeError::Model("target layout has a semantic this codec cannot emit uncompressed")
+}
+
+/// `m_nAppliedIndexOffset` is not consistently an index-buffer addend. Compiled
+/// models often store global indices already and use
+/// `[m_nAppliedIndexOffset, m_nVertexCount)` as the draw call's vertex-range
+/// bound. Some generated replacement meshes store group-local indices and need
+/// the offset applied. Detect the former before adding it, otherwise later draw
+/// calls in shared-buffer models point past the vertex buffer.
+fn should_apply_index_offset(
+    dc: &DrawCall,
+    base_indices: &[u32],
+    vertex_buffer_count: usize,
+) -> bool {
+    if dc.applied_index_offset == 0 || base_indices.is_empty() {
+        return false;
+    }
+
+    let range_start = dc.applied_index_offset;
+    let range_end = u32::try_from(dc.vertex_count).unwrap_or(u32::MAX);
+    if range_end > range_start
+        && base_indices
+            .iter()
+            .all(|&index| index >= range_start && index < range_end)
+    {
+        return false;
+    }
+
+    let vb_count = u32::try_from(vertex_buffer_count).unwrap_or(u32::MAX);
+    base_indices
+        .iter()
+        .all(|&index| index.wrapping_add(dc.applied_index_offset) < vb_count)
 }
 
 /// A unit tangent perpendicular to `n` (Gram-Schmidt against the least-aligned
@@ -1254,6 +1293,51 @@ mod assemble_tests {
 
     use super::*;
     use crate::meshopt::encode_vertex_buffer;
+
+    fn draw_call_with_offset(applied_index_offset: u32, vertex_count: usize) -> DrawCall {
+        DrawCall {
+            vertex_buffers: vec![0],
+            vertex_buffer: 0,
+            index_buffer: 0,
+            vertex_count,
+            index_count: 0,
+            start_index: 0,
+            applied_index_offset,
+            base_vertex: 0,
+            material: String::new(),
+            primitive_type: "RENDER_PRIM_TRIANGLES".to_string(),
+        }
+    }
+
+    #[test]
+    fn applied_index_offset_is_not_added_to_global_indices() {
+        let dc = draw_call_with_offset(2769, 3717);
+        let already_global = [2769, 3000, 3716];
+
+        assert!(
+            !should_apply_index_offset(&dc, &already_global, 39_488),
+            "resourcecompiler-style draw ranges already carry global indices"
+        );
+    }
+
+    #[test]
+    fn applied_index_offset_is_added_to_group_local_indices() {
+        let dc = draw_call_with_offset(2769, 3717);
+        let group_local = [0, 500, 947];
+
+        assert!(
+            should_apply_index_offset(&dc, &group_local, 39_488),
+            "generated grouped meshes can carry local indices that need the draw offset"
+        );
+    }
+
+    #[test]
+    fn applied_index_offset_is_not_added_if_it_would_overrun_vertex_buffer() {
+        let dc = draw_call_with_offset(39_065, 39_488);
+        let already_global = [39_065, 39_200, 39_487];
+
+        assert!(!should_apply_index_offset(&dc, &already_global, 39_488));
+    }
 
     /// The T1c offline gate: assemble -> meshopt-encode -> decode -> deinterleave
     /// recovers every attribute. Positions/normals/uv exactly (uncompressed float
