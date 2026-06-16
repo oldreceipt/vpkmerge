@@ -59,6 +59,7 @@ const IDENTITY4: Mat4 = [
     [0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 1.0],
 ];
+const ATLAS_GUTTER_PX: u32 = 4;
 
 // The 3 soul-glow particles (base game) the orb entity attaches; we recolor them.
 const PARTICLES: [&str; 3] = [
@@ -99,6 +100,9 @@ pub struct SoulImportCloneOptions {
     pub orient: SoulOrient,
     /// Extra Euler rotation in degrees `[X, Y, Z]`, applied after `orient`.
     pub rotate: Option<[f32; 3]>,
+    /// After fitting, lift the mesh so its lowest Source-Z point sits at the
+    /// model origin/floor instead of centering it on the stock orb.
+    pub ground: bool,
     pub glow: SoulGlow,
 }
 
@@ -108,6 +112,7 @@ impl Default for SoulImportCloneOptions {
             name: "custom_soul".to_string(),
             orient: SoulOrient::YUp,
             rotate: None,
+            ground: false,
             glow: SoulGlow::Recolor,
         }
     }
@@ -184,8 +189,8 @@ pub fn import_soul_container_clone(
             groups.push(Group {
                 glb_material: p.material_name.clone(),
                 prims: vec![pi],
-                image: gi
-                    .map(|mi| material_albedo_image(glb, &doc, mi))
+                albedo: gi
+                    .map(|mi| material_albedo(glb, &doc, mi))
                     .transpose()?
                     .flatten(),
                 color: gi.map_or([1.0; 4], |mi| base_color_factor(&doc, mi)),
@@ -224,15 +229,7 @@ pub fn import_soul_container_clone(
     let mut indices: Vec<u32> = Vec::new();
     for (gi, g) in groups.iter_mut().enumerate() {
         let (x0, y0, w, h) = cell_rect(gi);
-        let (u0, v0) = (
-            f64::from(x0) / f64::from(atlas),
-            f64::from(y0) / f64::from(atlas),
-        );
-        let (us, vs) = (
-            f64::from(w) / f64::from(atlas),
-            f64::from(h) / f64::from(atlas),
-        );
-        let textured = g.image.is_some();
+        let rect = AtlasCell::new(x0, y0, w, h);
         let start = indices.len();
         for &pi in &g.prims {
             let vb = &prims[pi].vertex_buffer;
@@ -246,15 +243,18 @@ pub fn import_soul_container_clone(
             let src = vb.texcoords.first();
             for vi in 0..vb.positions.len() {
                 let uv = src.and_then(|t| t.get(vi)).copied().unwrap_or([0.0, 0.0]);
-                let (u, v) = if textured {
-                    (
-                        u0 + f64::from(uv[0].clamp(0.0, 1.0)) * us,
-                        v0 + f64::from(uv[1].clamp(0.0, 1.0)) * vs,
-                    )
-                } else {
-                    (u0 + us / 2.0, v0 + vs / 2.0) // flat: sample the cell centre
-                };
-                merged.texcoords[0].push([u as f32, v as f32]);
+                merged.texcoords[0].push(remap_atlas_uv(
+                    uv,
+                    rect,
+                    atlas,
+                    g.albedo
+                        .as_ref()
+                        .map_or(WrapMode::ClampToEdge, |a| a.wrap_s),
+                    g.albedo
+                        .as_ref()
+                        .map_or(WrapMode::ClampToEdge, |a| a.wrap_t),
+                    g.albedo.is_some(),
+                ));
             }
             indices.extend(prims[pi].indices.iter().map(|&idx| base + idx));
         }
@@ -283,6 +283,18 @@ pub fn import_soul_container_clone(
             p[k] = (p[k] - mc[k]) * scale + orb_center[k];
         }
     }
+    if opts.ground {
+        let min_z = merged
+            .positions
+            .iter()
+            .map(|p| p[2])
+            .fold(f32::INFINITY, f32::min);
+        if min_z.is_finite() {
+            for p in &mut merged.positions {
+                p[2] -= min_z;
+            }
+        }
+    }
     let tri_count = indices.len() / 3;
 
     // --- 5. swap mesh in (UNCOMPRESSED) + repoint the single draw call ---
@@ -298,29 +310,13 @@ pub fn import_soul_container_clone(
     let mut px = vec![0u8; (atlas * atlas * 4) as usize];
     for (gi, g) in groups.iter().enumerate() {
         let (x0, y0, w, h) = cell_rect(gi);
-        if let Some(img) = &g.image {
-            let r = image::imageops::resize(img, w, h, image::imageops::FilterType::Lanczos3);
-            for yy in 0..h {
-                for xx in 0..w {
-                    let s = r.get_pixel(xx, yy).0;
-                    let o = (((y0 + yy) * atlas + (x0 + xx)) * 4) as usize;
-                    px[o..o + 4].copy_from_slice(&s);
-                }
-            }
-        } else {
-            let c = [
-                to_srgb_u8(g.color[0]),
-                to_srgb_u8(g.color[1]),
-                to_srgb_u8(g.color[2]),
-                255,
-            ];
-            for yy in 0..h {
-                for xx in 0..w {
-                    let o = (((y0 + yy) * atlas + (x0 + xx)) * 4) as usize;
-                    px[o..o + 4].copy_from_slice(&c);
-                }
-            }
-        }
+        paint_atlas_cell(
+            &mut px,
+            atlas,
+            AtlasCell::new(x0, y0, w, h),
+            g.albedo.as_ref().map(|a| &a.image),
+            g.color,
+        );
     }
     let color_vtex = format!("{MAT_DIR}/{name}_color.vtex");
     let color_entry = format!("{MAT_DIR}/{name}_color.vtex_c");
@@ -338,15 +334,15 @@ pub fn import_soul_container_clone(
     // --- 7. recolor the soul-glow particles to the import's dominant hue ---
     let dom = groups.iter().max_by_key(|g| g.index_count);
     let dom_rgb = dom.map_or([255.0, 200.0, 60.0], |g| {
-        g.image.as_ref().map_or(
+        g.albedo.as_ref().map_or(
             [
                 to_srgb_u8(g.color[0]) as f64,
                 to_srgb_u8(g.color[1]) as f64,
                 to_srgb_u8(g.color[2]) as f64,
             ],
-            |img| {
+            |albedo| {
                 let (mut r, mut gg, mut b, mut n) = (0f64, 0f64, 0f64, 0f64);
-                for p in img.pixels() {
+                for p in albedo.image.pixels() {
                     if p.0[3] > 8 {
                         r += f64::from(p.0[0]);
                         gg += f64::from(p.0[1]);
@@ -532,11 +528,20 @@ fn base_color_factor(doc: &Json, mat_idx: usize) -> [f64; 4] {
     color
 }
 
-fn material_albedo_image(
-    glb: &[u8],
-    doc: &Json,
-    mat_idx: usize,
-) -> Result<Option<image::RgbaImage>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapMode {
+    Repeat,
+    ClampToEdge,
+    MirroredRepeat,
+}
+
+struct AlbedoTexture {
+    image: image::RgbaImage,
+    wrap_s: WrapMode,
+    wrap_t: WrapMode,
+}
+
+fn material_albedo(glb: &[u8], doc: &Json, mat_idx: usize) -> Result<Option<AlbedoTexture>> {
     let mat = doc
         .get("materials")
         .and_then(Json::as_array)
@@ -555,15 +560,14 @@ fn material_albedo_image(
     else {
         return Ok(None);
     };
-    let Some(src) = doc
+    let texture = doc
         .get("textures")
         .and_then(Json::as_array)
-        .and_then(|a| a.get(tex_i as usize))
-        .and_then(|t| t.get("source"))
-        .and_then(Json::as_u64)
-    else {
+        .and_then(|a| a.get(tex_i as usize));
+    let Some(src) = texture.and_then(|t| t.get("source")).and_then(Json::as_u64) else {
         return Ok(None);
     };
+    let (wrap_s, wrap_t) = texture_sampler_wrap(doc, texture);
     let image_json = doc
         .get("images")
         .and_then(Json::as_array)
@@ -589,7 +593,151 @@ fn material_albedo_image(
     let img = image::load_from_memory(bytes)
         .map_err(|e| anyhow!("decoding GLB albedo: {e}"))?
         .to_rgba8();
-    Ok(Some(img))
+    Ok(Some(AlbedoTexture {
+        image: img,
+        wrap_s,
+        wrap_t,
+    }))
+}
+
+fn texture_sampler_wrap(doc: &Json, texture: Option<&Json>) -> (WrapMode, WrapMode) {
+    let sampler = texture
+        .and_then(|t| t.get("sampler"))
+        .and_then(Json::as_u64)
+        .and_then(|i| {
+            doc.get("samplers")
+                .and_then(Json::as_array)
+                .and_then(|a| a.get(i as usize))
+        });
+    let wrap_s = sampler
+        .and_then(|s| s.get("wrapS"))
+        .and_then(Json::as_u64)
+        .map_or(WrapMode::Repeat, gltf_wrap_mode);
+    let wrap_t = sampler
+        .and_then(|s| s.get("wrapT"))
+        .and_then(Json::as_u64)
+        .map_or(WrapMode::Repeat, gltf_wrap_mode);
+    (wrap_s, wrap_t)
+}
+
+fn gltf_wrap_mode(value: u64) -> WrapMode {
+    match value {
+        33071 => WrapMode::ClampToEdge,
+        33648 => WrapMode::MirroredRepeat,
+        // 10497 is glTF REPEAT; unknown values fall back to the same default.
+        _ => WrapMode::Repeat,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtlasCell {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    gutter: u32,
+}
+
+impl AtlasCell {
+    fn new(x: u32, y: u32, w: u32, h: u32) -> Self {
+        let gutter = ATLAS_GUTTER_PX.min((w.saturating_sub(1)) / 2);
+        let gutter = gutter.min((h.saturating_sub(1)) / 2);
+        Self { x, y, w, h, gutter }
+    }
+
+    fn inner(self) -> (u32, u32, u32, u32) {
+        (
+            self.x + self.gutter,
+            self.y + self.gutter,
+            (self.w - self.gutter * 2).max(1),
+            (self.h - self.gutter * 2).max(1),
+        )
+    }
+}
+
+fn remap_atlas_uv(
+    uv: [f32; 2],
+    cell: AtlasCell,
+    atlas: u32,
+    wrap_s: WrapMode,
+    wrap_t: WrapMode,
+    textured: bool,
+) -> [f32; 2] {
+    if !textured {
+        return [
+            (cell.x as f32 + cell.w as f32 * 0.5) / atlas as f32,
+            (cell.y as f32 + cell.h as f32 * 0.5) / atlas as f32,
+        ];
+    }
+    let (ix, iy, iw, ih) = cell.inner();
+    [
+        remap_axis(uv[0], ix, iw, atlas, wrap_s),
+        remap_axis(uv[1], iy, ih, atlas, wrap_t),
+    ]
+}
+
+fn remap_axis(coord: f32, start: u32, len: u32, atlas: u32, wrap: WrapMode) -> f32 {
+    let t = wrap_coord(coord, wrap);
+    let span = len.saturating_sub(1) as f32;
+    (start as f32 + 0.5 + t * span) / atlas as f32
+}
+
+fn wrap_coord(coord: f32, wrap: WrapMode) -> f32 {
+    match wrap {
+        WrapMode::ClampToEdge => coord.clamp(0.0, 1.0),
+        WrapMode::Repeat => coord.rem_euclid(1.0),
+        WrapMode::MirroredRepeat => {
+            let t = coord.rem_euclid(2.0);
+            if t <= 1.0 {
+                t
+            } else {
+                2.0 - t
+            }
+        }
+    }
+}
+
+fn paint_atlas_cell(
+    px: &mut [u8],
+    atlas: u32,
+    cell: AtlasCell,
+    image: Option<&image::RgbaImage>,
+    color: [f64; 4],
+) {
+    let (ix, iy, iw, ih) = cell.inner();
+    if let Some(img) = image {
+        let resized = image::imageops::resize(img, iw, ih, image::imageops::FilterType::Lanczos3);
+        for yy in 0..cell.h {
+            let sy = yy.saturating_sub(cell.gutter).min(ih.saturating_sub(1));
+            for xx in 0..cell.w {
+                let sx = xx.saturating_sub(cell.gutter).min(iw.saturating_sub(1));
+                let mut s = resized.get_pixel(sx, sy).0;
+                // GLB base-color alpha is opacity, but this importer emits one
+                // opaque Source material where albedo alpha may be read as a mask.
+                s[3] = 255;
+                write_atlas_pixel(px, atlas, cell.x + xx, cell.y + yy, s);
+            }
+        }
+    } else {
+        let c = [
+            to_srgb_u8(color[0]),
+            to_srgb_u8(color[1]),
+            to_srgb_u8(color[2]),
+            255,
+        ];
+        for yy in 0..cell.h {
+            for xx in 0..cell.w {
+                write_atlas_pixel(px, atlas, cell.x + xx, cell.y + yy, c);
+            }
+        }
+    }
+    debug_assert!(ix + iw <= cell.x + cell.w);
+    debug_assert!(iy + ih <= cell.y + cell.h);
+}
+
+fn write_atlas_pixel(px: &mut [u8], atlas: u32, x: u32, y: u32, rgba: [u8; 4]) {
+    let o = ((y * atlas + x) * 4) as usize;
+    px[o..o + 4].copy_from_slice(&rgba);
 }
 
 fn read_glb_primitives(
@@ -951,7 +1099,66 @@ fn build_material(color_vtex: &str) -> Result<Vec<u8>> {
 struct Group {
     glb_material: Option<String>,
     prims: Vec<usize>,
-    image: Option<image::RgbaImage>,
+    albedo: Option<AlbedoTexture>,
     color: [f64; 4], // linear baseColorFactor (flat fallback)
     index_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atlas_uv_repeat_and_clamp_follow_gltf_sampler_modes() {
+        let cell = AtlasCell::new(128, 64, 128, 128);
+        let repeat = remap_atlas_uv(
+            [1.25, -0.25],
+            cell,
+            512,
+            WrapMode::Repeat,
+            WrapMode::Repeat,
+            true,
+        );
+        let clamped = remap_atlas_uv(
+            [1.25, -0.25],
+            cell,
+            512,
+            WrapMode::ClampToEdge,
+            WrapMode::ClampToEdge,
+            true,
+        );
+
+        assert!((repeat[0] - ((132.5 + 0.25 * 119.0) / 512.0)).abs() < 0.0001);
+        assert!((repeat[1] - ((68.5 + 0.75 * 119.0) / 512.0)).abs() < 0.0001);
+        assert!((clamped[0] - ((132.5 + 119.0) / 512.0)).abs() < 0.0001);
+        assert!((clamped[1] - (68.5 / 512.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn textured_atlas_cell_forces_opaque_alpha_and_duplicates_edge_gutter() {
+        let mut img = image::RgbaImage::new(2, 2);
+        img.put_pixel(0, 0, image::Rgba([10, 20, 30, 0]));
+        img.put_pixel(1, 0, image::Rgba([40, 50, 60, 64]));
+        img.put_pixel(0, 1, image::Rgba([70, 80, 90, 128]));
+        img.put_pixel(1, 1, image::Rgba([100, 110, 120, 192]));
+
+        let mut px = vec![0u8; 16 * 16 * 4];
+        paint_atlas_cell(
+            &mut px,
+            16,
+            AtlasCell::new(4, 4, 8, 8),
+            Some(&img),
+            [1.0; 4],
+        );
+
+        let top_left = ((4 * 16 + 4) * 4) as usize;
+        let inner_top_left = ((7 * 16 + 7) * 4) as usize;
+        let bottom_right = ((11 * 16 + 11) * 4) as usize;
+        assert_eq!(
+            &px[top_left..top_left + 4],
+            &px[inner_top_left..inner_top_left + 4]
+        );
+        assert_eq!(px[top_left + 3], 255);
+        assert_eq!(px[bottom_right + 3], 255);
+    }
 }
