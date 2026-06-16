@@ -190,6 +190,11 @@ struct SoulImportArgs {
     #[arg(long, value_name = "X,Y,Z")]
     rotate: Option<String>,
 
+    /// Lift the fitted mesh so its lowest Source-Z point sits at the model
+    /// origin/floor instead of centering it on the stock orb.
+    #[arg(long)]
+    ground: bool,
+
     /// What to do with the orb's soul-glow particles.
     #[arg(long, value_enum, default_value_t = GlowArg::Recolor)]
     glow: GlowArg,
@@ -2342,6 +2347,7 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
         name: args.name.clone(),
         orient: args.orient.into(),
         rotate,
+        ground: args.ground,
         glow: args.glow.into(),
     };
     let report = import_soul_container_clone(&args.pak, &glb, &args.out, &opts)
