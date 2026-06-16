@@ -857,7 +857,11 @@ impl Builder {
         // keep the default factor 1.0 (fully matte) unless TextureRoughness1 sets
         // it. Gated on no MR texture so the textured path's factor-1.0 multiplier
         // is not clobbered. Verified: greenglass=0.188 (glossy) was stuck at 1.0.
-        if material.pbr_metallic_roughness.metallic_roughness_texture.is_none() {
+        if material
+            .pbr_metallic_roughness
+            .metallic_roughness_texture
+            .is_none()
+        {
             if let Some(v) = mat.vector_params.get("TextureRoughness1") {
                 material.pbr_metallic_roughness.roughness_factor =
                     json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
@@ -953,11 +957,13 @@ impl Builder {
             // sheenRoughnessTexture. Embedded twice (one sRGB color view, one
             // linear roughness view) since glTF wants distinct images/channels.
             if let Some(p) = mat.texture("g_tSheen") {
-                if let Some((w, h, rgba)) =
-                    decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4)
+                if let Some((w, h, rgba)) = decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4)
                 {
                     if let Some(t) = self.embed_rgba_png(w, h, &rgba) {
-                        sheen.insert("sheenColorTexture".to_owned(), jval!({ "index": t.value() }));
+                        sheen.insert(
+                            "sheenColorTexture".to_owned(),
+                            jval!({ "index": t.value() }),
+                        );
                     }
                     if let Some(t) = self.texture_png(&sheen_roughness_png(w, h, &rgba)) {
                         sheen.insert(
