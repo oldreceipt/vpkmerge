@@ -114,6 +114,43 @@ pub fn lod0_indices(data: &Value, embedded: &[EmbeddedMesh]) -> Result<Vec<usize
         .collect())
 }
 
+/// Keep only the meshes in the model's DEFAULT mesh group (the engine's default
+/// body-group selection). A mesh `i` is visible when
+/// `m_refMeshGroupMasks[i] & m_nDefaultMeshGroupMask != 0`, mirroring how the LOD0
+/// filter masks against `1 << lod`.
+///
+/// Source 2 hero models with body-group variants list EVERY variant mesh in one
+/// file: alternate heads, props, "sleeping" sets, UI-only meshes. Without this
+/// filter the export stacks them all (`familiar_wip` = base body + balloon + a
+/// pillow + 3 heads + a UI shirt, all at once). Models without these fields (most
+/// heroes carry a single implicit group) keep every mesh, so this is a no-op for
+/// them. Applied AFTER `lod0_indices`, intersecting both filters.
+pub fn filter_default_mesh_group(data: &Value, indices: Vec<usize>) -> Vec<usize> {
+    let to_u64 = |v: &Value| {
+        v.as_uint()
+            .or_else(|| v.as_int().and_then(|i| u64::try_from(i).ok()))
+    };
+    let Some(default) = data.get("m_nDefaultMeshGroupMask").and_then(to_u64) else {
+        return indices; // no body groups -> keep everything
+    };
+    let Some(masks) = data.get("m_refMeshGroupMasks").and_then(Value::as_array) else {
+        return indices;
+    };
+    if default == 0 || masks.is_empty() {
+        return indices;
+    }
+    // A mesh with no mask entry is kept (fail-open, same spirit as the LOD path).
+    indices
+        .into_iter()
+        .filter(|&i| {
+            masks
+                .get(i)
+                .and_then(to_u64)
+                .is_none_or(|m| m & default != 0)
+        })
+        .collect()
+}
+
 /// One draw call within a scene object: a contiguous index range over one
 /// vertex buffer, with its material.
 #[derive(Debug, Clone)]
@@ -1646,5 +1683,48 @@ mod assemble_tests {
         assert_eq!(asm.stride, 12);
         assert_eq!(asm.fields.len(), 1);
         assert_eq!(asm.fields[0].semantic_name, "POSITION");
+    }
+}
+
+#[cfg(test)]
+mod mesh_group_tests {
+    use super::*;
+
+    fn data(default: i64, masks: &[u64]) -> Value {
+        Value::Object(vec![
+            ("m_nDefaultMeshGroupMask".into(), Value::Int(default)),
+            (
+                "m_refMeshGroupMasks".into(),
+                Value::Array(masks.iter().map(|&m| Value::UInt(m)).collect()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn keeps_only_meshes_in_the_default_group() {
+        // default = base (bit 0); masks: base+balloon+sleeping, balloon-only,
+        // sleeping-only, base+balloon. Only the bit-0 meshes survive.
+        let d = data(1, &[0b0111, 0b0010, 0b0100, 0b0011]);
+        assert_eq!(filter_default_mesh_group(&d, vec![0, 1, 2, 3]), vec![0, 3]);
+    }
+
+    #[test]
+    fn no_group_fields_keeps_everything() {
+        // A single-group hero carries neither field; the filter is a no-op.
+        let d = Value::Object(vec![]);
+        assert_eq!(filter_default_mesh_group(&d, vec![0, 1, 2]), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn zero_default_mask_keeps_everything() {
+        let d = data(0, &[0b0010, 0b0100]);
+        assert_eq!(filter_default_mesh_group(&d, vec![0, 1]), vec![0, 1]);
+    }
+
+    #[test]
+    fn missing_mask_entry_is_kept() {
+        // Fewer masks than indices: the unmasked index fails open (kept).
+        let d = data(1, &[0b0100]); // index 0 = sleeping-only (dropped), index 1 = no entry
+        assert_eq!(filter_default_mesh_group(&d, vec![0, 1]), vec![1]);
     }
 }
