@@ -176,6 +176,9 @@ pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
     let skeleton = Skeleton::from_model_data(&data)?;
     let embedded = mesh::EmbeddedMesh::parse_all(&ctrl)?;
     let lod0 = mesh::lod0_indices(&data, &embedded)?;
+    // Drop body-group variants that are not in the default selection (alt heads,
+    // props, "sleeping" sets, UI-only meshes); no-op for single-group models.
+    let lod0 = mesh::filter_default_mesh_group(&data, lod0);
 
     let mut meshes = Vec::with_capacity(lod0.len());
     for i in lod0 {
