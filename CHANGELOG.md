@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.14.0
+
+A large modding-pipeline release: a Source 2 NM animation codec with a Blender-to-in-game authoring loop, cubemap-to-HDR export, GLB PBR-fidelity fixes, soul-container GLB import, a pure-Rust morphic authoring layer (texture/material/sound writers + UV region masks), and a music-pack pipeline. All existing commands (merge, recolor, prism, trippy, vmat, texture, model, soundevents, icon) are unchanged.
+
+### CLI (`vpkmerge` 0.14)
+
+- New `cubemap` subcommand: `vpkmerge cubemap <file|entry> [--from-vpk <VPK>] --out-dir <DIR>` decodes a Source 2 cube texture at mip 0 and writes six Radiance `.hdr` faces (`px/nx/py/ny/pz/nz`) in morphic's cubemap storage order (the order three.js `CubeTextureLoader` expects). Decode-only, built to ship real Deadlock IBL skybox probes to the grimoire viewer. f16 passes through as linear light, 8-bit is treated as sRGB; non-cubemap textures are refused.
+- New `soul-container import <glb>` subcommand: build a soul-container override VPK from a user `.glb` (orient/glow options), a multi-material draw-call clone into the stock soul-container model with atlas albedo and fit/orient. Built for Grimoire drag-and-drop soul import.
+- New `model mask` subcommand: segment a model's UV space (`--by island|part|material`), list regions, and bake a picking atlas or a white-on-black region-selector mask PNG, Blender-free. Texel-coverage metric (not summed UV area).
+
+### Library (`vpkmerge-core` 0.14)
+
+- New `soul_container` / `soul_import_clone` modules: clone a user `.glb` into the stock soul-container model (multi-material draw-call clone matching the shipped prop, atlas albedo, fit/orient, optional soul-glow recolor); one-call `import_soul_container_clone` bridge for Grimoire drag-and-drop import. Includes a draw-call index-offset fix and atlas-sampling fix.
+- New UV-mask surface over morphic: `model_uv_segments` / `bake_uv_atlas` / `bake_uv_mask` (`SegmentBy` island/part/material), plus `export_model` and cubemap export `export_cubemap_hdr` (returns per-face mean luminance for orientation checks).
+- Music-pack pipeline: `music-packs/<pack>` scaffolds (`source-tracks.json`, `download_songs.py`, manifest, README) plus generic manifest-driven builders (`build_music_pack` / `build_title_fight_pack`) and a `.vsnd_c` minting harness (donor `music_menu_lp.vsnd_c`).
+
+### GLB export fidelity
+
+- Roughness now reads from the blue channel of `g_tNormalRoughness` (alpha is a constant placeholder on Deadlock textures, so every textured material previously exported fully-rough/matte); normal-Z is reconstructed from X,Y, and constant metalness/roughness/color-tint recover from `TextureMetalness1` / `TextureRoughness1` / `g_vColorTint1`. Sheen reads `TextureSheenColor1 * tint` and binds `g_tSheen`; glass honors the authored `g_flIOR`. Verified across the hero roster (230+ normal-roughness textures).
+- NPR shader-param extras (`F_USE_NPR_LIGHTING`, tint/rim masks) export as glTF extras for the grimoire viewer, plus post-serialize KHR material-extension injection (sheen).
+
+### morphic (Source 2 codec)
+
+- New pure-Rust authoring writers: `texture/vtex.rs` (encode RGBA8888 `.vtex_c` + from-PNG), `material/mod.rs` (compile/encode `pbr.vfx` `.vmat_c`), `sound.rs` (mint `.vsnd_c` from raw audio), `model/uvmask.rs` (UV segmentation + atlas/mask bake).
+- New NM animation codec (`.vnmclip_c`): `decode_nm_clip` / `encode_compressed_pose` decode and byte-faithfully re-encode the quantized `m_compressedPoseData` pose stream (port of VRF `ModelAnimation2/AnimationClip`). Verified pak-wide: all 9008 animated Deadlock clips re-encode with translation/scale byte-exact and rotation within 0.0012 rad (90.7% byte-identical).
+- Animated-clip editing: `patch_kv3_resource_blob` / `patch_kv3_resource_sole_blob` splice a re-encoded pose stream back into a blobbed-LZ4 v5 block in place (arbitrary length within one LZ4 frame), and `reencode_nm_clip` adds animated rotation channels (a static bone becomes animated). `nm_clip_to_clip` converts a decoded clip into a playable animated GLB. A restored end-of-block KV3 trailer and v4 binary-blob reading make re-encoded clips load in-engine. In-game confirmed: edited animated pose streams load and play live.
+- `morphic` bumped 0.4.0 -> 0.7.0 across these.
+
+### grimhud (new subsystem)
+
+- `grimhud/`: a Grimoire-native Panorama HUD (`.vxml`/`.vjs`/`.vcss`) with a reposition catalog, enemy/ally HP color-warn, and an objective timer overlay, plus `tools/panorama-compiler/` (the proven Linux author -> resourcecompiler via Proton/CSDK -> VPK build path) and `tools/import-to-grimoire.mjs`.
+
 ## v0.13.0
 
 Adds custom icon/hero-card import: build an addon that overrides Deadlock card art with a user PNG, no encoder that has to reproduce Valve's exact `.vtex_c` header. The new `icon` command reuses the base game's texture at each target path as a template: it reads that texture's format and dimensions, resizes the PNG to match, and splices it into the template's mip chain (the same in-place mechanism the recolor path uses), then packs every result at its entry path into one addon so it overrides in place. Built for Grimoire's Locker custom hero-card upload (one `--set` per card variant: minimap, small, card, card_critical, card_gloat, vertical). Existing commands are unchanged.
