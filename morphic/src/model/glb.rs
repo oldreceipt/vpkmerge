@@ -1315,6 +1315,9 @@ fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
         let nx = (f32::from(px[0]) / 255.0) * 2.0 - 1.0;
         let ny = (f32::from(px[1]) / 255.0) * 2.0 - 1.0;
         let nz = (1.0 - (nx * nx + ny * ny)).max(0.0).sqrt();
+        // nz >= 0, so (nz*0.5+0.5)*255 is in [127.5, 255]; the clamp keeps it in
+        // range and the cast can never lose a sign.
+        #[allow(clippy::cast_sign_loss)]
         let bz = ((nz * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
         out.extend_from_slice(&[px[0], px[1], bz, 255]);
     }
@@ -1322,7 +1325,7 @@ fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// glTF metallic-roughness texture: G = roughness (from the normal texture's
-/// BLUE channel; Source 2 g_tNormalRoughness packs roughness in B while the
+/// BLUE channel; Source 2 `g_tNormalRoughness` packs roughness in B while the
 /// alpha is a constant ~1.0 placeholder, so reading alpha yielded fully-rough
 /// matte surfaces), B = metalness (the metalness mask's R channel,
 /// nearest-neighbor resampled to the roughness image's dimensions; 0 without a
