@@ -338,17 +338,23 @@ guessed. Cross-checked against `tools/morphic-oracle dynexpr decompile` (VRF).
 
 `--edit-expr 'NAME=s<D>FIND<D>REPLACE<D>'` edits an **existing** expression in
 place: decompile -> literal substring substitution -> recompile (sed-style, any
-delimiter `<D>`). **Caveat: only ADDING expressions works on shipped materials,
-not modifying existing ones.** A material that already carries a dynamic
-expression is blob-bearing (`countBlocks > 0`; the bytecode is a binary blob),
-and replacing a blob needs a *blob-aware replace* that morphic does not have yet
-(it has a blob-aware insert; the re-encode fallback is refused for blobbed
-`.vmat_c` because an uncompressed re-emit renders red wireframe). So `--edit-expr`
-(and `--set-expr` overriding an existing param) resolves correctly but then fails
-loudly with "cannot replace an existing dynamic expression in a blob-bearing
-material". The blob replace is the unbuilt follow-up; it is more bounded than the
-insert (it touches only the target blob's length-table entry + LZ4 frame, never
-the lane buffers/type stream/strings), but it is in-game-gated binary surgery.
+delimiter `<D>`). This now works on blob-bearing shipped materials too (not just
+adding expressions): an existing dynamic expression's bytecode IS a binary blob,
+and `morphic::kv3::set_blob` -> `replace_blob_v5` swaps that blob byte-faithfully
+while keeping the block compressed (the engine misreads a blobbed block flipped to
+raw). The replace is content-keyed on the current bytecode, so it targets the right
+blob even when the material carries several expressions (`countBlocks > 1`, e.g.
+`ghost2_arm.vmat_c`'s two), and the new bytecode may differ in length (the whole
+blob region is re-chunked into LZ4 frames). A length change moves `unc2`, so
+`replace_blob_v5` also rewrites `sizeUncTotal@48` (= `unc1+unc2`) and
+`sizeCompTotal@52`; a stale `@48` loads in morphic's lenient reader but crashes
+Source 2 ("Bad KV3 data"), which is exactly what the first multi-blob test mod did
+in-game (2026-06-16) before the fix. `verify_v5_size_invariants` now guards both
+totals at pack time so a drift fails the edit instead of the game. `--set-expr`
+overriding an existing param takes the same path. **In-game re-verification of the
+fixed multi-blob path is still pending.** Other
+blobbed-`.vmat_c` edits that need the *re-encode* fallback (a tagless scalar with no
+data lane) still fail loudly, since an uncompressed re-emit renders red wireframe.
 480 shipped pak01 materials use these (430 on
 `pbr.vfx`); engine-supplied entity attributes (`$ent_health`, `$ent_age`,
 `$ent_origin`, ... + scene-side `$camera_origin`) enumerate from `strings` over

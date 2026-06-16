@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_hero_model, export_model,
-    extract_portraits, hero_model_entry, import_soul_container_clone, inspect_models, merge,
-    model_draw_call_targets, model_uv_segments, model_vertex_targets, split, AnimOptions,
+    bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_femodel_json, export_hero_model,
+    export_model, extract_portraits, hero_model_entry, import_soul_container_clone, inspect_models,
+    merge, model_draw_call_targets, model_uv_segments, model_vertex_targets, split, AnimOptions,
     CollisionPolicy, GeometryEdit, MergeOptions, ModelPartSelector, OverlapPolicy, PathPredicate,
     PortraitInfo, PoseSelection, SegmentBy, SoulGlow, SoulImportCloneOptions, SoulOrient,
     SoundEvents, SplitOptions, SplitOutput,
@@ -759,6 +759,39 @@ enum ModelAction {
     /// reskin builders consume as a region selector (in place of the AO
     /// heuristic). Segment by UV island (default), mesh part, or material.
     Mask(ModelMaskArgs),
+
+    /// Dump a model's cloth finite-element model (`PHYS.m_pFeModel`) as JSON to
+    /// stdout: node set, distance-constraint rods, per-node integrator
+    /// (gravity/damping/animation-attraction), and the collision capsules and
+    /// spheres. This is the sidecar a renderer-side verlet preview reads to drive
+    /// the cloth bones with the engine's own parameters (so the preview matches
+    /// and the real colliders stop cloth-through-body clipping).
+    Femodel(ModelFemodelArgs),
+}
+
+#[derive(Args)]
+struct ModelFemodelArgs {
+    /// VPK containing the `.vmdl_c` (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// VPK-internal model path. Mutually exclusive with `--hero`.
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "hero",
+        conflicts_with = "hero"
+    )]
+    entry: Option<String>,
+
+    /// Hero codename whose body model is auto-discovered. Mutually exclusive with
+    /// `--entry`.
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Base `pak01_dir.vpk` to fall back to when `--vpk` does not ship the mesh.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1194,6 +1227,7 @@ fn run_model(args: ModelCmd) -> Result<()> {
         Some(ModelAction::Edit(e)) => return run_model_edit(e),
         Some(ModelAction::Recolor(e)) => return run_model_recolor(&e),
         Some(ModelAction::Mask(m)) => return run_model_mask(&m),
+        Some(ModelAction::Femodel(f)) => return run_model_femodel(&f),
         None => {}
     }
 
@@ -1236,6 +1270,18 @@ fn run_model(args: ModelCmd) -> Result<()> {
         println!("  blocks: {}", histogram.join("  "));
     }
 
+    Ok(())
+}
+
+fn run_model_femodel(f: &ModelFemodelArgs) -> Result<()> {
+    use std::io::Write as _;
+    let entry = match (&f.entry, &f.hero) {
+        (Some(entry), _) => entry.clone(),
+        (None, Some(hero)) => hero_model_entry(&f.vpk, f.base.as_deref(), hero)?,
+        (None, None) => anyhow::bail!("model femodel: provide --entry or --hero"),
+    };
+    let json = export_femodel_json(&f.vpk, f.base.as_deref(), &entry)?;
+    std::io::stdout().write_all(&json)?;
     Ok(())
 }
 
@@ -2868,7 +2914,8 @@ fn run_vmat(args: &VmatCmd) -> Result<()> {
         let infos = vpkmerge_core::list_materials(&args.vpk, args.base.as_deref(), &targets)?;
         anyhow::ensure!(!infos.is_empty(), "no materials matched");
         for info in &infos {
-            println!("{} [{}]", info.entry, info.shader);
+            let tag = if info.dynamic { " [dynamic]" } else { "" };
+            println!("{} [{}]{tag}", info.entry, info.shader);
             if !info.flags.is_empty() {
                 let flags: Vec<String> = info
                     .flags
@@ -2885,6 +2932,13 @@ fn run_vmat(args: &VmatCmd) -> Result<()> {
             }
             for (slot, path) in &info.textures {
                 println!("  {slot} -> {path}");
+            }
+            for (name, value) in &info.floats {
+                println!("  {name} = {value}");
+            }
+            for (name, lanes) in &info.vectors {
+                let lanes: Vec<String> = lanes.iter().map(ToString::to_string).collect();
+                println!("  {name} = [{}]", lanes.join(", "));
             }
             for (name, expr) in &info.expressions {
                 println!("  expr {name} = {expr}");

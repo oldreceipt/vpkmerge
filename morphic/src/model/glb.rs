@@ -950,7 +950,23 @@ impl Builder {
         // the overbright part, since emissiveFactor clamps at 1.
         if let Some(tex) = pbr.emissive.and_then(|p| self.texture_from(files, p)) {
             material.emissive_texture = Some(tex_info(tex));
-            material.emissive_factor = json::material::EmissiveFactor([1.0, 1.0, 1.0]);
+            // g_vSelfIllumTint1 is the authored glow color the engine multiplies
+            // the self-illum mask by; without it every emissive surface rendered
+            // white (Paige's green ult glow [0.44,0.84,0.53] was lost). Maps 1:1
+            // onto emissiveFactor (both linear). ponytail: same RGB-tint read as
+            // g_vColorTint1/sheen above; alpha lane (unused by glTF) dropped.
+            let tint = mat
+                .vector_params
+                .get("g_vSelfIllumTint1")
+                .or_else(|| mat.vector_params.get("g_vSelfIllumTint"))
+                .map_or([1.0f32; 3], |v| {
+                    [
+                        v[0].clamp(0.0, 1.0),
+                        v[1].clamp(0.0, 1.0),
+                        v[2].clamp(0.0, 1.0),
+                    ]
+                });
+            material.emissive_factor = json::material::EmissiveFactor(tint);
             let scale = mat
                 .float_params
                 .get("g_flSelfIllumScale1")

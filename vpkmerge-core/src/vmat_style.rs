@@ -276,6 +276,49 @@ fn render_attrs(root: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Replace an existing dynamic-expression blob in a blob-bearing `.vmat_c`
+/// byte-faithfully (content-keyed on the current bytecode), keeping the block
+/// compressed. Returns `None` for a non-`Expr` edit (caller reports it failed),
+/// `Some(Ok(bytes))` on success, or `Some(Err(msg))` if the param/blob could not
+/// be located or the blob splice failed. Built so `--edit-expr` /
+/// `--set-expr`-over-an-existing-param stop being refused on blobbed materials.
+fn replace_expr_blob(
+    working: &[u8],
+    edit: &VmatEdit,
+) -> Option<std::result::Result<Vec<u8>, String>> {
+    let VmatEdit::Expr { name, bytecode, .. } = edit else {
+        return None;
+    };
+    let root = match morphic::decode_kv3_resource(working) {
+        Ok(r) => r,
+        Err(e) => return Some(Err(format!("{name}: decode failed ({e})"))),
+    };
+    // The current bytecode is the blob to replace (content-keyed). It is unique
+    // among the material's blobs, so the swap is unambiguous even with several
+    // dynamic expressions present.
+    let old = (|| {
+        let i = param_index(&root, "m_dynamicParams", name)?;
+        root.get("m_dynamicParams")
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i))
+            .and_then(|p| p.get("m_value"))
+            .and_then(expr_bytes)
+    })();
+    let Some(old) = old else {
+        return Some(Err(format!(
+            "{name}: no existing dynamic expression bytecode to replace"
+        )));
+    };
+    if old == *bytecode {
+        // Recompiled to the same bytes; nothing to do (counted as set upstream).
+        return Some(Ok(working.to_vec()));
+    }
+    match morphic::patch_kv3_resource_blob(working, &old, bytecode) {
+        Ok(bytes) => Some(Ok(bytes)),
+        Err(e) => Some(Err(format!("{name}: blob-aware replace failed ({e})"))),
+    }
+}
+
 /// Resolves a [`VmatEdit::EditExpr`] against `root` (one target material):
 /// decompile the named `m_dynamicParams` expression, substitute `find`->
 /// `replace` in the source, recompile. Returns the equivalent
@@ -420,21 +463,23 @@ pub fn patch_vmat_params(bytes: &[u8], edits: &[VmatEdit]) -> Result<(Vec<u8>, V
 
     if !needs_reencode.is_empty() {
         if morphic::kv3_resource_has_blobs(&working).unwrap_or(true) {
-            // A blob-bearing material refuses the re-encode fallback. Changing
-            // an *existing* dynamic expression lands here (its bytecode is a
-            // blob, and replacing a blob is not yet supported byte-faithfully);
-            // report why rather than emit a bare param name.
-            stats.failed.extend(needs_reencode.iter().map(|e| {
-                if matches!(e, VmatEdit::Expr { .. }) {
-                    format!(
-                        "{}: cannot replace an existing dynamic expression in a \
-                         blob-bearing material (no blob-aware replace yet)",
-                        e.name()
-                    )
-                } else {
-                    e.name().to_string()
+            // A blob-bearing material refuses the re-encode fallback. Changing an
+            // *existing* dynamic expression lands here: its bytecode IS a binary
+            // blob. Replace that blob byte-faithfully (content-keyed on the current
+            // bytecode), keeping the block compressed, instead of re-encoding the
+            // whole material. Any edit that is not such an Expr swap still fails.
+            let mut still_failed = Vec::new();
+            for e in &needs_reencode {
+                match replace_expr_blob(&working, e) {
+                    Some(Ok(bytes)) => {
+                        working = bytes;
+                        stats.set += 1;
+                    }
+                    Some(Err(msg)) => still_failed.push(msg),
+                    None => still_failed.push(e.name().to_string()),
                 }
-            }));
+            }
+            stats.failed.extend(still_failed);
         } else {
             let mut tree = morphic::decode_kv3_resource(&working)
                 .context("decoding material KV3 for re-encode fallback")?;
@@ -638,6 +683,13 @@ pub struct VmatInfo {
     /// `m_dynamicTextureParams` (param name -> source). A blob that fails to
     /// decompile is reported as `<error: ...>` rather than dropped.
     pub expressions: Vec<(String, String)>,
+    /// Scalar `m_floatParams` (`m_name` -> `m_flValue`).
+    pub floats: Vec<(String, f64)>,
+    /// `m_vectorParams` (`m_name` -> `m_value` lanes).
+    pub vectors: Vec<(String, Vec<f64>)>,
+    /// Carries a per-frame expression blob / live logic
+    /// (`kv3_resource_has_blobs`).
+    pub dynamic: bool,
 }
 
 /// Pull the raw expression bytecode out of a `m_value` node, whether morphic
@@ -743,12 +795,39 @@ fn material_info(entry: &str, root: &Value) -> VmatInfo {
             }
         }
     }
+    let mut floats = Vec::new();
+    if let Some(Value::Array(params)) = root.get("m_floatParams") {
+        for p in params {
+            if let (Some(name), Some(value)) = (
+                p.get("m_name").and_then(Value::as_str),
+                p.get("m_flValue").and_then(Value::as_f64),
+            ) {
+                floats.push((name.to_string(), value));
+            }
+        }
+    }
+    let mut vectors = Vec::new();
+    if let Some(Value::Array(params)) = root.get("m_vectorParams") {
+        for p in params {
+            if let (Some(name), Some(Value::Array(lanes))) =
+                (p.get("m_name").and_then(Value::as_str), p.get("m_value"))
+            {
+                vectors.push((
+                    name.to_string(),
+                    lanes.iter().filter_map(Value::as_f64).collect(),
+                ));
+            }
+        }
+    }
     VmatInfo {
         entry: entry.to_string(),
         shader,
         flags,
         textures,
         expressions: material_expressions(root),
+        floats,
+        vectors,
+        dynamic: false,
     }
 }
 
@@ -772,7 +851,9 @@ pub fn list_materials(
         let Ok(root) = morphic::decode_kv3_resource(&bytes) else {
             continue;
         };
-        out.push(material_info(&entry, &root));
+        let mut info = material_info(&entry, &root);
+        info.dynamic = morphic::kv3_resource_has_blobs(&bytes).unwrap_or(false);
+        out.push(info);
     }
     Ok(out)
 }
@@ -924,6 +1005,20 @@ mod tests {
     }
 
     #[test]
+    fn material_info_reports_scalar_params() {
+        let bytes = fixture();
+        let root = morphic::decode_kv3_resource(&bytes).unwrap();
+        let info = material_info("x.vmat_c", &root);
+        // The fixture is a real hero material: it has scalar params, and at
+        // least one vector lane (every g_v* tint is RGBA).
+        assert!(!info.floats.is_empty(), "expected m_floatParams");
+        assert!(
+            info.vectors.iter().any(|(_, lanes)| !lanes.is_empty()),
+            "expected m_vectorParams lanes"
+        );
+    }
+
+    #[test]
     fn edit_expr_resolves_against_current_expression() {
         // Seed an expression (blob-aware insert works on the blobbed fixture),
         // then resolve an in-place substitution against it.
@@ -961,28 +1056,87 @@ mod tests {
     }
 
     #[test]
-    fn edit_expr_on_blob_material_reports_unsupported() {
-        // Until a blob-aware replace lands, editing an existing expression on a
-        // blob-bearing material must fail loudly (never emit a broken blob).
+    fn edit_expr_on_blob_material_succeeds() {
+        // Editing an existing dynamic expression on a blob-bearing material now
+        // works: the bytecode IS a binary blob, and `replace_expr_blob` swaps it
+        // byte-faithfully while keeping the block compressed (no re-encode, which
+        // would mangle the blob framing). Two expressions are seeded first so the
+        // edit exercises the MULTI-blob path (countBlocks == 2, the swap is
+        // content-keyed to target the right one). The recompiled bytecode also
+        // differs in length from the original here (`* 1` vs `* 100`), proving the
+        // re-chunk handles a length change.
         let bytes = fixture();
-        let (seeded, _) = patch_vmat_params(
+        let (seeded, s0) = patch_vmat_params(
             &bytes,
-            &[VmatEdit::expr("g_flSelfIllumScale1", "-1 * sin(10 * time())").unwrap()],
+            &[
+                VmatEdit::expr("g_flSelfIllumScale1", "-1 * sin(10 * time())").unwrap(),
+                VmatEdit::expr("g_vColorTint1", "float3(1,1,1) * 1").unwrap(),
+            ],
         )
         .unwrap();
-        let edit = VmatEdit::EditExpr {
-            name: "g_flSelfIllumScale1".into(),
-            find: "10 * time()".into(),
-            replace: "20 * time()".into(),
-        };
-        let (_, stats) = patch_vmat_params(&seeded, &[edit]).unwrap();
-        assert_eq!(stats.set + stats.inserted, 0);
-        assert_eq!(stats.failed.len(), 1);
-        assert!(
-            stats.failed[0].contains("blob-aware replace"),
-            "{:?}",
-            stats.failed
+        assert!(s0.failed.is_empty(), "seed: {:?}", s0.failed);
+        // precondition: a real 2-blob block
+        let data = morphic::kv3_resource_data_block(&seeded).unwrap();
+        assert_eq!(data[20], 1, "LZ4");
+        assert_eq!(
+            i32::from_le_bytes(data[56..60].try_into().unwrap()),
+            2,
+            "2 blobs"
         );
+
+        let edit = VmatEdit::EditExpr {
+            name: "g_vColorTint1".into(),
+            find: "* 1".into(),
+            replace: "* 100".into(),
+        };
+        let (patched, stats) = patch_vmat_params(&seeded, &[edit]).unwrap();
+        assert!(stats.failed.is_empty(), "edit: {:?}", stats.failed);
+        assert_eq!(stats.set, 1);
+
+        // The block still decodes, stays a 2-blob compressed v5, and the edited
+        // expression now reads back as the recompiled source; the *other* blob is
+        // untouched.
+        let after = morphic::decode_kv3_resource(&patched).unwrap();
+        let read = |root: &Value, n: &str| -> Vec<u8> {
+            let i = param_index(root, "m_dynamicParams", n).unwrap();
+            root.get("m_dynamicParams")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(|p| p.get("m_value"))
+                .and_then(expr_bytes)
+                .unwrap()
+        };
+        assert_eq!(
+            read(&after, "g_vColorTint1"),
+            morphic::vfx_expr::compile("float3(1,1,1) * 100")
+                .unwrap()
+                .bytecode,
+            "edited expression must be the new bytecode"
+        );
+        assert_eq!(
+            read(&after, "g_flSelfIllumScale1"),
+            morphic::vfx_expr::compile("-1 * sin(10 * time())")
+                .unwrap()
+                .bytecode,
+            "the other expression blob must be byte-identical"
+        );
+        let pdata = morphic::kv3_resource_data_block(&patched).unwrap();
+        assert_eq!(pdata[20], 1, "stays LZ4-compressed");
+        assert_eq!(
+            i32::from_le_bytes(pdata[56..60].try_into().unwrap()),
+            2,
+            "stays 2 blobs"
+        );
+        // The header size totals the engine validates: a stale sizeUncTotal@48
+        // (not updated when unc2 changed) crashed Deadlock with "Bad KV3 data".
+        let h = |o: usize| i32::from_le_bytes(pdata[o..o + 4].try_into().unwrap());
+        assert_eq!(h(48), h(72) + h(80), "sizeUncTotal@48 == unc1+unc2");
+        assert_eq!(h(52), h(76) + h(84), "sizeCompTotal@52 == comp1+comp2");
+        // Per-blob LZ4 framing: two small blobs must be two frames, not one
+        // concatenated frame. sizeBlockCompressed@68 is the frame-table byte count
+        // (2 bytes/frame), so two frames => 4. A region-chunked single frame (=> 2)
+        // decodes in our reader but the engine rejects it ("Bad KV3 data").
+        assert_eq!(h(68), 4, "two small blobs must be two per-blob LZ4 frames");
     }
 
     #[test]
