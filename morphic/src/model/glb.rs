@@ -829,7 +829,18 @@ impl Builder {
         // Skip the 4x4 default_normal placeholder (a flat normal is a no-op).
         if let Some(p) = pbr.normal {
             if let Some((w, h, rgba)) = decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4) {
-                if let Some(t) = self.texture_png(&normal_png(w, h, &rgba)) {
+                // Some heroes bind a PURE normal map here (blue = normal Z), not a
+                // packed normal-roughness (blue = roughness). The slot name does not
+                // distinguish them, so probe the texel content: a pure normal map
+                // keeps its authored normal and must NOT have its blue read as
+                // roughness (which produced normal-Z-shaped garbage roughness).
+                let pure_normal = is_pure_normal_map(&rgba);
+                let normal_bytes = if pure_normal {
+                    normal_passthrough_png(w, h, &rgba)
+                } else {
+                    normal_png(w, h, &rgba)
+                };
+                if let Some(t) = self.texture_png(&normal_bytes) {
                     material.normal_texture = Some(json::material::NormalTexture {
                         index: t,
                         tex_coord: 0,
@@ -838,7 +849,29 @@ impl Builder {
                         extras: Default::default(),
                     });
                 }
-                if let Some(t) = self.texture_png(&metal_rough_png(w, h, &rgba, metalness.as_ref()))
+                if pure_normal {
+                    // Blue is normal Z, not roughness: leave roughness to the
+                    // constant fallback (below for the no-mask case, or carried
+                    // here), but still wire a metalness mask if one exists as a
+                    // neutral-roughness, metalness-only ORM image.
+                    if let Some(&(mw, mh, ref m)) = metalness.as_ref() {
+                        if let Some(t) = self.texture_png(&metal_only_png(mw, mh, m)) {
+                            material.pbr_metallic_roughness.metallic_roughness_texture =
+                                Some(tex_info(t));
+                            material.pbr_metallic_roughness.metallic_factor =
+                                json::material::StrengthFactor(1.0);
+                            // G is a neutral 255, so the final roughness is the
+                            // factor; carry TextureRoughness1 since the is_none()
+                            // fallback below will not fire once an MR texture is set.
+                            if let Some(v) = mat.vector_params.get("TextureRoughness1") {
+                                material.pbr_metallic_roughness.roughness_factor =
+                                    json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
+                            }
+                            metalness_wired = true;
+                        }
+                    }
+                } else if let Some(t) =
+                    self.texture_png(&metal_rough_png(w, h, &rgba, metalness.as_ref()))
                 {
                     material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
                     material.pbr_metallic_roughness.roughness_factor =
@@ -1320,6 +1353,61 @@ fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&[px[0], px[1], bz, 255]);
     }
     png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// Distinguish a PURE tangent-space normal map (BLUE = normal Z) from a packed
+/// Source 2 normal-roughness texture (BLUE = roughness). Both arrive in the same
+/// slot with the same `_normal` naming, so the only reliable signal is per-texel
+/// content: in a normal map the blue equals the Z reconstructed from R,G (the
+/// normal is unit length, and Z is stored with the same `n*0.5+0.5` encoding as
+/// X,Y), while in a packed texture blue is roughness and does not track R,G.
+/// Samples a stride of texels and returns true when the decoded blue matches the
+/// reconstructed Z for the large majority of them.
+///
+/// This preserves the blue-as-roughness behavior for genuinely packed textures
+/// (their blue does not follow the reconstructed Z) while sparing pure normal maps
+/// from having their normal-Z misread as roughness.
+pub(super) fn is_pure_normal_map(rgba: &[u8]) -> bool {
+    const TOLERANCE: f32 = 0.06;
+    let mut checked: u32 = 0;
+    let mut matched: u32 = 0;
+    // Every 4th texel keeps the scan cheap on full-size masks without losing signal.
+    for px in rgba.chunks_exact(4).step_by(4) {
+        let nx = (f32::from(px[0]) / 255.0) * 2.0 - 1.0;
+        let ny = (f32::from(px[1]) / 255.0) * 2.0 - 1.0;
+        let blue_z = (f32::from(px[2]) / 255.0) * 2.0 - 1.0;
+        let recon_z = (1.0 - (nx * nx + ny * ny)).max(0.0).sqrt();
+        checked += 1;
+        if (blue_z - recon_z).abs() <= TOLERANCE {
+            matched += 1;
+        }
+    }
+    // >= 90% match, computed in integers to avoid lossy float casts.
+    checked > 0 && u64::from(matched) * 10 >= u64::from(checked) * 9
+}
+
+/// Pass a PURE normal map through unchanged (authored R,G,B normal, forced opaque
+/// alpha). Unlike [`normal_png`] this keeps the authored blue (the real normal Z)
+/// instead of reconstructing it from R,G, preserving detail and non-unit normals.
+fn normal_passthrough_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// glTF metallic-roughness texture carrying ONLY metalness (B = the mask's R
+/// channel) with a neutral roughness lane (G = 255, so the final roughness is the
+/// material's `roughnessFactor`). Used when the normal slot is a pure normal map,
+/// so its blue must not become roughness, but a separate metalness mask still
+/// needs wiring. Emitted at the mask's own resolution.
+pub(super) fn metal_only_png(mw: u32, mh: u32, mask: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(mask.len());
+    for px in mask.chunks_exact(4) {
+        out.extend_from_slice(&[0, 255, px[0], 255]);
+    }
+    png_encode(mw, mh, &out).unwrap_or_default()
 }
 
 /// glTF metallic-roughness texture: G = roughness (from the normal texture's
