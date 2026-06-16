@@ -443,6 +443,30 @@ fn decode_model_entry(
     morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))
 }
 
+/// Extracts a model's cloth finite-element model (`PHYS.m_pFeModel`) as pretty
+/// JSON: the node set, distance-constraint rods, per-node integrator
+/// (gravity/damping/animation-attraction), and the collision capsules/spheres.
+/// This is the sidecar a renderer-side verlet preview reads to drive the cloth
+/// bones with the engine's own parameters (so it matches and the real colliders
+/// stop the cloth-through-body clipping). Errors if the model carries no PHYS
+/// block or no FeModel (a model with no cloth).
+pub fn export_femodel_json(vpk: &Path, base: Option<&Path>, entry: &str) -> Result<Vec<u8>> {
+    let vpks = open_vpks(vpk, base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let res = morphic::resource::Resource::parse(&bytes)
+        .map_err(|e| anyhow::anyhow!("parsing {entry}: {e:?}"))?;
+    let phys = res
+        .find_block(*b"PHYS")
+        .ok_or_else(|| anyhow::anyhow!("{entry} has no PHYS block (no cloth/physics)"))?;
+    let value = morphic::kv3::decode(phys).map_err(|e| anyhow::anyhow!("decoding PHYS: {e:?}"))?;
+    let fe = value
+        .get("m_pFeModel")
+        .ok_or_else(|| anyhow::anyhow!("{entry} PHYS has no m_pFeModel (no cloth sim)"))?;
+    serde_json::to_vec_pretty(&crate::soundevents::value_to_json(fe))
+        .context("serializing FeModel JSON")
+}
+
 /// Builds the listing rows for a set of segments: measures per-segment texel
 /// coverage at `resolution`, then sorts the rows largest-coverage-first (the
 /// region a reskinner most likely wants on top). The stable `id`/color follow

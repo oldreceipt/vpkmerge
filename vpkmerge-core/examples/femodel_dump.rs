@@ -6,7 +6,13 @@
 //! Built to understand how Deadlock's cloth/jiggle simulation is encoded so we
 //! can assess adding new dynamic bones (e.g. Holliday's static boot tassels).
 //!
-//! Usage: cargo run -p vpkmerge-core --example femodel_dump -- <pak.vpk> <entry.vmdl_c>
+//! Usage: cargo run -p vpkmerge-core --example femodel_dump -- <pak.vpk> <entry.vmdl_c> [out.json]
+//!
+//! With a third arg, also writes the whole `m_pFeModel` verbatim as JSON, the
+//! raw material for a three.js verlet preview of the cloth chains (feed it
+//! `m_FreeNodes` + `m_Rods` + `m_InitPose` + `m_NodeIntegrator` + the rigid
+//! arrays; the engine's own sim params, so the preview matches and the real
+//! colliders stop the robe-through-body clipping).
 
 use morphic::kv3::Value;
 
@@ -37,6 +43,25 @@ fn u(v: &Value) -> u64 {
 }
 fn i(v: &Value) -> i64 {
     v.as_int().unwrap_or(0)
+}
+
+// kv3 Value -> serde_json, verbatim. Mirrors soundevents::value_to_json (private
+// there); inlined so the example stays self-contained.
+fn to_json(v: &Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        Value::Null => J::Null,
+        Value::Bool(b) => J::Bool(*b),
+        Value::Int(n) => J::Number((*n).into()),
+        Value::UInt(n) => J::Number((*n).into()),
+        Value::Double(d) => serde_json::Number::from_f64(*d).map_or(J::Null, J::Number),
+        Value::String(s) => J::String(s.clone()),
+        Value::Binary(bytes) => J::Array(bytes.iter().map(|b| J::Number((*b).into())).collect()),
+        Value::Array(items) => J::Array(items.iter().map(to_json).collect()),
+        Value::Object(pairs) => {
+            J::Object(pairs.iter().map(|(k, c)| (k.clone(), to_json(c))).collect())
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -174,6 +199,33 @@ fn main() -> anyhow::Result<()> {
         .collect();
     println!("  m_TreeChildren = {kids:?}");
 
+    // collision rigids: the geometry that stops cloth-through-body. Generic
+    // key=val dump (we don't hard-code Valve's field names; this is how we learn
+    // them). Resolve the attached bone when the entry carries a scalar nNode.
+    for key in ["m_TaperedCapsuleRigids", "m_SphereRigids"] {
+        let rigs = arr(fe, key);
+        if rigs.is_empty() {
+            continue;
+        }
+        println!("\n-- {key} (n={}) --", rigs.len());
+        for (gi, rg) in rigs.iter().enumerate() {
+            let bone = rg
+                .get("nNode")
+                .and_then(Value::as_uint)
+                .and_then(|nd| ctrl_name.get(nd as usize))
+                .and_then(Value::as_str)
+                .map(|nm| format!(" -> {nm}"))
+                .unwrap_or_default();
+            let flat: Vec<String> = rg
+                .as_object()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(k, v)| format!("{k}={v:?}"))
+                .collect();
+            println!("  [{gi}]{bone}  {}", flat.join("  "));
+        }
+    }
+
     // other parallel arrays lengths, to know everything we must extend
     println!("\n-- parallel array lengths (must stay consistent) --");
     for k in [
@@ -204,6 +256,14 @@ fn main() -> anyhow::Result<()> {
         if let Some(a) = fe.get(k).and_then(Value::as_array) {
             println!("  {k}: {}", a.len());
         }
+    }
+
+    // optional: dump the whole FeModel as JSON for the three.js verlet preview.
+    // ponytail: whole-model dump, not a curated schema. Carries redundant SIMD
+    // arrays the verlet ignores; filter only if sidecar size ever matters.
+    if let Some(out) = std::env::args().nth(3) {
+        std::fs::write(&out, serde_json::to_vec_pretty(&to_json(fe))?)?;
+        println!("\nwrote {out}");
     }
     Ok(())
 }
