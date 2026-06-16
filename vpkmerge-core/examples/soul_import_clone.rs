@@ -69,12 +69,25 @@ fn main() -> Result<()> {
     let out = args.next().context("arg3: out_dir.vpk")?;
     let name = args.next().unwrap_or_else(|| "custom_soul".to_string());
 
+    let yaw = std::env::var("SOUL_YAW")
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .unwrap_or(0.0);
+    // Upright on by default; SOUL_UPRIGHT=0/off/false opts back into the tumble.
+    let orient_upright = !matches!(
+        std::env::var("SOUL_UPRIGHT").unwrap_or_default().as_str(),
+        "0" | "off" | "false"
+    );
+
     let glb = std::fs::read(&glb_path)?;
     let opts = SoulImportCloneOptions {
         name,
         orient: env_orient()?,
         rotate: env_rotate()?,
+        yaw,
+        orient_upright,
         glow: env_glow(),
+        ..Default::default()
     };
     let report = import_soul_container_clone(&pak, &glb, &out, &opts)?;
 

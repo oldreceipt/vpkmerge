@@ -190,6 +190,23 @@ struct SoulImportArgs {
     #[arg(long, value_name = "X,Y,Z")]
     rotate: Option<String>,
 
+    /// Facing yaw in degrees: turn the fitted mesh in place about Source-Z (up).
+    /// Unambiguous final-space yaw (unlike --rotate); the knob to dial in which
+    /// way the orb faces. Survives the upright orientation pass.
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        allow_hyphen_values = true,
+        value_name = "DEG"
+    )]
+    yaw: f32,
+
+    /// Don't apply psyduck's upright-orientation recipe; let the orb tumble/spin
+    /// with the control point like the stock gold orb. By default the imported
+    /// orb is patched upright so --yaw gives it a stable facing.
+    #[arg(long)]
+    no_upright: bool,
+
     /// Lift the fitted mesh so its lowest Source-Z point sits at the model
     /// origin/floor instead of centering it on the stock orb.
     #[arg(long)]
@@ -2347,6 +2364,8 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
         name: args.name.clone(),
         orient: args.orient.into(),
         rotate,
+        yaw: args.yaw,
+        orient_upright: !args.no_upright,
         ground: args.ground,
         glow: args.glow.into(),
     };
@@ -2391,6 +2410,8 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
         "fitScale": report.fit_scale,
         "sourceSpan": report.source_span,
         "targetSpan": report.target_span,
+        "yaw": report.yaw,
+        "upright": report.upright,
         "glowHue": report.glow_hue,
         "entryCount": report.entry_count,
     });
