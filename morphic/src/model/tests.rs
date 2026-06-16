@@ -810,6 +810,33 @@ fn metal_rough_packs_resampled_metalness() {
     assert!(img.pixels().all(|px| px[2] == 0), "no mask: B = 0");
 }
 
+/// A pure tangent-space normal map (blue = the unit normal's Z) is detected so its
+/// blue is not misread as roughness; a packed normal-roughness (blue = an
+/// uncorrelated roughness) is not.
+#[test]
+fn pure_normal_map_is_distinguished_from_packed() {
+    // Normal (0.6, 0.0, 0.8): X = 204, Y = 128, Z encoded as (0.8*0.5+0.5)*255 ~= 230.
+    let pure = [204u8, 128, 230, 255].repeat(8);
+    assert!(super::glb::is_pure_normal_map(&pure));
+
+    // Same authored normal X,Y, but blue is a 0.3 roughness (76) uncorrelated with it.
+    let packed = [204u8, 128, 76, 255].repeat(8);
+    assert!(!super::glb::is_pure_normal_map(&packed));
+}
+
+/// The metalness-only ORM (used when the normal slot is a pure normal map) keeps a
+/// neutral roughness lane (G = 255) and packs the mask's R channel into B.
+#[test]
+fn metal_only_png_is_neutral_roughness_with_metalness() {
+    let mask = [200u8, 0, 0, 255, 30, 0, 0, 255]; // 2x1 mask, R = 200 then 30
+    let png = super::glb::metal_only_png(2, 1, &mask);
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    let px: Vec<_> = img.pixels().collect();
+    assert_eq!(px[0][1], 255, "G neutral roughness");
+    assert_eq!(px[0][2], 200, "B = metalness mask R");
+    assert_eq!(px[1][2], 30, "B = metalness mask R");
+}
+
 /// [`super::glb::inject_material_extensions`] lands each extension object on
 /// the right material and declares every name in `extensionsUsed`.
 #[test]
