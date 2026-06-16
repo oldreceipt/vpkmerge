@@ -50,8 +50,8 @@ const MODEL: &str = "models/props_gameplay/soul_container/soul_container.vmdl_c"
 const MAT_DIR: &str = "models/props_gameplay/soul_container/materials";
 const DONOR_VMAT: &[u8] = include_bytes!("../../morphic/fixtures/soul/soul_material_donor.vmat_c");
 const DEFAULT_NORMAL: &str = "materials/default/default_normal_tga_7be61377.vtex";
-const FLAT_DONOR: &str = "panorama/images/hud/zipline_icon_psd.vtex_c";
-const COLOR_DONOR: &str = "dev/helper/testgrid_color_tga_2d6cc34.vtex_c";
+pub(crate) const FLAT_DONOR: &str = "panorama/images/hud/zipline_icon_psd.vtex_c";
+pub(crate) const COLOR_DONOR: &str = "dev/helper/testgrid_color_tga_2d6cc34.vtex_c";
 const IDENTITY3: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 const IDENTITY4: Mat4 = [
     [1.0, 0.0, 0.0, 0.0],
@@ -100,6 +100,16 @@ pub struct SoulImportCloneOptions {
     pub orient: SoulOrient,
     /// Extra Euler rotation in degrees `[X, Y, Z]`, applied after `orient`.
     pub rotate: Option<[f32; 3]>,
+    /// Facing yaw in degrees, applied as a turn about Source-Z (up) through the
+    /// orb center after fitting. Distinct from `rotate` (pre-swizzle GLB-space
+    /// Euler): this is unambiguous final-space yaw, the knob the Grimoire slider
+    /// drives. The rotation is baked into geometry, so it survives the
+    /// particle's orientation ops (see `orient_upright`).
+    pub yaw: f32,
+    /// Apply psyduck's upright-orientation recipe to the model soul-glow
+    /// particle so the orb stands still and upright instead of tumbling/spinning
+    /// with the control point. Default true; pair with `yaw` for a stable facing.
+    pub orient_upright: bool,
     /// After fitting, lift the mesh so its lowest Source-Z point sits at the
     /// model origin/floor instead of centering it on the stock orb.
     pub ground: bool,
@@ -112,6 +122,8 @@ impl Default for SoulImportCloneOptions {
             name: "custom_soul".to_string(),
             orient: SoulOrient::YUp,
             rotate: None,
+            yaw: 0.0,
+            orient_upright: true,
             ground: false,
             glow: SoulGlow::Recolor,
         }
@@ -138,6 +150,10 @@ pub struct SoulImportReport {
     pub target_span: f32,
     /// The import's largest-axis span before fitting (post-orientation).
     pub source_span: f32,
+    /// Facing yaw (degrees) baked into the geometry about Source-Z.
+    pub yaw: f32,
+    /// Whether the model particle was patched upright (psyduck recipe).
+    pub upright: bool,
     /// Dominant-hue degrees the glow was recolored to (meaningful only for
     /// [`SoulGlow::Recolor`]).
     pub glow_hue: f64,
@@ -283,6 +299,20 @@ pub fn import_soul_container_clone(
             p[k] = (p[k] - mc[k]) * scale + orb_center[k];
         }
     }
+    // --- 4b. facing yaw: turn in place about Source-Z (up) through the orb
+    // center. Baked into geometry so it is unambiguous and survives the
+    // particle's yaw-only orientation remap (see `orient_particle_upright`).
+    if opts.yaw != 0.0 {
+        let rot = rotate_z(opts.yaw);
+        let (cx, cy) = (orb_center[0], orb_center[1]);
+        for p in &mut merged.positions {
+            let r = transform3(&rot, [p[0] - cx, p[1] - cy, p[2]]);
+            *p = [r[0] + cx, r[1] + cy, r[2]];
+        }
+        for n in &mut merged.normals {
+            *n = transform3(&rot, *n);
+        }
+    }
     if opts.ground {
         let min_z = merged
             .positions
@@ -366,18 +396,26 @@ pub fn import_soul_container_clone(
         (format!("{MAT_DIR}/{name}.vmat_c"), vmat),
         (color_entry, color_tex),
     ];
-    // SoulGlow::Off = don't ship particles (base game gold glow plays);
+    // SoulGlow::Off = don't ship glow particles (base game gold glow plays);
     // Base = ship unchanged (isolation); Recolor (default) = recolor to hue.
-    if opts.glow != SoulGlow::Off {
-        for p in PARTICLES {
-            if let Ok(base) = read(p) {
-                let bytes = if opts.glow == SoulGlow::Recolor {
-                    recolor_particle_bytes(&base, Recolor::hue(hue))?.unwrap_or(base)
-                } else {
-                    base
-                };
-                entries.push((p.to_string(), bytes));
+    // PARTICLES[0] (`holding_gold_neutral_model`) is also the one carrying the
+    // orientation ops, so we still ship it (alone) when only `orient_upright` is
+    // set, even with glow off.
+    for (pi, p) in PARTICLES.iter().enumerate() {
+        let is_model = pi == 0;
+        if opts.glow == SoulGlow::Off && !(opts.orient_upright && is_model) {
+            continue;
+        }
+        if let Ok(base) = read(p) {
+            let mut bytes = if opts.glow == SoulGlow::Recolor {
+                recolor_particle_bytes(&base, Recolor::hue(hue))?.unwrap_or(base)
+            } else {
+                base
+            };
+            if opts.orient_upright && is_model {
+                bytes = orient_particle_upright(&bytes)?;
             }
+            entries.push((p.to_string(), bytes));
         }
     }
     let refs: Vec<(&str, &[u8])> = entries
@@ -385,6 +423,14 @@ pub fn import_soul_container_clone(
         .map(|(k, v)| (k.as_str(), v.as_slice()))
         .collect();
     crate::pack(&refs, out.as_ref())?;
+
+    let mut orient_label = orient_label;
+    if opts.yaw != 0.0 {
+        orient_label = format!("{orient_label} + yaw({})", opts.yaw);
+    }
+    if opts.orient_upright {
+        orient_label = format!("{orient_label} + upright");
+    }
 
     Ok(SoulImportReport {
         orient_label,
@@ -398,9 +444,67 @@ pub fn import_soul_container_clone(
         fit_scale: scale,
         target_span: orb_size,
         source_span: ms,
+        yaw: opts.yaw,
+        upright: opts.orient_upright,
         glow_hue: hue,
         entry_count: refs.len(),
     })
+}
+
+/// Apply psyduck's upright-orientation recipe to the model soul-glow particle
+/// (`holding_gold_neutral_model.vpcf_c`): clear `m_bLockRot` on
+/// `C_OP_PositionLock` (so the orb no longer inherits the spinning control-point
+/// rotation) and insert an empty `C_OP_RemapTransformOrientationToYaw` operator
+/// right after it (collapses orientation to yaw-only, keeping the orb upright
+/// instead of tumbling). Byte-faithful KV3 v5 edits, no re-encode. Idempotent;
+/// a non-model particle (no `C_OP_PositionLock`) passes through unchanged.
+fn orient_particle_upright(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let doc = morphic::decode_kv3_resource(bytes).map_err(|e| anyhow!("decode particle: {e}"))?;
+    let Some(ops) = doc.get("m_Operators").and_then(Kv3::as_array) else {
+        return Ok(bytes.to_vec());
+    };
+    let class_of = |op: &Kv3| op.get("_class").and_then(|c| c.as_str().map(str::to_owned));
+    let Some(lock_idx) = ops
+        .iter()
+        .position(|op| class_of(op).as_deref() == Some("C_OP_PositionLock"))
+    else {
+        // Not the orientation-carrying particle; leave it alone.
+        return Ok(bytes.to_vec());
+    };
+    let has_remap = ops
+        .iter()
+        .any(|op| class_of(op).as_deref() == Some("C_OP_RemapTransformOrientationToYaw"));
+    let locks_rot = ops[lock_idx]
+        .get("m_bLockRot")
+        .and_then(Kv3::as_bool)
+        .unwrap_or(false);
+
+    let mut out = bytes.to_vec();
+    // 1. Clear the rotation lock (flip the existing bool; indices unaffected).
+    if locks_rot {
+        let path = vec![
+            Seg::Key("m_Operators".to_string()),
+            Seg::Index(lock_idx),
+            Seg::Key("m_bLockRot".to_string()),
+        ];
+        out = morphic::patch_kv3_resource_bools(&out, &[(path, false)])
+            .map_err(|e| anyhow!("clear m_bLockRot: {e}"))?;
+    }
+    // 2. Insert the yaw-only orientation remap right after PositionLock.
+    if !has_remap {
+        let op = Kv3::Object(vec![(
+            "_class".to_string(),
+            Kv3::String("C_OP_RemapTransformOrientationToYaw".to_string()),
+        )]);
+        out = morphic::patch_kv3_resource_array_insert(
+            &out,
+            &[Seg::Key("m_Operators".to_string())],
+            lock_idx + 1,
+            &op,
+        )
+        .map_err(|e| anyhow!("insert RemapTransformOrientationToYaw: {e}"))?;
+    }
+    Ok(out)
 }
 
 fn to_srgb_u8(c: f64) -> u8 {
@@ -460,10 +564,10 @@ fn bounds_center_extent(positions: &[[f32; 3]]) -> ([f32; 3], f32) {
 type Mat3 = [[f32; 3]; 3];
 type Mat4 = [[f32; 4]; 4];
 
-struct ImportPrimitive {
-    material_name: Option<String>,
-    vertex_buffer: VertexBuffer,
-    indices: Vec<u32>,
+pub(crate) struct ImportPrimitive {
+    pub(crate) material_name: Option<String>,
+    pub(crate) vertex_buffer: VertexBuffer,
+    pub(crate) indices: Vec<u32>,
 }
 
 struct Orientation {
@@ -471,7 +575,7 @@ struct Orientation {
     matrix: Mat3,
 }
 
-fn glb_json(glb: &[u8]) -> Result<Json> {
+pub(crate) fn glb_json(glb: &[u8]) -> Result<Json> {
     if glb.get(0..4) != Some(b"glTF") {
         return Err(anyhow!("not a binary glTF"));
     }
@@ -493,7 +597,7 @@ fn glb_bin(glb: &[u8]) -> Option<&[u8]> {
     None
 }
 
-fn material_index_by_name(doc: &Json) -> HashMap<String, usize> {
+pub(crate) fn material_index_by_name(doc: &Json) -> HashMap<String, usize> {
     let mut map = HashMap::new();
     if let Some(mats) = doc.get("materials").and_then(Json::as_array) {
         for (i, m) in mats.iter().enumerate() {
@@ -505,7 +609,7 @@ fn material_index_by_name(doc: &Json) -> HashMap<String, usize> {
     map
 }
 
-fn base_color_factor(doc: &Json, mat_idx: usize) -> [f64; 4] {
+pub(crate) fn base_color_factor(doc: &Json, mat_idx: usize) -> [f64; 4] {
     let mut color = [1.0; 4];
     let mat = doc
         .get("materials")
@@ -529,7 +633,7 @@ fn base_color_factor(doc: &Json, mat_idx: usize) -> [f64; 4] {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WrapMode {
+pub(crate) enum WrapMode {
     Repeat,
     ClampToEdge,
     MirroredRepeat,
@@ -630,7 +734,7 @@ fn gltf_wrap_mode(value: u64) -> WrapMode {
 }
 
 #[derive(Clone, Copy)]
-struct AtlasCell {
+pub(crate) struct AtlasCell {
     x: u32,
     y: u32,
     w: u32,
@@ -639,13 +743,13 @@ struct AtlasCell {
 }
 
 impl AtlasCell {
-    fn new(x: u32, y: u32, w: u32, h: u32) -> Self {
+    pub(crate) fn new(x: u32, y: u32, w: u32, h: u32) -> Self {
         let gutter = ATLAS_GUTTER_PX.min((w.saturating_sub(1)) / 2);
         let gutter = gutter.min((h.saturating_sub(1)) / 2);
         Self { x, y, w, h, gutter }
     }
 
-    fn inner(self) -> (u32, u32, u32, u32) {
+    pub(crate) fn inner(self) -> (u32, u32, u32, u32) {
         (
             self.x + self.gutter,
             self.y + self.gutter,
@@ -655,7 +759,7 @@ impl AtlasCell {
     }
 }
 
-fn remap_atlas_uv(
+pub(crate) fn remap_atlas_uv(
     uv: [f32; 2],
     cell: AtlasCell,
     atlas: u32,
@@ -697,7 +801,7 @@ fn wrap_coord(coord: f32, wrap: WrapMode) -> f32 {
     }
 }
 
-fn paint_atlas_cell(
+pub(crate) fn paint_atlas_cell(
     px: &mut [u8],
     atlas: u32,
     cell: AtlasCell,
@@ -740,7 +844,7 @@ fn write_atlas_pixel(px: &mut [u8], atlas: u32, x: u32, y: u32, rgba: [u8; 4]) {
     px[o..o + 4].copy_from_slice(&rgba);
 }
 
-fn read_glb_primitives(
+pub(crate) fn read_glb_primitives(
     glb: &[u8],
     orient: SoulOrient,
     rotate: Option<[f32; 3]>,
@@ -1072,7 +1176,7 @@ fn texture_pvalue_path(mat: &Kv3, slot: &str) -> Option<Vec<Seg>> {
 
 /// Clean material = donor copy, `g_tColor` -> our atlas, prop-local normal -> flat
 /// default. Byte-faithful blob-aware string add (no re-encode).
-fn build_material(color_vtex: &str) -> Result<Vec<u8>> {
+pub(crate) fn build_material(color_vtex: &str) -> Result<Vec<u8>> {
     let vmat =
         morphic::decode_kv3_resource(DONOR_VMAT).map_err(|e| anyhow!("decoding donor: {e}"))?;
     let mut edits: Vec<(Vec<Seg>, String)> = Vec::new();
