@@ -787,12 +787,13 @@ fn glb_textured_emits_npr_extras_and_emissive_strength() {
 /// resampled to the roughness image's dimensions; without a mask B stays 0.
 #[test]
 fn metal_rough_packs_resampled_metalness() {
-    // 2x2 packed normal (alpha = roughness) + 1x1 metalness (R = 200): the
-    // single metal texel upsamples across the whole ORM image.
+    // 2x2 packed normal-roughness (BLUE = roughness, the Source 2 packing the
+    // GLB writer reads; alpha is a constant placeholder) + 1x1 metalness
+    // (R = 200): the single metal texel upsamples across the whole ORM image.
     #[rustfmt::skip]
     let rough = [
-        10, 20, 30, 100,  10, 20, 30, 110,
-        10, 20, 30, 120,  10, 20, 30, 130,
+        10, 20, 100, 255,  10, 20, 110, 255,
+        10, 20, 120, 255,  10, 20, 130, 255,
     ];
     let metal = (1u32, 1u32, vec![200u8, 0, 0, 255]);
     let png = super::glb::metal_rough_png(2, 2, &rough, Some(&metal));

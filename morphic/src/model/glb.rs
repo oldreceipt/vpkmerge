@@ -790,6 +790,16 @@ impl Builder {
         // Glass counts as non-blended here: its final alphaMode is OPAQUE.
         let opaque = !matches!(alpha_mode, crate::material::AlphaMode::Blend) || is_glass;
 
+        // g_vColorTint1 is a linear albedo multiplier the engine applies on top
+        // of the base-color texture; glTF baseColorFactor is also linear, so it
+        // maps 1:1. Without it, tinted materials (e.g. mcginnis_greengoo
+        // [0.16, 0.25, 0.29]) render at full albedo. The alpha lane is kept.
+        if let Some(t) = mat.vector_params.get("g_vColorTint1") {
+            let a = material.pbr_metallic_roughness.base_color_factor.0[3];
+            material.pbr_metallic_roughness.base_color_factor =
+                json::material::PbrBaseColorFactor([t[0], t[1], t[2], a]);
+        }
+
         // Base color (sRGB albedo).
         if let Some(p) = pbr.base_color {
             if let Some((w, h, mut rgba)) = decode_slot(files, p) {
@@ -809,10 +819,10 @@ impl Builder {
         // Metalness mask (R channel) for the ORM blue channel. Decoded up
         // front so the metallic-roughness image below can pack it; like the
         // other non-albedo slots, a 4x4 `default_*` placeholder is skipped.
-        let metalness = pbr
-            .metalness
-            .and_then(|p| decode_slot(files, p))
-            .filter(|&(w, h, _)| w.min(h) > 4);
+        // No size filter here (unlike the normal placeholder): Deadlock authors
+        // constant metalness as a real 4x4 BC4 texture (e.g. shiv_glasses R=255),
+        // so a 4x4 metalness is meaningful data, not a no-op placeholder.
+        let metalness = pbr.metalness.and_then(|p| decode_slot(files, p));
         let mut metalness_wired = false;
 
         // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
@@ -843,9 +853,27 @@ impl Builder {
                 }
             }
         }
+        // Constant roughness fallback: materials with no normal-roughness texture
+        // keep the default factor 1.0 (fully matte) unless TextureRoughness1 sets
+        // it. Gated on no MR texture so the textured path's factor-1.0 multiplier
+        // is not clobbered. Verified: greenglass=0.188 (glossy) was stuck at 1.0.
+        if material.pbr_metallic_roughness.metallic_roughness_texture.is_none() {
+            if let Some(v) = mat.vector_params.get("TextureRoughness1") {
+                material.pbr_metallic_roughness.roughness_factor =
+                    json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
+            }
+        }
         if !metalness_wired && metalness.is_none() {
-            // No metalness mask: a constant g_flMetalness still sets the factor.
-            if let Some(&m) = mat.float_params.get("g_flMetalness") {
+            // No metalness mask: the unbound-sampler constant TextureMetalness1
+            // (the vector param Deadlock actually sets) or the rare g_flMetalness
+            // float still sets the factor. Cloth = [0,0,0,0] stays non-metal;
+            // metal accessories = [1,1,1,0] recover their metalness.
+            let m = mat
+                .vector_params
+                .get("TextureMetalness1")
+                .map(|v| v[0])
+                .or_else(|| mat.float_params.get("g_flMetalness").copied());
+            if let Some(m) = m {
                 material.pbr_metallic_roughness.metallic_factor =
                     json::material::StrengthFactor(m.clamp(0.0, 1.0));
             }
@@ -881,45 +909,97 @@ impl Builder {
             }
         }
 
-        // F_SHEEN: the Charlie-sheen cloth lobe maps 1:1 onto
-        // KHR_materials_sheen. Param names per the shipped recipe
-        // (xmas_vindicta_dress, see vpkmerge-core vmat_style's gem preset):
-        // g_vSheenColorTint1 tints the lobe; TextureSheenRoughness1 is the
-        // constant fallback for the unbound sheen-roughness sampler.
+        // F_SHEEN: the Charlie-sheen cloth lobe maps onto KHR_materials_sheen.
+        // The `g_tSheen` texture packs sheen color in RGB and sheen roughness in
+        // ALPHA (verified: body sheen 4x4 = RGB[144,197,225]/A58 == the vector
+        // params TextureSheenColor1 [0.56,0.77,0.88] / TextureSheenRoughness1
+        // 0.227; ghost2 sheen RGB is the flat color [0.37,0.4,0.38] with the
+        // roughness varying per-texel in A, 0.21..0.82). The vector params are
+        // the unbound-sampler constants for that texture's RGB / A.
+        //
+        // The sheen COLOR is `TextureSheenColor1 * g_vSheenColorTint1` (the base
+        // sheen color times an artist tint). The old code read only
+        // g_vSheenColorTint1, which is [1,1,1] (neutral) on ~22 of 26 sheen
+        // materials, so it emitted WHITE sheen on nearly every cloth surface and
+        // dropped the real tinted color living in TextureSheenColor1.
         if mat.int_params.get("F_SHEEN").copied().unwrap_or(0) > 0 {
-            let color = mat
+            let base = mat
+                .vector_params
+                .get("TextureSheenColor1")
+                .map_or([1.0f32; 3], |v| [v[0], v[1], v[2]]);
+            let tint = mat
                 .vector_params
                 .get("g_vSheenColorTint1")
                 .or_else(|| mat.vector_params.get("g_vSheenColorTint"))
-                .map_or([1.0f32; 3], |v| {
-                    [
-                        v[0].clamp(0.0, 1.0),
-                        v[1].clamp(0.0, 1.0),
-                        v[2].clamp(0.0, 1.0),
-                    ]
-                });
+                .map_or([1.0f32; 3], |v| [v[0], v[1], v[2]]);
+            let color = [
+                (base[0] * tint[0]).clamp(0.0, 1.0),
+                (base[1] * tint[1]).clamp(0.0, 1.0),
+                (base[2] * tint[2]).clamp(0.0, 1.0),
+            ];
             let roughness = mat
                 .vector_params
                 .get("TextureSheenRoughness1")
                 .map(|v| v[0])
                 .or_else(|| mat.float_params.get("g_flSheenRoughness").copied())
                 .map_or(0.5, |r| r.clamp(0.0, 1.0));
+
+            let mut sheen = serde_json::Map::new();
+            sheen.insert("sheenColorFactor".to_owned(), jval!(color));
+            sheen.insert("sheenRoughnessFactor".to_owned(), jval!(roughness));
+
+            // Bind the real per-texel sheen texture when one is present (a >4px
+            // g_tSheen): RGB drives sheenColorTexture, ALPHA drives
+            // sheenRoughnessTexture. Embedded twice (one sRGB color view, one
+            // linear roughness view) since glTF wants distinct images/channels.
+            if let Some(p) = mat.texture("g_tSheen") {
+                if let Some((w, h, rgba)) =
+                    decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4)
+                {
+                    if let Some(t) = self.embed_rgba_png(w, h, &rgba) {
+                        sheen.insert("sheenColorTexture".to_owned(), jval!({ "index": t.value() }));
+                    }
+                    if let Some(t) = self.texture_png(&sheen_roughness_png(w, h, &rgba)) {
+                        sheen.insert(
+                            "sheenRoughnessTexture".to_owned(),
+                            jval!({ "index": t.value() }),
+                        );
+                        // The texture's alpha multiplies the factor; wire the
+                        // factor to 1.0 so a bound roughness map is not scaled.
+                        sheen.insert("sheenRoughnessFactor".to_owned(), jval!(1.0));
+                    }
+                    // Color texture multiplies the factor; keep the tint, drop
+                    // the base color into the factor as 1.0*tint so it does not
+                    // double-apply the base sheen color (already in RGB).
+                    let factor = [
+                        tint[0].clamp(0.0, 1.0),
+                        tint[1].clamp(0.0, 1.0),
+                        tint[2].clamp(0.0, 1.0),
+                    ];
+                    sheen.insert("sheenColorFactor".to_owned(), jval!(factor));
+                }
+            }
             extensions.insert(
                 "KHR_materials_sheen".to_owned(),
-                jval!({
-                    "sheenColorFactor": color,
-                    "sheenRoughnessFactor": roughness,
-                }),
+                serde_json::Value::Object(sheen),
             );
         }
 
-        // Glass: transmission + ior replace alpha blending entirely.
+        // Glass: transmission + ior replace alpha blending entirely. Honor an
+        // authored g_flIOR (e.g. necro_jar_glass) instead of assuming 1.5 for
+        // window glass.
         if is_glass {
+            let ior = mat
+                .float_params
+                .get("g_flIOR")
+                .copied()
+                .filter(|v| (1.0..=3.0).contains(v))
+                .unwrap_or(1.5);
             extensions.insert(
                 "KHR_materials_transmission".to_owned(),
                 jval!({ "transmissionFactor": 0.9 }),
             );
-            extensions.insert("KHR_materials_ior".to_owned(), jval!({ "ior": 1.5 }));
+            extensions.insert("KHR_materials_ior".to_owned(), jval!({ "ior": ior }));
         }
 
         // F_UNLIT: lighting ignored, albedo as-is.
@@ -1219,19 +1299,28 @@ fn png_encode(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
-/// Normal map: the packed normal texture's RGB, with alpha cleared (its alpha
-/// carries roughness, which goes to the metallic-roughness texture instead).
+/// Normal map: the packed normal texture's R,G are the tangent-space normal X,Y.
+/// Source 2 stores roughness in the BLUE channel (not normal Z), so reconstruct
+/// Z from X,Y to keep a valid normal map. The old code passed blue (roughness)
+/// straight into the normal's Z, skewing every surface normal.
 fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len());
     for px in rgba.chunks_exact(4) {
-        out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+        let nx = (f32::from(px[0]) / 255.0) * 2.0 - 1.0;
+        let ny = (f32::from(px[1]) / 255.0) * 2.0 - 1.0;
+        let nz = (1.0 - (nx * nx + ny * ny)).max(0.0).sqrt();
+        let bz = ((nz * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
+        out.extend_from_slice(&[px[0], px[1], bz, 255]);
     }
     png_encode(w, h, &out).unwrap_or_default()
 }
 
 /// glTF metallic-roughness texture: G = roughness (from the normal texture's
-/// alpha), B = metalness (the metalness mask's R channel, nearest-neighbor
-/// resampled to the roughness image's dimensions; 0 without a mask).
+/// BLUE channel; Source 2 g_tNormalRoughness packs roughness in B while the
+/// alpha is a constant ~1.0 placeholder, so reading alpha yielded fully-rough
+/// matte surfaces), B = metalness (the metalness mask's R channel,
+/// nearest-neighbor resampled to the roughness image's dimensions; 0 without a
+/// mask).
 pub(super) fn metal_rough_png(
     w: u32,
     h: u32,
@@ -1247,7 +1336,19 @@ pub(super) fn metal_rough_png(
             let my = y * u64::from(mh) / u64::from(h);
             m[((my * u64::from(mw) + mx) * 4) as usize]
         });
-        out.extend_from_slice(&[0, px[3], metal, 255]);
+        out.extend_from_slice(&[0, px[2], metal, 255]);
+    }
+    png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// glTF `sheenRoughnessTexture`: glTF reads sheen roughness from the ALPHA
+/// channel. Source 2's `g_tSheen` packs sheen color in RGB and sheen roughness
+/// in alpha, so copy alpha into the output alpha and leave RGB at 255 (the
+/// glTF reader ignores them for this slot).
+fn sheen_roughness_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[255, 255, 255, px[3]]);
     }
     png_encode(w, h, &out).unwrap_or_default()
 }
