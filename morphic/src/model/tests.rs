@@ -837,6 +837,26 @@ fn metal_only_png_is_neutral_roughness_with_metalness() {
     assert_eq!(px[1][2], 30, "B = metalness mask R");
 }
 
+/// A standalone roughness texture (`g_tRoughness`, roughness in R) is wired into
+/// the ORM's G lane, with the metalness mask nearest-neighbor resampled into B.
+#[test]
+fn rough_metal_png_sources_roughness_from_red_channel() {
+    let rough = [90u8, 0, 0, 255, 200, 0, 0, 255]; // 2x1, R = 90 then 200
+    let metal = (1u32, 1u32, vec![150u8, 0, 0, 255]);
+    let png = super::glb::rough_metal_png(2, 1, &rough, Some(&metal));
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    let px: Vec<_> = img.pixels().collect();
+    assert_eq!(px[0][0], 0, "R unused");
+    assert_eq!(px[0][1], 90, "G = roughness R");
+    assert_eq!(px[1][1], 200, "G = roughness R");
+    assert_eq!(px[0][2], 150, "B = metalness mask R (upsampled)");
+    assert_eq!(px[1][2], 150, "B = metalness mask R (upsampled)");
+
+    let png = super::glb::rough_metal_png(2, 1, &rough, None);
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    assert!(img.pixels().all(|px| px[2] == 0), "no mask: B = 0");
+}
+
 /// [`super::glb::inject_material_extensions`] lands each extension object on
 /// the right material and declares every name in `extensionsUsed`.
 #[test]

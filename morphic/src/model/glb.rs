@@ -823,10 +823,15 @@ impl Builder {
         // constant metalness as a real 4x4 BC4 texture (e.g. shiv_glasses R=255),
         // so a 4x4 metalness is meaningful data, not a no-op placeholder.
         let metalness = pbr.metalness.and_then(|p| decode_slot(files, p));
+        // Standalone roughness texture (g_tRoughness), parsed but previously dropped.
+        let roughness = pbr.roughness.and_then(|p| decode_slot(files, p));
         let mut metalness_wired = false;
 
-        // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
-        // Skip the 4x4 default_normal placeholder (a flat normal is a no-op).
+        // Normal map. Skip the 4x4 default_normal placeholder (a flat normal is a
+        // no-op). `packed_rough` carries the normal's RGBA when it is a PACKED
+        // normal-roughness (blue = roughness), so the metallic-roughness image
+        // below can source roughness from its blue.
+        let mut packed_rough: Option<(u32, u32, Vec<u8>)> = None;
         if let Some(p) = pbr.normal {
             if let Some((w, h, rgba)) = decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4) {
                 // Some heroes bind a PURE normal map here (blue = normal Z), not a
@@ -849,41 +854,54 @@ impl Builder {
                         extras: Default::default(),
                     });
                 }
-                if pure_normal {
-                    // Blue is normal Z, not roughness: leave roughness to the
-                    // constant fallback (below for the no-mask case, or carried
-                    // here), but still wire a metalness mask if one exists as a
-                    // neutral-roughness, metalness-only ORM image.
-                    if let Some(&(mw, mh, ref m)) = metalness.as_ref() {
-                        if let Some(t) = self.texture_png(&metal_only_png(mw, mh, m)) {
-                            material.pbr_metallic_roughness.metallic_roughness_texture =
-                                Some(tex_info(t));
-                            material.pbr_metallic_roughness.metallic_factor =
-                                json::material::StrengthFactor(1.0);
-                            // G is a neutral 255, so the final roughness is the
-                            // factor; carry TextureRoughness1 since the is_none()
-                            // fallback below will not fire once an MR texture is set.
-                            if let Some(v) = mat.vector_params.get("TextureRoughness1") {
-                                material.pbr_metallic_roughness.roughness_factor =
-                                    json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
-                            }
-                            metalness_wired = true;
-                        }
-                    }
-                } else if let Some(t) =
-                    self.texture_png(&metal_rough_png(w, h, &rgba, metalness.as_ref()))
-                {
-                    material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
-                    material.pbr_metallic_roughness.roughness_factor =
-                        json::material::StrengthFactor(1.0);
-                    if metalness.is_some() {
-                        // The texture multiplies the factor; a wired metalness
-                        // mask needs metallicFactor 1.0, not the 0.0 default.
-                        material.pbr_metallic_roughness.metallic_factor =
-                            json::material::StrengthFactor(1.0);
-                        metalness_wired = true;
-                    }
+                if !pure_normal {
+                    packed_rough = Some((w, h, rgba));
                 }
+            }
+        }
+
+        // Metallic-roughness texture. Roughness source priority: a standalone
+        // g_tRoughness (its R channel) > a packed normal-roughness (the normal's
+        // blue) > the constant factor fallback below. Metalness (B) comes from the
+        // metalness mask, resampled to the roughness image.
+        if let Some((rw, rh, rough)) = roughness.as_ref() {
+            if let Some(t) = self.texture_png(&rough_metal_png(*rw, *rh, rough, metalness.as_ref()))
+            {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.roughness_factor =
+                    json::material::StrengthFactor(1.0);
+                if metalness.is_some() {
+                    material.pbr_metallic_roughness.metallic_factor =
+                        json::material::StrengthFactor(1.0);
+                    metalness_wired = true;
+                }
+            }
+        } else if let Some((w, h, rgba)) = packed_rough.as_ref() {
+            if let Some(t) = self.texture_png(&metal_rough_png(*w, *h, rgba, metalness.as_ref())) {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.roughness_factor =
+                    json::material::StrengthFactor(1.0);
+                if metalness.is_some() {
+                    // The texture multiplies the factor; a wired metalness mask
+                    // needs metallicFactor 1.0, not the 0.0 default.
+                    material.pbr_metallic_roughness.metallic_factor =
+                        json::material::StrengthFactor(1.0);
+                    metalness_wired = true;
+                }
+            }
+        } else if let Some(&(mw, mh, ref m)) = metalness.as_ref() {
+            // Pure normal / no normal, and no authored roughness texture: a
+            // metalness-only ORM with a neutral roughness lane (G = 255), so the
+            // constant roughness factor below still applies.
+            if let Some(t) = self.texture_png(&metal_only_png(mw, mh, m)) {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.metallic_factor =
+                    json::material::StrengthFactor(1.0);
+                if let Some(v) = mat.vector_params.get("TextureRoughness1") {
+                    material.pbr_metallic_roughness.roughness_factor =
+                        json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
+                }
+                metalness_wired = true;
             }
         }
         // Constant roughness fallback: materials with no normal-roughness texture
@@ -1434,6 +1452,32 @@ pub(super) fn metal_rough_png(
         out.extend_from_slice(&[0, px[2], metal, 255]);
     }
     png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// glTF metallic-roughness from a SEPARATE roughness texture (Source 2
+/// `g_tRoughness`, roughness in its R channel) plus an optional metalness mask
+/// (R channel, nearest-neighbor resampled to the roughness image's dimensions).
+/// G = roughness, B = metalness. Used for heroes that author roughness as its own
+/// texture (e.g. Ghost) instead of packing it into the normal's blue; that
+/// standalone texture was parsed but dropped by the writer before this.
+pub(super) fn rough_metal_png(
+    rw: u32,
+    rh: u32,
+    rough: &[u8],
+    metalness: Option<&(u32, u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rough.len());
+    for (i, px) in rough.chunks_exact(4).enumerate() {
+        let metal = metalness.map_or(0, |&(mw, mh, ref m)| {
+            let x = i as u64 % u64::from(rw);
+            let y = i as u64 / u64::from(rw);
+            let mx = x * u64::from(mw) / u64::from(rw);
+            let my = y * u64::from(mh) / u64::from(rh);
+            m[((my * u64::from(mw) + mx) * 4) as usize]
+        });
+        out.extend_from_slice(&[0, px[0], metal, 255]);
+    }
+    png_encode(rw, rh, &out).unwrap_or_default()
 }
 
 /// glTF `sheenRoughnessTexture`: glTF reads sheen roughness from the ALPHA
