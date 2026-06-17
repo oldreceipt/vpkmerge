@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.15.0
+
+Two orientation knobs for `soul-container import` plus a mesh-group fix for pose export. Built for Grimoire's soul-container facing-yaw slider and cleaner per-hero pose stills. All other commands are unchanged.
+
+### CLI (`vpkmerge` 0.15)
+
+- `soul-container import` gains `--yaw <DEG>` and `--no-upright`. `--yaw` bakes a final-space (Source-Z) turn into the fitted geometry so the orb faces a chosen direction; it is intrinsic to the vertices and survives the particle orientation pass (unambiguous, unlike `--rotate`). Upright orientation is on by default (port of psyduck's recipe: clears `C_OP_PositionLock.m_bLockRot` and inserts an empty `C_OP_RemapTransformOrientationToYaw`, so the orb stands still and upright instead of tumbling with the control point); pass `--no-upright` to opt out. Byte-faithful KV3 v5 edits, idempotent. Both surface in the CLI JSON report.
+
+### Library (`vpkmerge-core` 0.15)
+
+- `soul_container` import exposes `yaw` and `orient_upright` options, reported in `SoulImportReport`.
+- `model` export now honors the default mesh group. Source 2 models carry `m_meshGroups`, per-mesh `m_refMeshGroupMasks`, and `m_nDefaultMeshGroupMask`; the exporter now keeps a mesh only when `mask & defaultMeshGroupMask != 0` (mirroring the existing LOD0 filter). No-op for single-group heroes; the ~13 multi-bodygroup heroes now export the engine's default look instead of stacking every body-group variant (familiar 12->5, wraith 7->3, archer 9->6, ...).
+
 ## v0.14.0
 
 A large modding-pipeline release: a Source 2 NM animation codec with a Blender-to-in-game authoring loop, cubemap-to-HDR export, GLB PBR-fidelity fixes, soul-container GLB import, a pure-Rust morphic authoring layer (texture/material/sound writers + UV region masks), and a music-pack pipeline. All existing commands (merge, recolor, prism, trippy, vmat, texture, model, soundevents, icon) are unchanged.
