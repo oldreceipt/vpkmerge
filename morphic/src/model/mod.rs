@@ -15,6 +15,7 @@
 mod animation;
 mod dxgi;
 mod edit;
+mod femodel;
 mod glb;
 mod gltf_import;
 mod math;
@@ -36,6 +37,7 @@ pub use edit::{
     read_vertex_colors, read_vertex_positions, recolor_vertex_buffer, replace_vertex_positions,
     reskin_vertex_buffer, vertex_targets, EditedPrimitive, EncodedMesh, VertexTarget,
 };
+pub use femodel::{decode_cloth_anchors, ClothAnchors};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use gltf_import::{
     apply_animation, import_glb_onto_nm_clip, read_glb_animation, GltfAnimation, GltfBoneTrack,
@@ -49,13 +51,17 @@ pub use nm::{
     encode_compressed_pose, nm_clip_to_clip, reencode_nm_clip, reencode_nm_clip_full, NmClip,
     NmPose, NmSkeleton, NmTrack, QuantRange, TrackSettings,
 };
-pub use pose::{bake_pose, bake_pose_from, bake_pose_named, LocalPose};
+pub use pose::{
+    bake_pose, bake_pose_from, bake_pose_named, secondary_motion_pose_report, LocalPose,
+    SecondaryMotionBoneInfluence, SecondaryMotionMaterialReport, SecondaryMotionPoseReport,
+};
 pub use skeleton::{invert_remap, localize_joints, remap_table, Bone, Skeleton};
 pub use topology::{
-    draw_call_targets, reencode_all_mdat_identity, remove_draw_calls_by_material,
-    replace_mesh_group, replace_mesh_part, replace_mesh_part_uncompressed, set_draw_call_groups,
-    set_model_material, DrawCallGroup, DrawCallInfo, PrimitiveSelection, RemovedDrawCall,
-    ReplacedMeshGroup, ReplacedMeshPart,
+    append_skinned_draw_call, draw_call_targets, reencode_all_mdat_identity,
+    remove_draw_calls_by_material, replace_mesh_group, replace_mesh_group_uncompressed,
+    replace_mesh_part, replace_mesh_part_uncompressed, set_draw_call_groups, set_model_material,
+    DrawCallGroup, DrawCallInfo, PrimitiveSelection, RemovedDrawCall, ReplacedMeshGroup,
+    ReplacedMeshPart,
 };
 pub use uvmask::{
     atlas_png, mask_png, segment_color, segment_coverage, segments, Segment, SegmentBy,
@@ -80,6 +86,12 @@ pub struct Model {
     pub skeleton: Skeleton,
     pub meshes: Vec<MeshPart>,
     pub animations: Vec<Clip>,
+    /// Cloth (`FeModel`) anchor map from the model's `PHYS` block, when present:
+    /// each `$cloth_*` root bone -> the body bone that drives it. Populated by
+    /// [`decode`]; the pose baker uses it to keep solver-driven fabric attached
+    /// to the posed body instead of leaving it stranded at bind. `None` for
+    /// models with no cloth physics (weapons, props, FK-only heroes).
+    pub cloth: Option<femodel::ClothAnchors>,
 }
 
 impl Model {
@@ -195,6 +207,7 @@ pub fn decode(bytes: &[u8]) -> Result<Model, DecodeError> {
         skeleton,
         meshes,
         animations,
+        cloth: femodel::decode_cloth_anchors(bytes),
     })
 }
 

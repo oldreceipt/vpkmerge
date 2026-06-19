@@ -19,15 +19,15 @@ pub mod model;
 pub mod portrait;
 pub use model::{
     apply_model_edit_glb, bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_hero_model,
-    export_model, export_model_buffer_glb, export_model_group_glb, hero_model_entry,
-    inspect_model_parts, inspect_models, model_draw_call_targets, model_uv_segments,
-    model_vertex_targets, recolor_models_to_addon, reencode_model_mdat, remove_model_material,
-    replace_model_group, replace_model_part, AnimOptions, DrawCallInfo, DrawCallSkinInfo,
-    GeometryEdit, GeometryEditReport, MaterialRemovalReport, ModelDrawCallInspection, ModelEntry,
-    ModelInfo, ModelPartInspection, ModelPartSelector, ModelRecolorEntry, PartReplacementReport,
-    PoseSelection, RemovedDrawCall, ReplacedMeshGroup, ReplacedMeshPart, ResolvedResource,
-    ResolvedTextureParam, SegmentBy, SuggestedPartGroup, UvSegmentInfo, VertexTarget,
-    DEFAULT_POSE_CLIPS,
+    export_model, export_model_buffer_glb, export_model_group_glb, hero_model_clips,
+    hero_model_entry, inspect_model_parts, inspect_models, model_clips, model_draw_call_targets,
+    model_uv_segments, model_vertex_targets, recolor_models_to_addon, reencode_model_mdat,
+    remove_model_material, replace_model_group, replace_model_part, AnimOptions, ClipSummary,
+    DrawCallInfo, DrawCallSkinInfo, GeometryEdit, GeometryEditReport, MaterialRemovalReport,
+    ModelDrawCallInspection, ModelEntry, ModelInfo, ModelPartInspection, ModelPartSelector,
+    ModelRecolorEntry, PartReplacementReport, PoseSelection, RemovedDrawCall, ReplacedMeshGroup,
+    ReplacedMeshPart, ResolvedResource, ResolvedTextureParam, SegmentBy, SuggestedPartGroup,
+    UvSegmentInfo, VertexTarget, DEFAULT_POSE_CLIPS,
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
@@ -84,8 +84,11 @@ pub use soul_container::{
 
 pub mod soul_import_clone;
 pub use soul_import_clone::{
-    import_soul_container_clone, SoulGlow, SoulImportCloneOptions, SoulImportReport, SoulOrient,
+    import_clone, import_soul_container_clone, soul_target, urn_target, CloneTarget,
+    NormalSynthesis, SoulGlow, SoulImportCloneOptions, SoulImportReport, SoulOrient,
 };
+pub mod hat_import;
+pub use hat_import::{import_hero_hat, HatImportOptions, HatImportReport};
 
 #[derive(Debug, Clone)]
 pub struct ModInfo {
