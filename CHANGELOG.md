@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.16.0
+
+Static posed bakes now anchor FeModel cloth bones to their true driver bones, so fabric (Pocket's scarf, coat hems, etc.) settles to its rest drape instead of detaching. Adds a read-only `model clips` discovery command and generalizes the soul-container clone path into a reusable GLB import primitive (urn swap, head-bone hat weld). Built for Grimoire's per-hero pose stills and custom-prop pipeline. All other commands are unchanged.
+
+### CLI (`vpkmerge` 0.16)
+
+- New `model clips` command: list the animation clips a model carries (name, frame count, fps, duration, looping, default) so a caller can pick a `CLIP[@FRAME]` for `--pose`/`--clip` instead of guessing. Resolution mirrors `model export` (`--hero` auto-discovery, `--base` fallback); a clipless mesh skin falls back to the base-pak donor's clips; a model with no clips and no donor returns an empty list at exit 0. `--json` emits an array; `--entry`/`--hero` select the model.
+- `model export --pose`/`--clip` single-frame bakes now anchor FeModel cloth bones automatically (all four static-pose entry points route through the new anchoring); an export-time warning flags unresolved cloth/hair geometry. Animated exports keep their clip tracks unchanged.
+
+### Library (`vpkmerge-core` 0.16)
+
+- `model_clips` / `hero_model_clips` (-> `ClipSummary`) back the `model clips` command.
+- `import_clone` over a `CloneTarget` generalizes the soul-container clone path: `soul_target` and `urn_target` presets plus a `NormalSynthesis` option retarget arbitrary model slots from a GLB. First new consumers: the Idol/urn objective swap (`examples/urn_import.rs`) and `hat_import`, which welds a custom GLB prop onto a Deadlock hero's head bone as an additive, rigid-skinned draw call with its own atlas material.
+- `secondary_motion_pose_report` reports unresolved cloth/hair geometry after a pose bake.
+
+### morphic (0.8.0)
+
+- `model::femodel` decodes the FeModel `m_SkelParents` node tree from a model's PHYS block and walks each `$cloth_*` node to its terminal driver bone, exposing a `$cloth -> anchor` bone map (`ClothAnchors`). `decode()` populates `Model.cloth`; `finish_palette` rigidly carries each cloth root with its true anchor (falling back to the nearest non-secondary bone only when the model ships no FeModel). Reproduces the engine's settled rest drape for menu/idle snapshots; it does not run the solver, so live sway/collision under an arbitrary action pose is out of scope.
+- New primitives `append_skinned_draw_call` and `replace_mesh_group_uncompressed` back the hat-weld path.
+
 ## v0.15.0
 
 Two orientation knobs for `soul-container import` plus a mesh-group fix for pose export. Built for Grimoire's soul-container facing-yaw slider and cleaner per-hero pose stills. All other commands are unchanged.
