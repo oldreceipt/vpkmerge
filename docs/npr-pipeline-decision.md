@@ -43,9 +43,28 @@ Contract (one owner per property, never mutate the GLTF base):
 
 New flag `grimoire.preview.unifiedMaterial` (default off) runs the new path side-by-side with the old two-pass until validated. Each phase ships independently and is validated in the dev panel on Viscous.
 
+**Implementation checkpoint, 2026-06-19:**
+
+- Phase 0/1 are implemented behind `grimoire.preview.unifiedMaterial` in
+  Grimoire commit `492957e`. The new `deadlockMaterial.ts` path owns a cloned
+  material, applies Source 2 state there, then wraps that clone in NPR CSM. The
+  legacy path remains available.
+- Phase 2 is intentionally changed. The spike showed Viscous goo should not be
+  upgraded to physical transmission. Transmission made the shell read like a
+  clear window to the background. Keep translucent/goo materials on alpha blend;
+  reserve physical transmission for real glass.
+- Phase 3 is implemented in vpkmerge commit `75f8091`: GLB extras now carry
+  `blend_mode`, `self_illum_valid`, and broader Source 2 preview texture slots.
+  Grimoire consumes them with fallback derivation for old cached GLBs.
+- Phase 4 is not done. Do not default unified mode on or delete
+  `applySource2MaterialHints` / `wrapMaterialWithNpr` until visual validation.
+- Phase 5 is implemented behind `grimoire.preview.celV2`: direct diffuse is
+  quantized at `lights_fragment_end`, leaving IBL, rim, and self-illum less
+  mangled than the old final-luminance posterize.
+
 - **Phase 0 -- Scaffold (no behavior change).** Create `src/lib/deadlockMaterial.ts`; `buildDeadlockMaterial` first cut just runs existing state logic + existing `wrapMaterialWithNpr` GLSL on an owned `.copy()` clone. Add `unifiedMaterial` flag in `HeroPoseViewer.tsx` (dev flags ~679-692). `NprMaterials` branches on it. Validate Viscous looks identical with flag on. **File targets:** new `deadlockMaterial.ts`, `HeroPoseViewer.tsx`.
 - **Phase 1 -- Move material state into the build; delete snapshot/restore.** Port glass/translucent/sheen/backface/unlit/jitter decisions from `applySource2MaterialHints` into the build, on the owned clone. With flag on, `Source2MaterialHints` is a no-op. **Validate the three preserved fixes:** glass transmission present, translucent `depthWrite=true` (bones occluded), milky-white still gated (self-illum off without a real mask). `restore()`/`before` now unused on this path. **Files:** `deadlockMaterial.ts`, `source2NprMaterial.ts`.
-- **Phase 2 -- Standard->Physical upgrade.** Upgrade `MeshStandardMaterial` to `MeshPhysicalMaterial` when **existing flags** (F_GLASS/F_TRANSLUCENT/F_ADVANCED_TRANSLUCENCY) require physical features, so SSS/transmission writes land. Gate on existing flags here (blend_mode does not exist yet). Validate Viscous outer goo (`viscous_glass`) reads translucent over the dark gear. **Files:** `deadlockMaterial.ts`.
+- **Phase 2 -- Standard->Physical upgrade.** **Dropped for translucent/goo.** Upgrade only for materials that actually need physical glass features. Do not use transmission as a generic SSS/goo approximation. Validate Viscous outer goo (`viscous_glass`) through alpha blend and depth state instead. **Files:** `deadlockMaterial.ts`.
 - **Phase 3 -- Data-contract disambiguation (Rust + TS together).** Add `blend_mode` + `self_illum_valid` to `glb.rs morphic_extras`; swap Phase 2's flag gate and Phase 1's depthWrite gate to read `blend_mode`, **keeping flag-derivation as the fallback when the extra is absent** (old GLBs won't auto-re-export: `getHeroPoseInfo` returns `hasModel:true` for stale GLBs). Re-export preview GLBs (mtime bump cache-busts `meshUrlFor`). Validate goo vs additive both correct. **Files:** `morphic/src/model/glb.rs`, `deadlockMaterial.ts`.
 - **Phase 4 -- Flip default, delete dead code.** `unifiedMaterial` default on. Delete `applySource2MaterialHints`, `wrapMaterialWithNpr`, `unwrapNprBase`, and the old `NprMaterials` two-pass branch. Validate the full Viscous 8-material table. **Files:** `source2NprMaterial.ts`, `HeroPoseViewer.tsx`.
 - **Phase 5 -- Targeted cel-injection rewrite (the one real shader change).** Replace the luminance posterize. **Correct injection point: quantize the accumulated direct term `reflectedLight.directDiffuse` POST-loop (at `<lights_fragment_end>`), NOT NdotL at `<lights_fragment_begin>`** -- three sums NdotL across lights in `RE_Direct_Physical`, so there is no single NdotL to band at `lights_fragment_begin`. Leaves IBL unbanded. Gate behind `grimoire.preview.celV2`; validate visually against v1. **Files:** `deadlockMaterial.ts` (`NPR_PATCH_MAP`).
@@ -80,3 +99,49 @@ If translucency survives clone->CSM, the "free transmission + IBL + `isMeshPhysi
 | `MeshPhysicalMaterial` as base | **KEEP.** The whole no-rewrite case rests on its built-in transmission + PMREM. |
 | `Source2MaterialHints` / `NprMaterials` mounts (HeroPoseViewer.tsx ~528-646) | **REFACTOR** to call only `buildDeadlockMaterial` once `unifiedMaterial` defaults on (Phase 4). |
 | `dispose()` cleanup (NprMaterials ~596-599) | **EXTEND** to dispose the owned `phys` clone in addition to the CSM + `ownedTextures` (new requirement; CSM does not free its base). |
+---
+
+## 6. Spike results (2026-06-19) -- RAN, two findings
+
+The de-risking spike (src/lib/nprSpike.ts in grimoire, throwaway) was run on Viscous.
+
+**Finding 1 -- the chain holds.** Cloning a GLTF MeshStandardMaterial up to a
+MeshPhysicalMaterial we own (via `MeshStandardMaterial.prototype.copy.call(phys, std)`
+to dodge the physical-prop and userData-JSON crashes), then wrapping that clone in a
+CSM and assigning it, renders correctly. The no-rewrite / incremental-unify plan is
+de-risked; Phase 0 can proceed.
+
+**Finding 2 -- transmission is the WRONG mechanism for the goo (plan change).** Any
+`transmission > 0` on Viscous's body makes it vanish, even with a green
+`attenuationColor` + finite `attenuationDistance` + DoubleSide. three.js samples only
+OPAQUE geometry into the transmission render target, so the thin goo shell reads as a
+clear window to the background. The green translucent goo look comes from the existing
+`transparent` + `alphaMap` path (viscous_glass, F_TRANSLUCENT), not transmission.
+
+Consequence: **DROP the "Standard->Physical SSS goo" upgrade** (the re-scoped glb.rs
+KHR_materials_volume item, and Phase 2's physical upgrade for translucent materials).
+The unified pipeline keeps alpha-blend for translucent/goo materials and reserves
+transmission for genuinely glassy materials only, verified per material. Phases 0/1
+(single build pass, delete snapshot/restore/unwrap) and 5 (cel injection) stand.
+
+---
+
+## 7. Known NPR-fidelity item: AO + vertex-AO darkening (the doll case)
+
+Symptom (mod pak60, doll "ikeaalien.vmat" on Viscous's back): renders fully BLACK
+under plain PBR, correctly painted under NPR cel, but with dark "oil smudge" spots.
+
+Root cause (confirmed via vmat --list): the doll material uniquely binds a REAL
+g_tAmbientOcclusion map (every base Viscous material points AO at default_ao = white),
+plus g_flVertexAOAmount1=1 and g_fVertexColorStrength1=1 (full vertex AO + vertex
+color). Metalness is 0. So the AO map + dark baked vertex AO/color kill the IBL/ambient
+term (the preview's main light) and multiply the albedo down -> near black under PBR.
+NPR cel adds a half-Lambert diffuse wrap not gated by AO -> albedo shows; the AO
+texture's soft dark blobs, baked into the lit color before the cel patch reads
+gl_FragColor, persist as the oil-smudge spots.
+
+Not the layering bug or the spike. It is AO + vertex-AO handling in the GLB-export ->
+preview path, and more evidence Deadlock assets are NPR-native. Fix belongs in the
+unified pipeline (Phase 5/6): control aoMapIntensity / apply AO only to ambient (not the
+NPR diffuse), and handle vertex AO like Deadlock's highlight system. Defer until the
+single-pass pipeline lands.
