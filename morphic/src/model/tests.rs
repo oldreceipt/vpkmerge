@@ -758,6 +758,8 @@ fn glb_textured_emits_npr_extras_and_emissive_strength() {
     // The morphic extras payload: shader + full param tables + NPR masks.
     let morphic = &mat["extras"]["morphic"];
     assert_eq!(morphic["shader"], "pbr.vfx");
+    assert_eq!(morphic["blend_mode"], "opaque");
+    assert_eq!(morphic["self_illum_valid"], true);
     assert_eq!(morphic["ints"]["F_USE_NPR_LIGHTING"], 1);
     let scale = morphic["floats"]["g_flSelfIllumScale1"]
         .as_f64()

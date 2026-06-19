@@ -1099,8 +1099,8 @@ impl Builder {
 
     /// Builds the `morphic` extras payload the Grimoire viewer reads as
     /// `material.userData.morphic`: the full shader name + int/float/vector
-    /// param tables, plus the NPR mask textures embedded exactly like the PBR
-    /// ones and referenced by glTF texture index. (glTF validators flag
+    /// param tables, plus preview-only mask textures embedded exactly like the
+    /// PBR ones and referenced by glTF texture index. (glTF validators flag
     /// textures referenced only from extras as unused; that is intentional,
     /// matching VRF's exporter.) The masks are data textures (linear); the PNG
     /// embed path applies no color-space conversion.
@@ -1110,7 +1110,7 @@ impl Builder {
         files: &dyn FileResolver,
     ) -> json::Extras {
         let mut textures = serde_json::Map::new();
-        for slot in NPR_TEXTURE_SLOTS {
+        for slot in SOURCE2_PREVIEW_TEXTURE_SLOTS {
             if let Some(tex) = mat
                 .texture(slot)
                 .and_then(|p| self.texture_from_any(files, p))
@@ -1118,9 +1118,37 @@ impl Builder {
                 textures.insert((*slot).to_owned(), jval!(tex.value()));
             }
         }
+        let is_glass = mat.int_params.get("F_GLASS").copied().unwrap_or(0) > 0
+            || mat.shader_name.ends_with("_glass.vfx");
+        let additive = mat.int_params.get("F_ADDITIVE_BLEND").copied().unwrap_or(0) > 0;
+        let translucent = mat.int_params.get("F_TRANSLUCENT").copied().unwrap_or(0) > 0
+            || mat
+                .int_params
+                .get("F_ADVANCED_TRANSLUCENCY")
+                .copied()
+                .unwrap_or(0)
+                > 0;
+        let blend_mode = if is_glass {
+            "opaque"
+        } else if additive {
+            "additive"
+        } else if translucent {
+            "blend_zwrite"
+        } else if matches!(mat.alpha_mode(), crate::material::AlphaMode::Blend) {
+            "blend"
+        } else {
+            "opaque"
+        };
+        let self_illum_valid = mat
+            .pbr()
+            .emissive
+            .and_then(|p| decode_slot(files, p))
+            .is_some_and(|(w, h, _)| w > 4 && h > 4);
         let extras = jval!({
             "morphic": {
                 "shader": mat.shader_name,
+                "blend_mode": blend_mode,
+                "self_illum_valid": self_illum_valid,
                 "ints": mat.int_params,
                 "floats": mat.float_params,
                 "vectors": mat.vector_params,
@@ -1508,13 +1536,18 @@ fn sheen_roughness_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     png_encode(w, h, &out).unwrap_or_default()
 }
 
-/// NPR mask texture slots embedded for the viewer and referenced from the
-/// `morphic` extras payload (R = tint enable, G = rim light constant for the
-/// first; outline + transmissive color for the others).
-const NPR_TEXTURE_SLOTS: &[&str] = &[
+/// Material texture slots embedded for the viewer and referenced from the
+/// `morphic` extras payload. These are not ordinary glTF PBR bindings; Grimoire
+/// resolves them into data textures for shader approximation and debug scans.
+const SOURCE2_PREVIEW_TEXTURE_SLOTS: &[&str] = &[
     "g_tTintMaskRimLightMask",
     "g_tNprOutlineMask",
     "g_tNprTransmissiveColor",
+    "g_tGlass",
+    "g_tAltTranslucency",
+    "g_tJitterMask",
+    "g_tSelfIllumMask",
+    "g_tSheen",
 ];
 
 /// Injects per-material KHR extension objects into the serialized glTF JSON
