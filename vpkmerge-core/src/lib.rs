@@ -35,6 +35,12 @@ pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 pub mod soundevents;
 pub use soundevents::{EventSummary, SoundEvents};
 
+pub mod catalog;
+pub use catalog::{
+    build_voiceline_index, build_voiceline_index_with_captions, caption_hash, CaptionDb, VoiceLine,
+    ENGLISH_CAPTIONS_ENTRY,
+};
+
 pub mod cubemap;
 pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
 

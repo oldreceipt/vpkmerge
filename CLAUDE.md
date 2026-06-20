@@ -151,6 +151,41 @@ Built for a Grimoire per-ability sound picker (control `volume`/`pitch`/clip cho
 just swap the audio). Full writeup + the pending in-game verification step:
 [docs/spike-vsndevts-kv3.md](./docs/spike-vsndevts-kv3.md).
 
+**Ability music map (which ult fits a music swap):** `examples/ult_sound_map.rs`
+generates, from `scripts/heroes.vdata_c` (`ESlot_Signature_4` = ult) +
+`scripts/abilities.vdata_c` (sound fields + `AbilityDuration`/`AbilityChannelTime`),
+a per-hero catalog of each ultimate's swap-target **loop event** + intro/outro
+bookends, tiered CHANNELED / SUSTAINED / TRANSIENT by music fit (40 ults: 21/9/10).
+The loop event lives in the hero's `soundevents/hero/<code>.vsndevts_c`, so the
+`SoundEvents` swap path above puts music straight onto an ult. Map + Grimoire
+feature design: [docs/ability-music-mapping.md](./docs/ability-music-mapping.md)
+(committed exports in `exports/ult-sound-map.{txt,json}`). `--json` for the machine
+map. Extends to slots 1-3 via the other `ESlot_Signature_*` keys.
+
+## Foundry catalog / voice-line index (`catalog`)
+
+`vpkmerge_core::catalog` builds the Foundry sound-browse index from a Deadlock VPK:
+`build_voiceline_index(vpk)` returns one `VoiceLine { event, hero, label, vsnd[],
+duration, caption }` per VO sound event under `soundevents/vo/*.vsndevts_c` (against
+live `citadel/pak01`: ~76K events / 56 speakers). `label` is the **searchable text**:
+the event name spelled as prose (`bebop_ally_atlas_killed_in_lane_01_hero_3d` ->
+`"ally atlas killed in lane"`); `event` is the verbatim swap target for the
+soundevents layer; `vsnd` >1 entry == a randomizer pool. `hero` from each event's
+`context_name`.
+
+`CaptionDb` reads the compiled caption DB (`resource/localization/
+citadel_generated_vo/citadel_generated_vo_<lang>.dat`, **VCCD v2**, keyed by
+**CRC-32/ISO-HDLC** of the token via `caption_hash`; English+schinese in base
+`citadel/pak01`, other langs in `citadel_<lang>/pak01`). **Caveat (scanned, corrected):**
+Deadlock ships **no English subtitles for hero VO** (0/76K events resolve to caption
+text); the ~5.7K non-empty captions are UI/store + authored NPC/story dialogue under a
+separate token namespace, not joinable to swappable sound events. So `caption` is a
+best-effort field, essentially always `None` for hero VO, and the descriptive name is
+the search key. Exposed as `vpkmerge catalog voiceline --vpk <VPK> [--hero CODENAME]
+[--search TEXT] [--limit N] [--json]` (table or machine array; logs a truncation note,
+never a silent cap). Example: `examples/voiceline_index.rs`. Full design + findings:
+[../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
+
 ## Texture recolor (`.vtex_c`)
 
 `vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top

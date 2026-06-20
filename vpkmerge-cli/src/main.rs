@@ -130,6 +130,51 @@ enum Command {
     /// retargets the same clone pipeline at the carryable Idol/urn objective. The
     /// one-call bridge for Grimoire's drag-and-drop soul-container / urn import.
     SoulContainer(SoulContainerCmd),
+
+    /// Build the Foundry asset catalog from a Deadlock VPK. `voiceline` emits the
+    /// searchable VO-sound index (one row per `soundevents/vo` event), the
+    /// browse-and-swap backbone for a sound picker.
+    Catalog(CatalogCmd),
+}
+
+#[derive(Args)]
+struct CatalogCmd {
+    #[command(subcommand)]
+    action: CatalogAction,
+}
+
+#[derive(Subcommand)]
+enum CatalogAction {
+    /// List VO sound events as a searchable index: event, hero, a human-readable
+    /// label (the event name as prose, e.g. "ally atlas killed in lane"), clip
+    /// path(s), and duration. The label is the search key; Deadlock ships no
+    /// English subtitles for hero VO, so `caption` is almost always empty. Filter
+    /// with `--hero` / `--search`; `--json` emits a machine-readable array.
+    Voiceline(VoicelineArgs),
+}
+
+#[derive(Args)]
+struct VoicelineArgs {
+    /// VPK carrying the VO tree (and, for English captions, the base
+    /// `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only events for this hero codename (e.g. `bebop`, `astro`).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only events whose label or name contains this text (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -1353,6 +1398,7 @@ fn main() -> Result<()> {
         Some(Command::Vmat(args)) => run_vmat(&args),
         Some(Command::Icon(args)) => run_icon(&args),
         Some(Command::SoulContainer(args)) => run_soul_container(&args),
+        Some(Command::Catalog(args)) => run_catalog(&args),
         None => run_merge(cli),
     }
 }
@@ -2882,6 +2928,82 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
     }
 }
 
+fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
+    match &cmd.action {
+        CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
+    }
+}
+
+fn run_catalog_voiceline(args: &VoicelineArgs) -> Result<()> {
+    let mut lines = vpkmerge_core::build_voiceline_index(&args.vpk)
+        .with_context(|| format!("building voice-line index from {}", args.vpk.display()))?;
+
+    if let Some(hero) = &args.hero {
+        lines.retain(|l| l.hero.as_deref() == Some(hero.as_str()));
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        lines.retain(|l| {
+            l.label.to_lowercase().contains(&needle) || l.event.to_lowercase().contains(&needle)
+        });
+    }
+
+    let total = lines.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        use serde_json::json;
+        let arr: Vec<serde_json::Value> = lines[..shown]
+            .iter()
+            .map(|l| {
+                json!({
+                    "event": l.event,
+                    "hero": l.hero,
+                    "label": l.label,
+                    "vsnd": l.vsnd,
+                    "duration": l.duration,
+                    "caption": l.caption,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else {
+        if total == 0 {
+            println!("no voice lines match");
+            return Ok(());
+        }
+        println!(
+            "  {:<12} {:>5}  {:>7}  {:<46} label",
+            "hero", "clips", "seconds", "event"
+        );
+        for l in &lines[..shown] {
+            println!(
+                "  {:<12} {:>5}  {:>7}  {:<46} {}",
+                l.hero.as_deref().unwrap_or("-"),
+                l.vsnd.len(),
+                l.duration
+                    .map_or_else(|| "-".to_owned(), |d| format!("{d:.2}")),
+                l.event,
+                l.label,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} voice line(s)");
+    }
+    Ok(())
+}
+
 /// Parse a `--rotate X,Y,Z` value into Euler degrees.
 fn parse_soul_rotate(spec: &str) -> Result<[f32; 3]> {
     let parts: Vec<f32> = spec
@@ -2922,6 +3044,20 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
     let rotate = args.rotate.as_deref().map(parse_soul_rotate).transpose()?;
     let glb =
         std::fs::read(&args.glb).with_context(|| format!("reading GLB {}", args.glb.display()))?;
+    let relief = if args.no_relief {
+        None
+    } else {
+        let default = SoulImportCloneOptions::default()
+            .relief
+            .unwrap_or(NormalSynthesis {
+                strength: 1.0,
+                roughness: 0.4,
+            });
+        Some(NormalSynthesis {
+            strength: args.relief_strength.unwrap_or(default.strength),
+            roughness: args.roughness.unwrap_or(default.roughness),
+        })
+    };
     let opts = SoulImportCloneOptions {
         name: args.name.clone(),
         orient: args.orient.into(),
@@ -2953,6 +3089,14 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
     eprintln!(
         "glow:   hue {:.0} deg (from dominant group)",
         report.glow_hue
+    );
+    eprintln!(
+        "relief: {}",
+        if report.relief {
+            "synthesized normal + roughness (anti-blur)"
+        } else {
+            "flat default normal"
+        }
     );
     eprintln!(
         "wrote {} ({} entries)",
