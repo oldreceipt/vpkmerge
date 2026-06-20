@@ -159,6 +159,12 @@ enum CatalogAction {
     /// for each matching entry into DIR (plus a `manifest.json`), the grid
     /// backbone for the Texture / Item Foundry tabs.
     Texture(TextureCatalogArgs),
+
+    /// Warm (or refresh) the on-disk catalog cache. Builds the voice-line and
+    /// texture indexes and stores them keyed by the pak's build fingerprint
+    /// (`_dir.vpk` size + mtime), so a later run loads them instantly instead of
+    /// rescanning. Reports per-index hit/miss. `--clear` forces a rebuild.
+    Cache(CatalogCacheArgs),
 }
 
 #[derive(Args)]
@@ -222,6 +228,25 @@ struct TextureCatalogArgs {
     /// Longest-edge pixel size for thumbnails (aspect preserved, never upscaled).
     #[arg(long, value_name = "N", default_value_t = 128)]
     thumb_size: u32,
+}
+
+#[derive(Args)]
+struct CatalogCacheArgs {
+    /// VPK to index (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Directory to store the cache files in (`voiceline.json`, `texture.json`).
+    #[arg(long, value_name = "DIR", default_value = "catalog-cache")]
+    dir: PathBuf,
+
+    /// Clear the cache first, forcing a rebuild of both indexes.
+    #[arg(long)]
+    clear: bool,
+
+    /// Emit a machine-readable JSON status object instead of the human summary.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -2979,7 +3004,60 @@ fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
     match &cmd.action {
         CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
         CatalogAction::Texture(args) => run_catalog_texture(args),
+        CatalogAction::Cache(args) => run_catalog_cache(args),
     }
+}
+
+fn run_catalog_cache(args: &CatalogCacheArgs) -> Result<()> {
+    let cache = vpkmerge_core::CatalogCache::new(&args.dir);
+    if args.clear {
+        cache.clear().context("clearing catalog cache")?;
+    }
+
+    let fingerprint = vpkmerge_core::BuildFingerprint::for_vpk(&args.vpk)
+        .with_context(|| format!("fingerprinting {}", args.vpk.display()))?;
+
+    let (voicelines, vo_hit) = cache
+        .voicelines_cached(&args.vpk)
+        .context("loading/building the voice-line index")?;
+    let (textures, tex_hit) = cache
+        .textures_cached(&args.vpk)
+        .context("loading/building the texture index")?;
+
+    if args.json {
+        let status = serde_json::json!({
+            "dir": args.dir,
+            "schema": vpkmerge_core::CACHE_SCHEMA_VERSION,
+            "fingerprint": {
+                "vpkLen": fingerprint.vpk_len,
+                "vpkMtimeSecs": fingerprint.vpk_mtime_secs,
+                "vpkMtimeNanos": fingerprint.vpk_mtime_nanos,
+            },
+            "voiceline": { "count": voicelines.len(), "cacheHit": vo_hit },
+            "texture": { "count": textures.len(), "cacheHit": tex_hit },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&status).context("serializing JSON")?
+        );
+    } else {
+        println!("catalog cache: {}", args.dir.display());
+        println!(
+            "  build fingerprint: {} bytes, mtime {}.{:09}",
+            fingerprint.vpk_len, fingerprint.vpk_mtime_secs, fingerprint.vpk_mtime_nanos
+        );
+        println!(
+            "  voiceline: {} events ({})",
+            voicelines.len(),
+            if vo_hit { "cache hit" } else { "rebuilt" }
+        );
+        println!(
+            "  texture:   {} entries ({})",
+            textures.len(),
+            if tex_hit { "cache hit" } else { "rebuilt" }
+        );
+    }
+    Ok(())
 }
 
 fn run_catalog_voiceline(args: &VoicelineArgs) -> Result<()> {

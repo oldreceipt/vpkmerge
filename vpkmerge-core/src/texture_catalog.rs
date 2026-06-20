@@ -28,7 +28,8 @@ use morphic::{DecodeOptions, Image, ImageData};
 
 /// How a `.vtex_c` is used, inferred from its entry path. Drives which Foundry
 /// tab browses it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TextureCategory {
     /// `panorama/images/hud/abilities/` HUD ability icons.
     AbilityIcon,
@@ -77,7 +78,7 @@ impl TextureCategory {
 
 /// One browseable texture, classified from its path. No pixels are read to build
 /// this; the thumbnail is fetched separately via [`thumbnail_png`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TextureEntry {
     /// VPK entry path, e.g. `panorama/images/hud/abilities/astro/shotgun_psd.vtex_c`.
     /// Usable verbatim as the icon-swap / recolor target.

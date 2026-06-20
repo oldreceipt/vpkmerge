@@ -47,6 +47,9 @@ pub use texture_catalog::{
     CachedThumbnail, TextureCategory, TextureEntry, Thumbnail, ThumbnailOutcome,
 };
 
+pub mod catalog_cache;
+pub use catalog_cache::{BuildFingerprint, CatalogCache, CACHE_SCHEMA_VERSION};
+
 pub mod cubemap;
 pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
 

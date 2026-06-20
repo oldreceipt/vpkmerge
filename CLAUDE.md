@@ -221,6 +221,32 @@ CODENAME] [--search TEXT] [--limit N] [--json] [--thumbs DIR [--thumb-size N]]`.
 (honors the filters, ignores `--limit`). Example: `examples/texture_index.rs`.
 Full design: [../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
 
+## Catalog on-disk cache (`catalog cache`)
+
+`vpkmerge_core::catalog_cache` persists the built indexes so a UI does not rescan
+on every launch (the voice-line scan alone touches ~76K events; cold build of both
+indexes ~1.2s, warm load ~0.25s). `CatalogCache::new(dir)` then
+`voicelines_cached(vpk)` / `textures_cached(vpk)` (-> `(items, was_hit)`) or the
+flag-dropping `voicelines(vpk)` / `textures(vpk)` are load-or-build-and-store in one
+call. Each index is one JSON file per kind (`voiceline.json`, `texture.json`),
+written atomically (temp + rename) and wrapped in an envelope carrying the schema
+version + the source build's [`BuildFingerprint`].
+
+**Invalidation is by game build.** The fingerprint is the `_dir.vpk` file's byte
+length + mtime: Steam rewrites that file whenever an update touches the pak (same
+property the chunk-mtime update-diff tooling relies on), so the check is a single
+`stat` (no VPK open) and never serves stale data after a real update. valve_pak does
+not expose the V2 `tree_checksum`, so the file stat stands in; the only cost is a
+needless rebuild if something bumps the mtime without changing bytes (a "verify game
+files" pass). A corrupt / wrong-schema / stale-fingerprint cache is a **miss, not an
+error** (the UI silently rebuilds). `CACHE_SCHEMA_VERSION` bump invalidates all
+caches when the on-disk shape changes; `clear()` forces a rebuild.
+
+Exposed as `vpkmerge catalog cache --vpk <VPK> [--dir DIR] [--clear] [--json]`:
+warms both indexes, prints the fingerprint + per-index hit/miss. Example:
+`examples/catalog_cache.rs`. Still open: a single combined catalog file (today it is
+one-per-kind) and tying the texture-thumbnail dir to the same fingerprint.
+
 ## Texture recolor (`.vtex_c`)
 
 `vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top

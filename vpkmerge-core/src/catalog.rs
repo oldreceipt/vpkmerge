@@ -38,7 +38,7 @@ const VO_TREE_PREFIX: &str = "soundevents/vo/";
 const HERO_VO_STEM: &str = "generated_vo_hero_";
 
 /// One VO sound event, ready to search and swap.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceLine {
     /// Soundevent name, e.g. `bebop_self_ultimate_cast_01_hero_3d`. Usable
     /// verbatim as the swap target in the soundevents layer.
