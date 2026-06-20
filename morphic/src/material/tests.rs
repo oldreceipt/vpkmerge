@@ -97,3 +97,69 @@ fn pbr_slots_map_by_name() {
     assert_eq!(mat.alpha_mode(), AlphaMode::Opaque, "alpha mode");
     assert!(mat.uses_vertex_color(), "skin material uses vertex color");
 }
+
+#[test]
+fn decodes_dynamic_params_with_failure_capture() {
+    use super::Material;
+    use crate::kv3::Value;
+
+    fn obj(pairs: Vec<(&str, Value)>) -> Value {
+        Value::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    }
+
+    // A real, compilable expression -> bytecode -> the m_value blob the engine
+    // stores. Mirrors the CLAUDE.md example proven byte-identical to Valve's.
+    let src = "$ent_health<.4?float3(1,.1,.1):float3(1,1,1)";
+    let good = crate::vfx_expr::compile(src).expect("compile sample expr");
+
+    let data = obj(vec![
+        ("m_materialName", Value::String("test".into())),
+        ("m_shaderName", Value::String("pbr.vfx".into())),
+        (
+            "m_renderAttributesUsed",
+            Value::Array(vec![Value::String("$ent_health".into())]),
+        ),
+        (
+            "m_dynamicParams",
+            Value::Array(vec![
+                obj(vec![
+                    ("m_name", Value::String("g_vColorTint1".into())),
+                    ("m_value", Value::Binary(good.bytecode.clone())),
+                ]),
+                // empty blob -> decompile fails cleanly; the failure must be
+                // captured, never panicked or masqueraded as a static value.
+                obj(vec![
+                    ("m_name", Value::String("g_flBroken".into())),
+                    ("m_value", Value::Binary(Vec::new())),
+                ]),
+            ]),
+        ),
+    ]);
+
+    let mat = Material::from_data(&data).expect("from_data");
+    assert_eq!(mat.render_attributes_used, vec!["$ent_health".to_owned()]);
+
+    let ok = &mat.dynamic_params["g_vColorTint1"];
+    assert!(ok.decompiled, "good expr decompiles");
+    assert!(ok.error.is_none());
+    assert_eq!(ok.byte_len, good.bytecode.len());
+    assert!(
+        ok.attributes.contains(&"$ent_health".to_owned()),
+        "attrs from source"
+    );
+    // decompiled source recompiles to the same bytecode (the codec contract).
+    assert_eq!(
+        crate::vfx_expr::compile(&ok.source)
+            .expect("recompile")
+            .bytecode,
+        good.bytecode,
+        "round-trip"
+    );
+
+    let bad = &mat.dynamic_params["g_flBroken"];
+    assert!(!bad.decompiled, "failure is reported, not guessed");
+    assert!(bad.error.is_some());
+    assert!(bad.source.is_empty());
+    assert_eq!(bad.byte_len, 0);
+    assert!(!bad.hash.is_empty(), "blob hash present even on failure");
+}

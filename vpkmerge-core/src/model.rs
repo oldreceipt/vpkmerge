@@ -4,6 +4,7 @@
 //! (see `docs/vmdl-glb-exporter.md`).
 
 use anyhow::{Context, Result};
+use morphic::kv3::Value;
 use std::path::Path;
 
 pub use morphic::model::{
@@ -561,6 +562,32 @@ pub struct ModelPartInspection {
     pub suggested_groups: Vec<SuggestedPartGroup>,
 }
 
+/// One material actually rendered by a live hero model as resolved from
+/// `scripts/heroes.vdata_c`, not by a path-name guess.
+#[derive(Debug, Clone)]
+pub struct LiveHeroMaterial {
+    pub codename: String,
+    pub localized_name: Option<String>,
+    pub model_entry: String,
+    pub material: String,
+    pub material_source: Option<String>,
+    pub shader_name: Option<String>,
+    pub feature_flags: Vec<(String, i64)>,
+    pub textures: Vec<ResolvedTextureParam>,
+    pub mesh_names: Vec<String>,
+    pub vertex_count: usize,
+    pub body: bool,
+    pub weapon: bool,
+}
+
+/// One selectable live hero entry from `scripts/heroes.vdata_c`.
+#[derive(Debug, Clone)]
+pub struct LiveHeroEntry {
+    pub codename: String,
+    pub localized_name: Option<String>,
+    pub model_entry: String,
+}
+
 /// Selector shared by grouped export/replacement.
 #[derive(Debug, Clone, Default)]
 pub struct ModelPartSelector {
@@ -602,6 +629,78 @@ pub fn hero_model_entry(
         .with_context(|| format!("no hero model '{codename}.vmdl_c' found in the given VPK(s)"))
 }
 
+/// Resolve the materials the live hero model actually renders.
+///
+/// This intentionally goes through `scripts/heroes.vdata_c ->
+/// hero_<codename>.m_strModelName -> draw_call_targets`, because many Deadlock
+/// codenames do not match their model directory and old `heroes_staging` models
+/// often remain in pak01 after the live hero moved elsewhere.
+pub fn live_hero_materials(
+    vpk: impl AsRef<Path>,
+    base: Option<&Path>,
+    codename: &str,
+) -> Result<Vec<LiveHeroMaterial>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let has_base = base.is_some();
+    let (model_entry, localized_name) = live_hero_model_from_vdata(&vpks, codename)?;
+    let bytes = read_entry(&vpks, &model_entry)
+        .with_context(|| format!("model entry {model_entry} not found"))?;
+    let calls = morphic::model::draw_call_targets(&bytes)
+        .with_context(|| format!("reading draw calls for {model_entry}"))?;
+
+    let mut by_material: std::collections::BTreeMap<
+        String,
+        (usize, std::collections::BTreeSet<String>),
+    > = std::collections::BTreeMap::new();
+    for call in &calls {
+        let (vertices, meshes) = by_material.entry(call.material.clone()).or_default();
+        *vertices += call.vertex_count;
+        meshes.insert(call.mesh_name.clone());
+    }
+
+    let mut out = Vec::with_capacity(by_material.len());
+    for (material, (vertex_count, meshes)) in by_material {
+        let (material_source, parsed, textures) = inspect_material_full(&vpks, has_base, &material);
+        let feature_flags = parsed
+            .as_ref()
+            .map(|mat| {
+                mat.int_params
+                    .iter()
+                    .filter(|(name, value)| name.starts_with("F_") && **value != 0)
+                    .map(|(name, value)| (name.clone(), *value))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shader_name = parsed
+            .as_ref()
+            .and_then(|mat| (!mat.shader_name.is_empty()).then(|| mat.shader_name.clone()));
+        let mesh_names: Vec<String> = meshes.into_iter().collect();
+        let (body, weapon) = material_usage(&material, &mesh_names);
+        out.push(LiveHeroMaterial {
+            codename: codename.to_string(),
+            localized_name: localized_name.clone(),
+            model_entry: model_entry.clone(),
+            body,
+            weapon,
+            material,
+            material_source,
+            shader_name,
+            feature_flags,
+            textures,
+            mesh_names,
+            vertex_count,
+        });
+    }
+    out.sort_by_key(|e| std::cmp::Reverse(e.vertex_count));
+    Ok(out)
+}
+
+/// List selectable live heroes from `scripts/heroes.vdata_c`.
+pub fn live_hero_entries(vpk: impl AsRef<Path>, base: Option<&Path>) -> Result<Vec<LiveHeroEntry>> {
+    let vpks = open_vpks(vpk.as_ref(), base)?;
+    live_hero_entries_from_vdata(&vpks)
+}
+
 fn decode_model_entry(
     vpk: &Path,
     entry: &str,
@@ -611,6 +710,30 @@ fn decode_model_entry(
     let bytes =
         read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
     morphic::model::decode(&bytes).with_context(|| format!("decoding {entry}"))
+}
+
+/// Extracts a model's cloth finite-element model (`PHYS.m_pFeModel`) as pretty
+/// JSON: the node set, distance-constraint rods, per-node integrator
+/// (gravity/damping/animation-attraction), and the collision capsules/spheres.
+/// This is the sidecar a renderer-side verlet preview reads to drive the cloth
+/// bones with the engine's own parameters (so it matches and the real colliders
+/// stop the cloth-through-body clipping). Errors if the model carries no PHYS
+/// block or no `FeModel` (a model with no cloth).
+pub fn export_femodel_json(vpk: &Path, base: Option<&Path>, entry: &str) -> Result<Vec<u8>> {
+    let vpks = open_vpks(vpk, base)?;
+    let bytes =
+        read_entry(&vpks, entry).with_context(|| format!("model entry {entry} not found"))?;
+    let res = morphic::resource::Resource::parse(&bytes)
+        .map_err(|e| anyhow::anyhow!("parsing {entry}: {e:?}"))?;
+    let phys = res
+        .find_block(*b"PHYS")
+        .ok_or_else(|| anyhow::anyhow!("{entry} has no PHYS block (no cloth/physics)"))?;
+    let value = morphic::kv3::decode(phys).map_err(|e| anyhow::anyhow!("decoding PHYS: {e:?}"))?;
+    let fe = value
+        .get("m_pFeModel")
+        .ok_or_else(|| anyhow::anyhow!("{entry} PHYS has no m_pFeModel (no cloth sim)"))?;
+    serde_json::to_vec_pretty(&crate::soundevents::value_to_json(fe))
+        .context("serializing FeModel JSON")
 }
 
 /// Builds the listing rows for a set of segments: measures per-segment texel
@@ -1230,28 +1353,124 @@ fn inspect_material_refs(
     has_base: bool,
     material: &str,
 ) -> (Option<String>, Vec<ResolvedTextureParam>) {
+    let (source, _parsed, textures) = inspect_material_full(vpks, has_base, material);
+    (source, textures)
+}
+
+fn inspect_material_full(
+    vpks: &[valve_pak::VPK],
+    has_base: bool,
+    material: &str,
+) -> (
+    Option<String>,
+    Option<morphic::material::Material>,
+    Vec<ResolvedTextureParam>,
+) {
     let compiled = compiled_resource_path(material);
     let Some((bytes, source)) = read_entry_with_source(vpks, &compiled) else {
-        return (None, Vec::new());
+        return (None, None, Vec::new());
     };
     let material_source = Some(source_label(source, has_base));
     let Ok(mat) = morphic::material::parse(&bytes) else {
-        return (material_source, Vec::new());
+        return (material_source, None, Vec::new());
     };
     let mut textures = Vec::new();
-    for (slot, path) in mat.texture_params {
-        let compiled_path = compiled_resource_path(&path);
+    for (slot, path) in &mat.texture_params {
+        let compiled_path = compiled_resource_path(path);
         let source =
             read_entry_with_source(vpks, &compiled_path).map(|(_, i)| source_label(i, has_base));
         textures.push(ResolvedTextureParam {
-            slot,
-            path,
+            slot: slot.clone(),
+            path: path.clone(),
             compiled_path,
             source,
         });
     }
     textures.sort_by(|a, b| a.slot.cmp(&b.slot));
-    (material_source, textures)
+    (material_source, Some(mat), textures)
+}
+
+fn live_hero_model_from_vdata(
+    vpks: &[valve_pak::VPK],
+    codename: &str,
+) -> Result<(String, Option<String>)> {
+    let entries = live_hero_entries_from_vdata(vpks)?;
+    let wanted = codename.to_ascii_lowercase();
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.codename.eq_ignore_ascii_case(&wanted))
+    {
+        return Ok((entry.model_entry.clone(), entry.localized_name.clone()));
+    }
+    anyhow::bail!(
+        "no hero_{wanted} in scripts/heroes.vdata_c; selectable codenames include: {}",
+        entries
+            .iter()
+            .take(32)
+            .map(|entry| entry.codename.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn live_hero_entries_from_vdata(vpks: &[valve_pak::VPK]) -> Result<Vec<LiveHeroEntry>> {
+    let bytes = read_entry(vpks, "scripts/heroes.vdata_c")
+        .context("scripts/heroes.vdata_c not found; pass the base pak as --vpk or --base")?;
+    let data = morphic::decode_kv3_resource(&bytes).context("decoding scripts/heroes.vdata_c")?;
+    let Value::Object(pairs) = data else {
+        anyhow::bail!("scripts/heroes.vdata_c root is not an object");
+    };
+    let mut out = Vec::new();
+    for (key, hero) in &pairs {
+        if !key.starts_with("hero_") {
+            continue;
+        }
+        if !hero
+            .get("m_bPlayerSelectable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(model) = hero
+            .get("m_strModelName")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let localized_name = hero
+            .get("m_strLocalizedName")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        out.push(LiveHeroEntry {
+            codename: key.trim_start_matches("hero_").to_string(),
+            localized_name,
+            model_entry: compiled_resource_path(model),
+        });
+    }
+    out.sort_by(|a, b| a.codename.cmp(&b.codename));
+    Ok(out)
+}
+
+fn name_is_weaponish(name: &str) -> bool {
+    let hay = name.to_ascii_lowercase();
+    [
+        "weapon", "gun", "rifle", "pistol", "shotgun", "cannon", "launcher", "bow", "arrow",
+        "blade", "sword", "knife", "staff", "wand", "mace", "club",
+    ]
+    .iter()
+    .any(|needle| hay.contains(needle))
+}
+
+fn material_usage(material: &str, meshes: &[String]) -> (bool, bool) {
+    let material_weapon = name_is_weaponish(material);
+    let mesh_weapon = meshes.iter().any(|mesh| name_is_weaponish(mesh));
+    let mesh_body = meshes.iter().any(|mesh| !name_is_weaponish(mesh));
+    let weapon = material_weapon || mesh_weapon;
+    let body = mesh_body || (!weapon && meshes.is_empty());
+    (body, weapon)
 }
 
 fn skin_info_for(model: &morphic::model::Model, call: &DrawCallInfo) -> DrawCallSkinInfo {
@@ -1688,5 +1907,39 @@ mod tests {
             &edit,
         );
         assert_eq!(out, vec![[10.0, -5.0, 1.0], [11.0, -4.0, 2.0]]);
+    }
+
+    #[test]
+    fn material_usage_preserves_shared_body_weapon_materials() {
+        let meshes = vec![
+            "body".to_string(),
+            "gun".to_string(),
+            "inflated".to_string(),
+        ];
+        assert_eq!(
+            material_usage(
+                "models/heroes_staging/viscous/materials/black.vmat",
+                &meshes
+            ),
+            (true, true)
+        );
+
+        let meshes = vec!["ghost".to_string()];
+        assert_eq!(
+            material_usage(
+                "models/heroes_wip/geist/materials/geist_clothes.vmat",
+                &meshes
+            ),
+            (true, false)
+        );
+
+        let meshes = vec!["gun".to_string()];
+        assert_eq!(
+            material_usage(
+                "models/heroes_staging/ghost/materials/ghost3_pistol.vmat",
+                &meshes
+            ),
+            (false, true)
+        );
     }
 }

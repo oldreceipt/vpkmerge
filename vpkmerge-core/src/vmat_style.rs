@@ -28,6 +28,15 @@ pub enum VmatEdit {
     Float { name: String, value: f64 },
     /// `m_vectorParams` entry (RGBA; pass 0 for unused lanes).
     Vector { name: String, value: [f64; 4] },
+    /// `m_intAttributes` entry. This is the speculative path for shader
+    /// variables declared as `__Attribute__` in the VCS.
+    IntAttribute { name: String, value: i64 },
+    /// `m_floatAttributes` entry. This is the speculative path for shader
+    /// variables declared as `__Attribute__` in the VCS.
+    FloatAttribute { name: String, value: f64 },
+    /// `m_vectorAttributes` entry. This is the speculative path for shader
+    /// variables declared as `__Attribute__` in the VCS.
+    VectorAttribute { name: String, value: [f64; 4] },
     /// `m_dynamicParams` entry: a compiled dynamic expression
     /// ([`morphic::vfx_expr::compile`]) driving the param per frame.
     /// `attributes` lists every render attribute the expression reads; they
@@ -71,6 +80,9 @@ impl VmatEdit {
             Self::Int { .. } => "m_intParams",
             Self::Float { .. } => "m_floatParams",
             Self::Vector { .. } => "m_vectorParams",
+            Self::IntAttribute { .. } => "m_intAttributes",
+            Self::FloatAttribute { .. } => "m_floatAttributes",
+            Self::VectorAttribute { .. } => "m_vectorAttributes",
             Self::Expr { .. } | Self::EditExpr { .. } => "m_dynamicParams",
         }
     }
@@ -80,16 +92,30 @@ impl VmatEdit {
             Self::Int { name, .. }
             | Self::Float { name, .. }
             | Self::Vector { name, .. }
+            | Self::IntAttribute { name, .. }
+            | Self::FloatAttribute { name, .. }
+            | Self::VectorAttribute { name, .. }
             | Self::Expr { name, .. }
             | Self::EditExpr { name, .. } => name,
         }
     }
 
+    fn is_material_attribute(&self) -> bool {
+        matches!(
+            self,
+            Self::IntAttribute { .. } | Self::FloatAttribute { .. } | Self::VectorAttribute { .. }
+        )
+    }
+
     fn as_object(&self) -> Value {
         let (key, value) = match self {
-            Self::Int { value, .. } => ("m_nValue", Value::Int(*value)),
-            Self::Float { value, .. } => ("m_flValue", Value::Double(*value)),
-            Self::Vector { value, .. } => (
+            Self::Int { value, .. } | Self::IntAttribute { value, .. } => {
+                ("m_nValue", Value::Int(*value))
+            }
+            Self::Float { value, .. } | Self::FloatAttribute { value, .. } => {
+                ("m_flValue", Value::Double(*value))
+            }
+            Self::Vector { value, .. } | Self::VectorAttribute { value, .. } => (
                 "m_value",
                 Value::Array(value.iter().map(|&c| Value::Double(c)).collect()),
             ),
@@ -132,13 +158,13 @@ fn already_applied(root: &Value, i: usize, edit: &VmatEdit) -> bool {
         return false;
     };
     match edit {
-        VmatEdit::Int { value, .. } => {
+        VmatEdit::Int { value, .. } | VmatEdit::IntAttribute { value, .. } => {
             param.get("m_nValue").and_then(Value::as_int) == Some(*value)
         }
-        VmatEdit::Float { value, .. } => {
+        VmatEdit::Float { value, .. } | VmatEdit::FloatAttribute { value, .. } => {
             param.get("m_flValue").and_then(Value::as_f64) == Some(*value)
         }
-        VmatEdit::Vector { value, .. } => param
+        VmatEdit::Vector { value, .. } | VmatEdit::VectorAttribute { value, .. } => param
             .get("m_value")
             .and_then(Value::as_array)
             .is_some_and(|a| {
@@ -163,29 +189,33 @@ fn apply_in_place(
     let table = edit.table();
     if let Some(i) = param_index(root, table, edit.name()) {
         let bytes = match edit {
-            VmatEdit::Int { value, .. } => morphic::patch_kv3_resource_scalars(
-                working,
-                &[(
-                    vec![
-                        Seg::Key(table.to_string()),
-                        Seg::Index(i),
-                        Seg::Key("m_nValue".to_string()),
-                    ],
-                    *value,
-                )],
-            )?,
-            VmatEdit::Float { value, .. } => morphic::patch_kv3_resource_doubles(
-                working,
-                &[(
-                    vec![
-                        Seg::Key(table.to_string()),
-                        Seg::Index(i),
-                        Seg::Key("m_flValue".to_string()),
-                    ],
-                    *value,
-                )],
-            )?,
-            VmatEdit::Vector { value, .. } => {
+            VmatEdit::Int { value, .. } | VmatEdit::IntAttribute { value, .. } => {
+                morphic::patch_kv3_resource_scalars(
+                    working,
+                    &[(
+                        vec![
+                            Seg::Key(table.to_string()),
+                            Seg::Index(i),
+                            Seg::Key("m_nValue".to_string()),
+                        ],
+                        *value,
+                    )],
+                )?
+            }
+            VmatEdit::Float { value, .. } | VmatEdit::FloatAttribute { value, .. } => {
+                morphic::patch_kv3_resource_doubles(
+                    working,
+                    &[(
+                        vec![
+                            Seg::Key(table.to_string()),
+                            Seg::Index(i),
+                            Seg::Key("m_flValue".to_string()),
+                        ],
+                        *value,
+                    )],
+                )?
+            }
+            VmatEdit::Vector { value, .. } | VmatEdit::VectorAttribute { value, .. } => {
                 let edits: Vec<(Vec<Seg>, f64)> = value
                     .iter()
                     .enumerate()
@@ -235,9 +265,11 @@ fn apply_to_tree(tree: &mut Value, edit: &VmatEdit) -> bool {
     match exists {
         Some(i) => {
             let value_key = match edit {
-                VmatEdit::Int { .. } => "m_nValue",
-                VmatEdit::Float { .. } => "m_flValue",
-                VmatEdit::Vector { .. } | VmatEdit::Expr { .. } => "m_value",
+                VmatEdit::Int { .. } | VmatEdit::IntAttribute { .. } => "m_nValue",
+                VmatEdit::Float { .. } | VmatEdit::FloatAttribute { .. } => "m_flValue",
+                VmatEdit::Vector { .. }
+                | VmatEdit::VectorAttribute { .. }
+                | VmatEdit::Expr { .. } => "m_value",
                 VmatEdit::EditExpr { .. } => {
                     unreachable!("EditExpr is resolved to Expr before apply_to_tree")
                 }
@@ -246,9 +278,13 @@ fn apply_to_tree(tree: &mut Value, edit: &VmatEdit) -> bool {
                 return false;
             };
             *slot = match edit {
-                VmatEdit::Int { value, .. } => Value::Int(*value),
-                VmatEdit::Float { value, .. } => Value::Double(*value),
-                VmatEdit::Vector { value, .. } => {
+                VmatEdit::Int { value, .. } | VmatEdit::IntAttribute { value, .. } => {
+                    Value::Int(*value)
+                }
+                VmatEdit::Float { value, .. } | VmatEdit::FloatAttribute { value, .. } => {
+                    Value::Double(*value)
+                }
+                VmatEdit::Vector { value, .. } | VmatEdit::VectorAttribute { value, .. } => {
                     Value::Array(value.iter().map(|&c| Value::Double(c)).collect())
                 }
                 VmatEdit::Expr { bytecode, .. } => Value::Binary(bytecode.clone()),
@@ -274,6 +310,49 @@ fn render_attrs(root: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Replace an existing dynamic-expression blob in a blob-bearing `.vmat_c`
+/// byte-faithfully (content-keyed on the current bytecode), keeping the block
+/// compressed. Returns `None` for a non-`Expr` edit (caller reports it failed),
+/// `Some(Ok(bytes))` on success, or `Some(Err(msg))` if the param/blob could not
+/// be located or the blob splice failed. Built so `--edit-expr` /
+/// `--set-expr`-over-an-existing-param stop being refused on blobbed materials.
+fn replace_expr_blob(
+    working: &[u8],
+    edit: &VmatEdit,
+) -> Option<std::result::Result<Vec<u8>, String>> {
+    let VmatEdit::Expr { name, bytecode, .. } = edit else {
+        return None;
+    };
+    let root = match morphic::decode_kv3_resource(working) {
+        Ok(r) => r,
+        Err(e) => return Some(Err(format!("{name}: decode failed ({e})"))),
+    };
+    // The current bytecode is the blob to replace (content-keyed). It is unique
+    // among the material's blobs, so the swap is unambiguous even with several
+    // dynamic expressions present.
+    let old = (|| {
+        let i = param_index(&root, "m_dynamicParams", name)?;
+        root.get("m_dynamicParams")
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(i))
+            .and_then(|p| p.get("m_value"))
+            .and_then(expr_bytes)
+    })();
+    let Some(old) = old else {
+        return Some(Err(format!(
+            "{name}: no existing dynamic expression bytecode to replace"
+        )));
+    };
+    if old == *bytecode {
+        // Recompiled to the same bytes; nothing to do (counted as set upstream).
+        return Some(Ok(working.to_vec()));
+    }
+    match morphic::patch_kv3_resource_blob(working, &old, bytecode) {
+        Ok(bytes) => Some(Ok(bytes)),
+        Err(e) => Some(Err(format!("{name}: blob-aware replace failed ({e})"))),
+    }
 }
 
 /// Resolves a [`VmatEdit::EditExpr`] against `root` (one target material):
@@ -368,6 +447,7 @@ fn resolve_in_place_edits(
 ///
 /// # Errors
 /// Fails only if the bytes are not a decodable KV3 resource.
+#[allow(clippy::too_many_lines)]
 pub fn patch_vmat_params(bytes: &[u8], edits: &[VmatEdit]) -> Result<(Vec<u8>, VmatPatchStats)> {
     let mut working = bytes.to_vec();
     let mut stats = VmatPatchStats::default();
@@ -416,25 +496,30 @@ pub fn patch_vmat_params(bytes: &[u8], edits: &[VmatEdit]) -> Result<(Vec<u8>, V
                 }
             }
         }
+        if edit.is_material_attribute() && !pending_attrs.contains(&edit.name()) {
+            pending_attrs.push(edit.name());
+        }
     }
 
     if !needs_reencode.is_empty() {
         if morphic::kv3_resource_has_blobs(&working).unwrap_or(true) {
-            // A blob-bearing material refuses the re-encode fallback. Changing
-            // an *existing* dynamic expression lands here (its bytecode is a
-            // blob, and replacing a blob is not yet supported byte-faithfully);
-            // report why rather than emit a bare param name.
-            stats.failed.extend(needs_reencode.iter().map(|e| {
-                if matches!(e, VmatEdit::Expr { .. }) {
-                    format!(
-                        "{}: cannot replace an existing dynamic expression in a \
-                         blob-bearing material (no blob-aware replace yet)",
-                        e.name()
-                    )
-                } else {
-                    e.name().to_string()
+            // A blob-bearing material refuses the re-encode fallback. Changing an
+            // *existing* dynamic expression lands here: its bytecode IS a binary
+            // blob. Replace that blob byte-faithfully (content-keyed on the current
+            // bytecode), keeping the block compressed, instead of re-encoding the
+            // whole material. Any edit that is not such an Expr swap still fails.
+            let mut still_failed = Vec::new();
+            for e in &needs_reencode {
+                match replace_expr_blob(&working, e) {
+                    Some(Ok(bytes)) => {
+                        working = bytes;
+                        stats.set += 1;
+                    }
+                    Some(Err(msg)) => still_failed.push(msg),
+                    None => still_failed.push(e.name().to_string()),
                 }
-            }));
+            }
+            stats.failed.extend(still_failed);
         } else {
             let mut tree = morphic::decode_kv3_resource(&working)
                 .context("decoding material KV3 for re-encode fallback")?;
@@ -447,6 +532,9 @@ pub fn patch_vmat_params(bytes: &[u8], edits: &[VmatEdit]) -> Result<(Vec<u8>, V
             }
             // ride the same re-encode for attribute registration
             for attr in pending_attrs.drain(..) {
+                if attribute_edit_failed(&stats, attr) {
+                    continue;
+                }
                 register_attribute_in_tree(&mut tree, attr);
             }
             working = morphic::encode_kv3_resource(&working, &tree)
@@ -468,6 +556,9 @@ pub fn patch_vmat_params(bytes: &[u8], edits: &[VmatEdit]) -> Result<(Vec<u8>, V
             })
             .unwrap_or_default();
         for attr in pending_attrs {
+            if attribute_edit_failed(&stats, attr) {
+                continue;
+            }
             if registered.iter().any(|r| r == attr) {
                 continue;
             }
@@ -497,6 +588,14 @@ fn register_attribute_in_tree(tree: &mut Value, attr: &str) {
     if !present {
         list.push(Value::String(attr.to_string()));
     }
+}
+
+fn attribute_edit_failed(stats: &VmatPatchStats, attr: &str) -> bool {
+    stats.failed.iter().any(|f| {
+        f == attr
+            || f.strip_prefix(attr)
+                .is_some_and(|rest| rest.starts_with(':'))
+    })
 }
 
 /// Curated parameter bundles for common looks. All values are modeled on
@@ -638,6 +737,16 @@ pub struct VmatInfo {
     /// `m_dynamicTextureParams` (param name -> source). A blob that fails to
     /// decompile is reported as `<error: ...>` rather than dropped.
     pub expressions: Vec<(String, String)>,
+    /// Scalar `m_floatParams` (`m_name` -> `m_flValue`).
+    pub floats: Vec<(String, f64)>,
+    /// `m_vectorParams` (`m_name` -> `m_value` lanes).
+    pub vectors: Vec<(String, Vec<f64>)>,
+    /// Material attributes (`m_*Attributes`) exposed to shader `__Attribute__`
+    /// variables, formatted for the CLI list view.
+    pub attributes: Vec<(String, String)>,
+    /// Carries a per-frame expression blob / live logic
+    /// (`kv3_resource_has_blobs`).
+    pub dynamic: bool,
 }
 
 /// Pull the raw expression bytecode out of a `m_value` node, whether morphic
@@ -686,7 +795,7 @@ fn material_expressions(root: &Value) -> Vec<(String, String)> {
     out
 }
 
-fn discover_materials(vpks: &[valve_pak::VPK], targets: &VmatTargets) -> Vec<String> {
+fn discover_legacy_materials(vpks: &[valve_pak::VPK], targets: &VmatTargets) -> Vec<String> {
     match targets {
         VmatTargets::Entries(entries) => entries.clone(),
         VmatTargets::Hero {
@@ -711,6 +820,46 @@ fn discover_materials(vpks: &[valve_pak::VPK], targets: &VmatTargets) -> Vec<Str
             out.into_iter().collect()
         }
     }
+}
+
+fn discover_materials(
+    vpk: &Path,
+    base: Option<&Path>,
+    vpks: &[valve_pak::VPK],
+    targets: &VmatTargets,
+) -> Vec<String> {
+    let VmatTargets::Hero {
+        codename,
+        include_body,
+        include_weapons,
+    } = targets
+    else {
+        return discover_legacy_materials(vpks, targets);
+    };
+
+    match crate::model::live_hero_materials(vpk, base, codename) {
+        Ok(materials) if !materials.is_empty() => materials
+            .into_iter()
+            .filter(|m| (m.weapon && *include_weapons) || (m.body && *include_body))
+            .map(|m| compiled_material_entry(&m.material))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        Ok(_) => discover_legacy_materials(vpks, targets),
+        Err(err) => {
+            eprintln!(
+                "  note: live hero material resolution failed for {codename}: {err:#}; \
+                 falling back to legacy path-name discovery"
+            );
+            discover_legacy_materials(vpks, targets)
+        }
+    }
+}
+
+fn compiled_material_entry(material: &str) -> String {
+    material
+        .strip_suffix(".vmat")
+        .map_or_else(|| material.to_string(), |stem| format!("{stem}.vmat_c"))
 }
 
 fn material_info(entry: &str, root: &Value) -> VmatInfo {
@@ -743,12 +892,76 @@ fn material_info(entry: &str, root: &Value) -> VmatInfo {
             }
         }
     }
+    let mut floats = Vec::new();
+    if let Some(Value::Array(params)) = root.get("m_floatParams") {
+        for p in params {
+            if let (Some(name), Some(value)) = (
+                p.get("m_name").and_then(Value::as_str),
+                p.get("m_flValue").and_then(Value::as_f64),
+            ) {
+                floats.push((name.to_string(), value));
+            }
+        }
+    }
+    let mut vectors = Vec::new();
+    if let Some(Value::Array(params)) = root.get("m_vectorParams") {
+        for p in params {
+            if let (Some(name), Some(Value::Array(lanes))) =
+                (p.get("m_name").and_then(Value::as_str), p.get("m_value"))
+            {
+                vectors.push((
+                    name.to_string(),
+                    lanes.iter().filter_map(Value::as_f64).collect(),
+                ));
+            }
+        }
+    }
+    let mut attributes = Vec::new();
+    if let Some(Value::Array(params)) = root.get("m_intAttributes") {
+        for p in params {
+            if let (Some(name), Some(value)) = (
+                p.get("m_name").and_then(Value::as_str),
+                p.get("m_nValue").and_then(Value::as_int),
+            ) {
+                attributes.push((name.to_string(), value.to_string()));
+            }
+        }
+    }
+    if let Some(Value::Array(params)) = root.get("m_floatAttributes") {
+        for p in params {
+            if let (Some(name), Some(value)) = (
+                p.get("m_name").and_then(Value::as_str),
+                p.get("m_flValue").and_then(Value::as_f64),
+            ) {
+                attributes.push((name.to_string(), value.to_string()));
+            }
+        }
+    }
+    if let Some(Value::Array(params)) = root.get("m_vectorAttributes") {
+        for p in params {
+            if let (Some(name), Some(Value::Array(lanes))) =
+                (p.get("m_name").and_then(Value::as_str), p.get("m_value"))
+            {
+                let value = lanes
+                    .iter()
+                    .filter_map(Value::as_f64)
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                attributes.push((name.to_string(), value));
+            }
+        }
+    }
     VmatInfo {
         entry: entry.to_string(),
         shader,
         flags,
         textures,
         expressions: material_expressions(root),
+        floats,
+        vectors,
+        attributes,
+        dynamic: false,
     }
 }
 
@@ -763,16 +976,19 @@ pub fn list_materials(
     base: Option<&Path>,
     targets: &VmatTargets,
 ) -> Result<Vec<VmatInfo>> {
-    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let vpk = vpk.as_ref();
+    let vpks = open_vpks(vpk, base)?;
     let mut out = Vec::new();
-    for entry in discover_materials(&vpks, targets) {
+    for entry in discover_materials(vpk, base, &vpks, targets) {
         let Some(bytes) = read_entry(&vpks, &entry) else {
             continue;
         };
         let Ok(root) = morphic::decode_kv3_resource(&bytes) else {
             continue;
         };
-        out.push(material_info(&entry, &root));
+        let mut info = material_info(&entry, &root);
+        info.dynamic = morphic::kv3_resource_has_blobs(&bytes).unwrap_or(false);
+        out.push(info);
     }
     Ok(out)
 }
@@ -791,11 +1007,12 @@ pub fn style_materials_to_addon(
     out: impl AsRef<Path>,
 ) -> Result<VmatStyleReport> {
     anyhow::ensure!(!edits.is_empty(), "no edits given");
-    let vpks = open_vpks(vpk.as_ref(), base)?;
+    let vpk = vpk.as_ref();
+    let vpks = open_vpks(vpk, base)?;
     let mut report = VmatStyleReport::default();
     let mut packed: Vec<(String, Vec<u8>)> = Vec::new();
 
-    for entry in discover_materials(&vpks, targets) {
+    for entry in discover_materials(vpk, base, &vpks, targets) {
         let Some(bytes) = read_entry(&vpks, &entry) else {
             report.skipped_unreadable += 1;
             continue;
@@ -924,6 +1141,108 @@ mod tests {
     }
 
     #[test]
+    fn material_info_reports_scalar_params() {
+        let bytes = fixture();
+        let root = morphic::decode_kv3_resource(&bytes).unwrap();
+        let info = material_info("x.vmat_c", &root);
+        // The fixture is a real hero material: it has scalar params, and at
+        // least one vector lane (every g_v* tint is RGBA).
+        assert!(!info.floats.is_empty(), "expected m_floatParams");
+        assert!(
+            info.vectors.iter().any(|(_, lanes)| !lanes.is_empty()),
+            "expected m_vectorParams lanes"
+        );
+    }
+
+    #[test]
+    fn legacy_discovery_keeps_entry_targets_exact() {
+        let entries = vec!["models/heroes/example/materials/body.vmat_c".to_string()];
+        assert_eq!(
+            discover_legacy_materials(&[], &VmatTargets::Entries(entries.clone())),
+            entries
+        );
+    }
+
+    #[test]
+    fn live_material_names_are_compiled_for_patching() {
+        assert_eq!(
+            compiled_material_entry("models/heroes_wip/geist/materials/geist_clothes.vmat"),
+            "models/heroes_wip/geist/materials/geist_clothes.vmat_c"
+        );
+        assert_eq!(
+            compiled_material_entry("models/heroes_wip/geist/materials/geist_clothes.vmat_c"),
+            "models/heroes_wip/geist/materials/geist_clothes.vmat_c"
+        );
+    }
+
+    #[test]
+    fn set_material_attributes_and_register_names() {
+        let bytes = fixture();
+        let edits = [
+            VmatEdit::FloatAttribute {
+                name: "g_flNPRDiffuseStepSharpness".into(),
+                value: 8.0,
+            },
+            VmatEdit::IntAttribute {
+                name: "g_nNPRSpecularSteps".into(),
+                value: 2,
+            },
+            VmatEdit::VectorAttribute {
+                name: "g_vNPROutlineBrightColor".into(),
+                value: [1.0, 0.9, 0.25, 0.0],
+            },
+        ];
+        let (patched, stats) = patch_vmat_params(&bytes, &edits).unwrap();
+        assert_eq!(stats.inserted, 3, "{:?}", stats.failed);
+        assert!(stats.failed.is_empty(), "{:?}", stats.failed);
+
+        let after = morphic::decode_kv3_resource(&patched).unwrap();
+        let i = param_index(&after, "m_floatAttributes", "g_flNPRDiffuseStepSharpness").unwrap();
+        assert_eq!(
+            after
+                .get("m_floatAttributes")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(|p| p.get("m_flValue"))
+                .and_then(Value::as_f64),
+            Some(8.0)
+        );
+        let i = param_index(&after, "m_intAttributes", "g_nNPRSpecularSteps").unwrap();
+        assert_eq!(
+            after
+                .get("m_intAttributes")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(|p| p.get("m_nValue"))
+                .and_then(Value::as_int),
+            Some(2)
+        );
+        let attrs = after
+            .get("m_renderAttributesUsed")
+            .and_then(Value::as_array)
+            .unwrap();
+        for name in [
+            "g_flNPRDiffuseStepSharpness",
+            "g_nNPRSpecularSteps",
+            "g_vNPROutlineBrightColor",
+        ] {
+            assert!(
+                attrs.iter().any(|v| v.as_str() == Some(name)),
+                "{name} must be registered in m_renderAttributesUsed: {attrs:?}"
+            );
+        }
+
+        let info = material_info("x.vmat_c", &after);
+        assert!(
+            info.attributes
+                .iter()
+                .any(|(name, value)| name == "g_flNPRDiffuseStepSharpness" && value == "8"),
+            "list view should expose injected attributes: {:?}",
+            info.attributes
+        );
+    }
+
+    #[test]
     fn edit_expr_resolves_against_current_expression() {
         // Seed an expression (blob-aware insert works on the blobbed fixture),
         // then resolve an in-place substitution against it.
@@ -961,28 +1280,87 @@ mod tests {
     }
 
     #[test]
-    fn edit_expr_on_blob_material_reports_unsupported() {
-        // Until a blob-aware replace lands, editing an existing expression on a
-        // blob-bearing material must fail loudly (never emit a broken blob).
+    fn edit_expr_on_blob_material_succeeds() {
+        // Editing an existing dynamic expression on a blob-bearing material now
+        // works: the bytecode IS a binary blob, and `replace_expr_blob` swaps it
+        // byte-faithfully while keeping the block compressed (no re-encode, which
+        // would mangle the blob framing). Two expressions are seeded first so the
+        // edit exercises the MULTI-blob path (countBlocks == 2, the swap is
+        // content-keyed to target the right one). The recompiled bytecode also
+        // differs in length from the original here (`* 1` vs `* 100`), proving the
+        // re-chunk handles a length change.
         let bytes = fixture();
-        let (seeded, _) = patch_vmat_params(
+        let (seeded, s0) = patch_vmat_params(
             &bytes,
-            &[VmatEdit::expr("g_flSelfIllumScale1", "-1 * sin(10 * time())").unwrap()],
+            &[
+                VmatEdit::expr("g_flSelfIllumScale1", "-1 * sin(10 * time())").unwrap(),
+                VmatEdit::expr("g_vColorTint1", "float3(1,1,1) * 1").unwrap(),
+            ],
         )
         .unwrap();
-        let edit = VmatEdit::EditExpr {
-            name: "g_flSelfIllumScale1".into(),
-            find: "10 * time()".into(),
-            replace: "20 * time()".into(),
-        };
-        let (_, stats) = patch_vmat_params(&seeded, &[edit]).unwrap();
-        assert_eq!(stats.set + stats.inserted, 0);
-        assert_eq!(stats.failed.len(), 1);
-        assert!(
-            stats.failed[0].contains("blob-aware replace"),
-            "{:?}",
-            stats.failed
+        assert!(s0.failed.is_empty(), "seed: {:?}", s0.failed);
+        // precondition: a real 2-blob block
+        let data = morphic::kv3_resource_data_block(&seeded).unwrap();
+        assert_eq!(data[20], 1, "LZ4");
+        assert_eq!(
+            i32::from_le_bytes(data[56..60].try_into().unwrap()),
+            2,
+            "2 blobs"
         );
+
+        let edit = VmatEdit::EditExpr {
+            name: "g_vColorTint1".into(),
+            find: "* 1".into(),
+            replace: "* 100".into(),
+        };
+        let (patched, stats) = patch_vmat_params(&seeded, &[edit]).unwrap();
+        assert!(stats.failed.is_empty(), "edit: {:?}", stats.failed);
+        assert_eq!(stats.set, 1);
+
+        // The block still decodes, stays a 2-blob compressed v5, and the edited
+        // expression now reads back as the recompiled source; the *other* blob is
+        // untouched.
+        let after = morphic::decode_kv3_resource(&patched).unwrap();
+        let read = |root: &Value, n: &str| -> Vec<u8> {
+            let i = param_index(root, "m_dynamicParams", n).unwrap();
+            root.get("m_dynamicParams")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(|p| p.get("m_value"))
+                .and_then(expr_bytes)
+                .unwrap()
+        };
+        assert_eq!(
+            read(&after, "g_vColorTint1"),
+            morphic::vfx_expr::compile("float3(1,1,1) * 100")
+                .unwrap()
+                .bytecode,
+            "edited expression must be the new bytecode"
+        );
+        assert_eq!(
+            read(&after, "g_flSelfIllumScale1"),
+            morphic::vfx_expr::compile("-1 * sin(10 * time())")
+                .unwrap()
+                .bytecode,
+            "the other expression blob must be byte-identical"
+        );
+        let pdata = morphic::kv3_resource_data_block(&patched).unwrap();
+        assert_eq!(pdata[20], 1, "stays LZ4-compressed");
+        assert_eq!(
+            i32::from_le_bytes(pdata[56..60].try_into().unwrap()),
+            2,
+            "stays 2 blobs"
+        );
+        // The header size totals the engine validates: a stale sizeUncTotal@48
+        // (not updated when unc2 changed) crashed Deadlock with "Bad KV3 data".
+        let h = |o: usize| i32::from_le_bytes(pdata[o..o + 4].try_into().unwrap());
+        assert_eq!(h(48), h(72) + h(80), "sizeUncTotal@48 == unc1+unc2");
+        assert_eq!(h(52), h(76) + h(84), "sizeCompTotal@52 == comp1+comp2");
+        // Per-blob LZ4 framing: two small blobs must be two frames, not one
+        // concatenated frame. sizeBlockCompressed@68 is the frame-table byte count
+        // (2 bytes/frame), so two frames => 4. A region-chunked single frame (=> 2)
+        // decodes in our reader but the engine rejects it ("Bad KV3 data").
+        assert_eq!(h(68), 4, "two small blobs must be two per-blob LZ4 frames");
     }
 
     #[test]

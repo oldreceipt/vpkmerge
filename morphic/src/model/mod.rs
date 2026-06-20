@@ -37,7 +37,11 @@ pub use edit::{
     read_vertex_colors, read_vertex_positions, recolor_vertex_buffer, replace_vertex_positions,
     reskin_vertex_buffer, vertex_targets, EditedPrimitive, EncodedMesh, VertexTarget,
 };
-pub use femodel::{decode_cloth_anchors, ClothAnchors};
+pub use femodel::{
+    decode_cloth_anchors, decode_fe_model, ClothAnchors, FeBox, FeCapsule, FeCollisionTree,
+    FeCtrlOffset, FeCtrlSoftOffset, FeFitMatrix, FeFitWeight, FeLockToParent, FeModel, FeNode,
+    FeNodeBase, FeReverseOffset, FeRod, FeSphere, FeStrayRadius,
+};
 pub use glb::{to_glb, to_glb_textured, FileResolver};
 pub use gltf_import::{
     apply_animation, import_glb_onto_nm_clip, read_glb_animation, GltfAnimation, GltfBoneTrack,

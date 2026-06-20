@@ -759,6 +759,8 @@ fn glb_textured_emits_npr_extras_and_emissive_strength() {
     // The morphic extras payload: shader + full param tables + NPR masks.
     let morphic = &mat["extras"]["morphic"];
     assert_eq!(morphic["shader"], "pbr.vfx");
+    assert_eq!(morphic["blend_mode"], "opaque");
+    assert_eq!(morphic["self_illum_valid"], true);
     assert_eq!(morphic["ints"]["F_USE_NPR_LIGHTING"], 1);
     let scale = morphic["floats"]["g_flSelfIllumScale1"]
         .as_f64()
@@ -807,6 +809,53 @@ fn metal_rough_packs_resampled_metalness() {
     }
 
     let png = super::glb::metal_rough_png(2, 2, &rough, None);
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    assert!(img.pixels().all(|px| px[2] == 0), "no mask: B = 0");
+}
+
+/// A pure tangent-space normal map (blue = the unit normal's Z) is detected so its
+/// blue is not misread as roughness; a packed normal-roughness (blue = an
+/// uncorrelated roughness) is not.
+#[test]
+fn pure_normal_map_is_distinguished_from_packed() {
+    // Normal (0.6, 0.0, 0.8): X = 204, Y = 128, Z encoded as (0.8*0.5+0.5)*255 ~= 230.
+    let pure = [204u8, 128, 230, 255].repeat(8);
+    assert!(super::glb::is_pure_normal_map(&pure));
+
+    // Same authored normal X,Y, but blue is a 0.3 roughness (76) uncorrelated with it.
+    let packed = [204u8, 128, 76, 255].repeat(8);
+    assert!(!super::glb::is_pure_normal_map(&packed));
+}
+
+/// The metalness-only ORM (used when the normal slot is a pure normal map) keeps a
+/// neutral roughness lane (G = 255) and packs the mask's R channel into B.
+#[test]
+fn metal_only_png_is_neutral_roughness_with_metalness() {
+    let mask = [200u8, 0, 0, 255, 30, 0, 0, 255]; // 2x1 mask, R = 200 then 30
+    let png = super::glb::metal_only_png(2, 1, &mask);
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    let px: Vec<_> = img.pixels().collect();
+    assert_eq!(px[0][1], 255, "G neutral roughness");
+    assert_eq!(px[0][2], 200, "B = metalness mask R");
+    assert_eq!(px[1][2], 30, "B = metalness mask R");
+}
+
+/// A standalone roughness texture (`g_tRoughness`, roughness in R) is wired into
+/// the ORM's G lane, with the metalness mask nearest-neighbor resampled into B.
+#[test]
+fn rough_metal_png_sources_roughness_from_red_channel() {
+    let rough = [90u8, 0, 0, 255, 200, 0, 0, 255]; // 2x1, R = 90 then 200
+    let metal = (1u32, 1u32, vec![150u8, 0, 0, 255]);
+    let png = super::glb::rough_metal_png(2, 1, &rough, Some(&metal));
+    let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
+    let px: Vec<_> = img.pixels().collect();
+    assert_eq!(px[0][0], 0, "R unused");
+    assert_eq!(px[0][1], 90, "G = roughness R");
+    assert_eq!(px[1][1], 200, "G = roughness R");
+    assert_eq!(px[0][2], 150, "B = metalness mask R (upsampled)");
+    assert_eq!(px[1][2], 150, "B = metalness mask R (upsampled)");
+
+    let png = super::glb::rough_metal_png(2, 1, &rough, None);
     let img = image::load_from_memory(&png).expect("orm png").to_rgba8();
     assert!(img.pixels().all(|px| px[2] == 0), "no mask: B = 0");
 }
