@@ -41,6 +41,12 @@ pub use catalog::{
     ENGLISH_CAPTIONS_ENTRY,
 };
 
+pub mod texture_catalog;
+pub use texture_catalog::{
+    build_texture_index, cache_texture_thumbnails, classify_texture, thumbnail_png,
+    CachedThumbnail, TextureCategory, TextureEntry, Thumbnail, ThumbnailOutcome,
+};
+
 pub mod cubemap;
 pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
 

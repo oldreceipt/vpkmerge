@@ -151,6 +151,14 @@ enum CatalogAction {
     /// English subtitles for hero VO, so `caption` is almost always empty. Filter
     /// with `--hero` / `--search`; `--json` emits a machine-readable array.
     Voiceline(VoicelineArgs),
+
+    /// Browse the texture / icon index: one row per `.vtex_c`, classified from
+    /// its path (ability icon, item icon, hero portrait, hero skin, ability VFX)
+    /// with a searchable label and hero codename. Filter with `--category` /
+    /// `--hero` / `--search`. `--thumbs DIR` also decodes a small PNG thumbnail
+    /// for each matching entry into DIR (plus a `manifest.json`), the grid
+    /// backbone for the Texture / Item Foundry tabs.
+    Texture(TextureCatalogArgs),
 }
 
 #[derive(Args)]
@@ -175,6 +183,45 @@ struct VoicelineArgs {
     /// Emit a machine-readable JSON array instead of the human-readable table.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args)]
+struct TextureCatalogArgs {
+    /// VPK to index (the base `citadel/pak01_dir.vpk`, or a mod VPK).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only this category: `ability-icon`, `item-icon`, `hero-image`,
+    /// `hero-model`, `ability-vfx`, or `other`.
+    #[arg(long, value_name = "CATEGORY")]
+    category: Option<String>,
+
+    /// Keep only entries for this hero codename (e.g. `astro`, `archer`).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only entries whose label or path contains this text (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    /// Does not limit thumbnail generation.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+
+    /// Also decode a PNG thumbnail for every matching entry into this directory,
+    /// writing a `manifest.json` alongside. Honors `--category` / `--hero` /
+    /// `--search` but ignores `--limit`.
+    #[arg(long, value_name = "DIR")]
+    thumbs: Option<PathBuf>,
+
+    /// Longest-edge pixel size for thumbnails (aspect preserved, never upscaled).
+    #[arg(long, value_name = "N", default_value_t = 128)]
+    thumb_size: u32,
 }
 
 #[derive(Args)]
@@ -2931,6 +2978,7 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
 fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
     match &cmd.action {
         CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
+        CatalogAction::Texture(args) => run_catalog_texture(args),
     }
 }
 
@@ -3002,6 +3050,130 @@ fn run_catalog_voiceline(args: &VoicelineArgs) -> Result<()> {
         eprintln!("{total} voice line(s)");
     }
     Ok(())
+}
+
+fn run_catalog_texture(args: &TextureCatalogArgs) -> Result<()> {
+    use vpkmerge_core::{TextureCategory, ThumbnailOutcome};
+
+    let category = match &args.category {
+        Some(c) => Some(
+            TextureCategory::from_id(c)
+                .with_context(|| format!("unknown --category {c:?} (try ability-icon, item-icon, hero-image, hero-model, ability-vfx, other)"))?,
+        ),
+        None => None,
+    };
+
+    let mut entries = vpkmerge_core::build_texture_index(&args.vpk)
+        .with_context(|| format!("building texture index from {}", args.vpk.display()))?;
+
+    if let Some(cat) = category {
+        entries.retain(|e| e.category == cat);
+    }
+    if let Some(hero) = &args.hero {
+        entries.retain(|e| e.hero.as_deref() == Some(hero.as_str()));
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        entries.retain(|e| {
+            e.label.to_lowercase().contains(&needle) || e.path.to_lowercase().contains(&needle)
+        });
+    }
+
+    // Thumbnail generation runs over the full filtered set, before the --limit
+    // applies to the printed listing.
+    if let Some(dir) = &args.thumbs {
+        let outcomes =
+            vpkmerge_core::cache_texture_thumbnails(&args.vpk, &entries, dir, args.thumb_size)
+                .with_context(|| format!("caching thumbnails to {}", dir.display()))?;
+
+        let mut manifest = Vec::new();
+        let mut skipped = 0usize;
+        for outcome in &outcomes {
+            match outcome {
+                ThumbnailOutcome::Cached(c) => manifest.push(serde_json::json!({
+                    "entry": c.entry,
+                    "file": c.file,
+                    "width": c.width,
+                    "height": c.height,
+                    "sourceWidth": c.source_width,
+                    "sourceHeight": c.source_height,
+                    "format": c.format,
+                })),
+                ThumbnailOutcome::Skipped { entry, reason } => {
+                    skipped += 1;
+                    eprintln!("  skipped {entry}: {reason}");
+                }
+            }
+        }
+        let manifest_path = dir.join("manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).context("serializing thumbnail manifest")?,
+        )
+        .with_context(|| format!("writing {}", manifest_path.display()))?;
+        eprintln!(
+            "wrote {} thumbnail(s) + manifest.json to {} ({skipped} skipped)",
+            manifest.len(),
+            dir.display()
+        );
+    }
+
+    let total = entries.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = entries[..shown]
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "path": e.path,
+                    "category": e.category.id(),
+                    "hero": e.hero,
+                    "label": e.label,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else if total == 0 {
+        println!("no textures match");
+        return Ok(());
+    } else {
+        println!("  {:<13} {:<12} {:<40} path", "category", "hero", "label");
+        for e in &entries[..shown] {
+            println!(
+                "  {:<13} {:<12} {:<40} {}",
+                e.category.id(),
+                e.hero.as_deref().unwrap_or("-"),
+                truncate(&e.label, 40),
+                e.path,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} texture(s)");
+    }
+    Ok(())
+}
+
+/// Truncate a string to `max` chars for fixed-width table display.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let mut t: String = s.chars().take(max.saturating_sub(3)).collect();
+        t.push_str("...");
+        t
+    }
 }
 
 /// Parse a `--rotate X,Y,Z` value into Euler degrees.

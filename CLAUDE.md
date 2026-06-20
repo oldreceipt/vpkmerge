@@ -186,6 +186,41 @@ the search key. Exposed as `vpkmerge catalog voiceline --vpk <VPK> [--hero CODEN
 never a silent cap). Example: `examples/voiceline_index.rs`. Full design + findings:
 [../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
 
+## Foundry texture / icon index (`catalog texture`)
+
+`vpkmerge_core::texture_catalog` is the visual counterpart to the voice-line
+index: the browse backbone for the Texture and Item Foundry tabs.
+`build_texture_index(vpk)` returns one `TextureEntry { path, category, hero,
+label }` per `.vtex_c` (12,540 on live `citadel/pak01`), classified **purely from
+the path** so the full index builds instantly with no byte reads.
+`TextureCategory` (grounded in the live pak): `ability-icon`
+(`panorama/images/hud/abilities/<hero?>/`, 232), `item-icon`
+(`panorama/images/items|upgrades/mods_*|shop/`, 447), `hero-image`
+(`panorama/images/heroes/`, 410), `hero-model`
+(`models/heroes_staging|heroes_wip|heroes/<hero>/`, 2193 -- the skin/reskin/recolor
+targets), `ability-vfx` (`materials/particle/abilities/<hero>/`, 456), and `other`
+(8802). `hero` is the codename read from the path segment that encodes it; `label`
+is the filename as prose (content hash + format token + hero prefix stripped:
+`archer_bow_color_png_<hash>` -> `"bow color"`), the search key. `path` is the
+verbatim icon-swap / recolor target.
+
+Thumbnails decode on demand via morphic (the recolor-preview decode path):
+`thumbnail_png(vtex_bytes, max_edge) -> Thumbnail { png, width, height,
+source_*, format }` decodes the smallest mip whose longer edge is still >=
+`max_edge` (the mip chain does the bulk of the downscale for free) then
+box-filters to the exact target, so a 4K BC7 thumbnails in tens of ms.
+`cache_texture_thumbnails(vpk, entries, out_dir, max_edge)` batches it to an
+on-disk PNG set (filename = entry path with `/` -> `__`), returning a per-entry
+`ThumbnailOutcome` (a texture that fails to decode is `Skipped`, never sinks the
+batch). HDR (f16) sources are clamped to `[0,1]` as linear; the browse icons are
+all LDR.
+
+Exposed as `vpkmerge catalog texture --vpk <VPK> [--category <CAT>] [--hero
+CODENAME] [--search TEXT] [--limit N] [--json] [--thumbs DIR [--thumb-size N]]`.
+`--thumbs DIR` writes the PNG set + a `manifest.json` for every matching entry
+(honors the filters, ignores `--limit`). Example: `examples/texture_index.rs`.
+Full design: [../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
+
 ## Texture recolor (`.vtex_c`)
 
 `vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top
