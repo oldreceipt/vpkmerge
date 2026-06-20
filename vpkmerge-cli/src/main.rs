@@ -165,6 +165,13 @@ enum CatalogAction {
     /// (`_dir.vpk` size + mtime), so a later run loads them instantly instead of
     /// rescanning. Reports per-index hit/miss. `--clear` forces a rebuild.
     Cache(CatalogCacheArgs),
+
+    /// The hero roster with display names: codename -> in-game name (e.g.
+    /// `hornet` -> `Vindicta`), read from `scripts/heroes.vdata_c` plus the loose
+    /// `resource/localization/citadel_gc_hero_names` file next to the pak. This is
+    /// the lookup table that turns the catalog's codenames into labels. Lists
+    /// selectable heroes by default; `--all` includes in-development / disabled.
+    Heroes(HeroesArgs),
 }
 
 #[derive(Args)]
@@ -245,6 +252,30 @@ struct CatalogCacheArgs {
     clear: bool,
 
     /// Emit a machine-readable JSON status object instead of the human summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct HeroesArgs {
+    /// VPK carrying `scripts/heroes.vdata_c` (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Localization directory to resolve display names from. Defaults to
+    /// `resource/localization` next to the pak.
+    #[arg(long, value_name = "DIR")]
+    loc_dir: Option<PathBuf>,
+
+    /// Localization language suffix (file `citadel_gc_hero_names_<lang>.txt`).
+    #[arg(long, value_name = "LANG", default_value = "english")]
+    lang: String,
+
+    /// Include in-development and disabled heroes (default: selectable only).
+    #[arg(long)]
+    all: bool,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
     #[arg(long)]
     json: bool,
 }
@@ -3005,7 +3036,58 @@ fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
         CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
         CatalogAction::Texture(args) => run_catalog_texture(args),
         CatalogAction::Cache(args) => run_catalog_cache(args),
+        CatalogAction::Heroes(args) => run_catalog_heroes(args),
     }
+}
+
+fn run_catalog_heroes(args: &HeroesArgs) -> Result<()> {
+    let mut roster =
+        vpkmerge_core::build_hero_roster(&args.vpk, args.loc_dir.as_deref(), &args.lang)
+            .with_context(|| format!("building hero roster from {}", args.vpk.display()))?;
+
+    if !args.all {
+        roster.retain(|h| h.selectable && !h.disabled);
+    }
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = roster
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "codename": h.codename,
+                    "name": h.name,
+                    "selectable": h.selectable,
+                    "inDevelopment": h.in_development,
+                    "disabled": h.disabled,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else if roster.is_empty() {
+        println!("no heroes match");
+        return Ok(());
+    } else {
+        println!("  {:<14} {:<18} flags", "codename", "name");
+        for h in &roster {
+            let mut flags = Vec::new();
+            if h.selectable {
+                flags.push("selectable");
+            }
+            if h.in_development {
+                flags.push("in-dev");
+            }
+            if h.disabled {
+                flags.push("disabled");
+            }
+            println!("  {:<14} {:<18} {}", h.codename, h.name, flags.join(", "));
+        }
+    }
+
+    eprintln!("{} hero(es)", roster.len());
+    Ok(())
 }
 
 fn run_catalog_cache(args: &CatalogCacheArgs) -> Result<()> {

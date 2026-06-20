@@ -247,6 +247,31 @@ warms both indexes, prints the fingerprint + per-index hit/miss. Example:
 `examples/catalog_cache.rs`. Still open: a single combined catalog file (today it is
 one-per-kind) and tying the texture-thumbnail dir to the same fingerprint.
 
+## Hero display names (`catalog heroes`)
+
+The catalog indexes key everything by engine **codename** (`hornet`, `vampirebat`);
+a UI wants the **display name** (`Vindicta`, `Mina`). `vpkmerge_core::localization`
+resolves them. The names are **not in pak01**: they live in loose Valve-KeyValues
+`.txt` under `<game>/citadel/resource/localization/`. `build_hero_roster(vpk,
+loc_dir, lang)` reads the codenames + availability flags from `scripts/heroes.vdata_c`
+(inside the pak) and resolves each `hero_<codename>` token against
+`citadel_gc_hero_names/citadel_gc_hero_names_<lang>.txt` (loose, located via
+`localization_dir_for_pak`), returning `HeroInfo { codename, name, selectable,
+in_development, disabled }`. On the live build that is 38 selectable / 59 total, with
+the non-obvious mappings correct (`atlas`->Abrams, `forge`->McGinnis,
+`familiar`->Rem, `orion`->Grey Talon, `synth`->Pocket, `frank`->Victor). A missing
+localization tree degrades names to the codename (still returns the roster + flags).
+
+`parse_kv_tokens(text)` is the generic reader (depth-2 quoted-string pairs, strips
+the `:hint` type marker, handles BOM / `//` comments / `\"` escapes); `hero_name_tokens`
+and `load_token_file` expose it. Exposed as `vpkmerge catalog heroes --vpk <VPK>
+[--loc-dir DIR] [--lang L] [--all] [--json]` (selectable only by default; `--all`
+includes in-dev / disabled). Example: `examples/hero_roster.rs`. This supersedes the
+hardcoded 14-hero map in `examples/ult_sound_map.rs`. **Ability / item display names**
+are the remaining piece: the strings are in the same localization tree but join to
+their icons only through a fuzzy filename / vdata-node mapping (a later pass); the
+catalog's filename-derived `label` already reads fine for those.
+
 ## Texture recolor (`.vtex_c`)
 
 `vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top

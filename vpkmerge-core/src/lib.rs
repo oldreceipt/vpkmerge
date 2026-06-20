@@ -50,6 +50,12 @@ pub use texture_catalog::{
 pub mod catalog_cache;
 pub use catalog_cache::{BuildFingerprint, CatalogCache, CACHE_SCHEMA_VERSION};
 
+pub mod localization;
+pub use localization::{
+    build_hero_roster, hero_name_tokens, localization_dir_for_pak, parse_kv_tokens, HeroInfo,
+    DEFAULT_LANG,
+};
+
 pub mod cubemap;
 pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
 
