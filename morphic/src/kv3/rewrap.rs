@@ -15,7 +15,6 @@
 //! `countBlocks == 0`; `ANIM` blobs are out of scope and rejected). Already
 //! uncompressed input is returned unchanged.
 
-use super::Format;
 use crate::error::DecodeError;
 
 const MAGIC_BASE: u32 = 0x4B56_3300;
@@ -239,25 +238,31 @@ pub(crate) fn reassemble_blobbed_v5(orig: &[u8], working: &[u8]) -> Result<Vec<u
     Ok(out)
 }
 
-/// Replace the sole binary blob of a blobbed-LZ4 v5 block with `new`, re-emitting
-/// an engine-loadable compressed block. `new` may be **any length**: it is chunked
-/// into LZ4 frames of `frame_size` (16 KB) exactly as the engine stores pose
-/// streams, so both short (single-frame) and long (multi-frame) clips work. Each
-/// frame is compressed as an independent LZ4 block; the reader decompresses each
-/// against the running output as a dictionary, which decodes an independently
-/// compressed frame correctly (all its match offsets are self-relative). Multi-blob
-/// blocks still error.
+/// Replace one binary blob of a blobbed-LZ4 v5 block with `new`, re-emitting an
+/// engine-loadable compressed block. `new` may be **any length**: the full blob
+/// region (all blobs concatenated, the target swapped) is chunked into LZ4 frames
+/// of `frame_size` (16 KB) exactly as the engine stores them, so both short
+/// (single-frame) and long (multi-frame) blobs work. Each frame is compressed as an
+/// independent LZ4 block; the reader decompresses each against the running output as
+/// a dictionary, which decodes an independently compressed frame correctly (all its
+/// match offsets are self-relative).
 ///
-/// The frame-size table (one `u16` per frame) lives at buf2's tail, so a changed
-/// frame count changes buf2's *uncompressed* size. The fields that move:
-/// `size_comp_total` (52), `sizeBlobs` (60), `sizeBlockCompressed` (68, the table
-/// byte count), `unc2` (80), and `comp2` (84). `comp1`/`unc1`, `countBlocks` (56),
-/// and `frame_size` (26) stay. The block stays `compressionMethod = 1` (the engine
-/// misreads a blobbed block flipped to 0; see [`rewrap_uncompressed`]).
+/// **Single blob** (`countBlocks == 1`): the target is unambiguous; `verify_old`
+/// (when `Some`) is checked against the decoded blob. **Multiple blobs**
+/// (`countBlocks > 1`, e.g. a `.vmat_c` with several `m_dynamicParams` expressions):
+/// `verify_old` is **required** and content-keys which blob to replace; it must
+/// match exactly one blob (every other blob is re-emitted byte-identical in its
+/// uncompressed bytes, then the whole region is re-chunked into frames). The blobs
+/// are small expression bytecode, so this is the common edit case.
 ///
-/// When `verify_old` is `Some`, the existing blob must decompress to exactly those
-/// bytes (a safety check for content-keyed callers); pass `None` to replace the
-/// sole blob unconditionally.
+/// The frame-size table (one `u16` per frame) and the per-blob length table both
+/// live at buf2's tail, so a changed blob size changes buf2's *uncompressed* size.
+/// The fields that move: `size_comp_total` (52), `sizeBlobs` (60),
+/// `sizeBlockCompressed` (68, the frame table byte count), `unc2` (80), and `comp2`
+/// (84). `comp1`/`unc1`, `countBlocks` (56), and `frame_size` (26) stay. The block
+/// stays `compressionMethod = 1` (the engine misreads a blobbed block flipped to 0;
+/// see [`rewrap_uncompressed`]).
+#[allow(clippy::too_many_lines)] // one linear splice: header + tail + region, all coupled
 pub(crate) fn replace_blob_v5(
     orig: &[u8],
     new: &[u8],
@@ -267,9 +272,14 @@ pub(crate) fn replace_blob_v5(
     if !is_blobbed_lz4_v5(orig) {
         return Err(DecodeError::Kv3("blob replace: not a blobbed LZ4 v5 block"));
     }
-    if i32_at(orig, 56) != 1 {
+    let count = usize::try_from(i32_at(orig, 56))
+        .map_err(|_| DecodeError::Kv3("blob replace: negative blob count"))?;
+    if count == 0 {
+        return Err(DecodeError::Kv3("blob replace: no blobs"));
+    }
+    if count > 1 && verify_old.is_none() {
         return Err(DecodeError::Kv3(
-            "blob replace: only a single blob is handled",
+            "blob replace: multi-blob block needs `old` to target the right blob",
         ));
     }
     let size_blobs = usize_at(orig, 60)?;
@@ -290,52 +300,102 @@ pub(crate) fn replace_blob_v5(
         .ok_or(DecodeError::Kv3("buffer2 extent overflow"))?;
     let frames = slice(orig, frames_start, orig.len().saturating_sub(frames_start))?;
 
-    // buf2 tail layout (single blob): [per-blob length i32][trailer 4]
+    // buf2 tail layout: [per-blob length i32 x count][trailer 4]
     // [frame-size table: one u16 per frame]. The type stream ahead of the tail is
-    // kept verbatim; only the tail (which grows/shrinks with the frame count) is
-    // rewritten.
+    // kept verbatim; only the tail (which grows/shrinks with sizes) is rewritten.
     let raw2 = decompress(slice(orig, b2c, comp2)?, 1, unc2, comp2)?;
-    let old_tail_len = 4 + 4 + size_block_compressed; // blob length + trailer + table
+    let len_table_bytes = count
+        .checked_mul(4)
+        .ok_or(DecodeError::Kv3("blob length table overflow"))?;
+    let old_tail_len = len_table_bytes + 4 + size_block_compressed; // lengths + trailer + table
     if raw2.len() < old_tail_len {
         return Err(DecodeError::Kv3("blob replace: buf2 shorter than its tail"));
     }
     let types_end = raw2.len() - old_tail_len; // end of the kept type stream
 
-    // Optionally verify the existing blob decompresses to `old` (chained frames),
-    // so a layout surprise fails safely.
-    if let Some(old) = verify_old {
-        let table = slice(
-            &raw2,
-            raw2.len() - size_block_compressed,
-            size_block_compressed,
-        )?;
-        let decoded = decompress_chained_frames(frames, table, frame_size, size_blobs)?;
-        if decoded != old {
-            return Err(DecodeError::Kv3(
-                "blob replace: existing blob did not match `old`",
-            ));
+    // Per-blob uncompressed lengths from the tail's length table.
+    let lengths: Vec<usize> = raw2[types_end..types_end + len_table_bytes]
+        .chunks_exact(4)
+        .map(|b| usize::try_from(i32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(0))
+        .collect();
+
+    // Decode the whole region (all blobs concatenated) and carve per blob.
+    let table = slice(
+        &raw2,
+        raw2.len() - size_block_compressed,
+        size_block_compressed,
+    )?;
+    let region = decompress_chained_frames(frames, table, frame_size, size_blobs)?;
+    let mut blobs: Vec<Vec<u8>> = Vec::with_capacity(count);
+    let mut p = 0usize;
+    for &len in &lengths {
+        let end = p.checked_add(len).ok_or(DecodeError::Kv3("blob overrun"))?;
+        blobs.push(
+            region
+                .get(p..end)
+                .ok_or(DecodeError::Kv3("blob region underrun"))?
+                .to_vec(),
+        );
+        p = end;
+    }
+
+    // Pick the blob to replace. Single blob: index 0 (verify if given). Multi-blob:
+    // the unique blob whose content equals `old`.
+    let target = if count == 1 {
+        if let Some(old) = verify_old {
+            if blobs[0] != old {
+                return Err(DecodeError::Kv3(
+                    "blob replace: existing blob did not match `old`",
+                ));
+            }
+        }
+        0
+    } else {
+        let old = verify_old.expect("checked above");
+        let mut found = None;
+        for (i, b) in blobs.iter().enumerate() {
+            if b == old {
+                if found.is_some() {
+                    return Err(DecodeError::Kv3(
+                        "blob replace: `old` matches more than one blob; ambiguous",
+                    ));
+                }
+                found = Some(i);
+            }
+        }
+        found.ok_or(DecodeError::Kv3("blob replace: `old` matched no blob"))?
+    };
+    blobs[target] = new.to_vec();
+
+    // Re-chunk into LZ4 frames, ONE FRAME PER BLOB (a blob larger than frame_size
+    // splits into frame_size pieces). Valve frames per-blob, not by chunking the
+    // concatenated region: a 2-blob material ships two frames, not one (the reader's
+    // `decompress_blob_frames` documents this). morphic's reader decodes either, but
+    // the engine is strict -- a region-chunked single frame loads here yet crashes
+    // Source 2 with "Bad KV3 data" (observed on ghost2_arm.vmat_c), so mirror the
+    // per-blob framing exactly.
+    let new_region: Vec<u8> = blobs.iter().flatten().copied().collect();
+    let mut new_frames = Vec::new();
+    let mut new_frame_table = Vec::new();
+    for blob in &blobs {
+        for chunk in blob.chunks(frame_size) {
+            let c = lz4_flex::block::compress(chunk);
+            let cl = u16::try_from(c.len())
+                .map_err(|_| DecodeError::Kv3("blob replace: frame exceeds 64 KB"))?;
+            new_frame_table.extend_from_slice(&cl.to_le_bytes());
+            new_frames.extend_from_slice(&c);
         }
     }
+    let new_block_comp = new_frame_table.len(); // sizeBlockCompressed = table byte count
 
-    // Compress `new` into frames of frame_size, each an independent LZ4 block, and
-    // build the new u16 frame-size table.
-    let mut new_frames = Vec::new();
-    let mut new_table = Vec::new();
-    for chunk in new.chunks(frame_size) {
-        let c = lz4_flex::block::compress(chunk);
-        let cl = u16::try_from(c.len())
-            .map_err(|_| DecodeError::Kv3("blob replace: frame exceeds 64 KB"))?;
-        new_table.extend_from_slice(&cl.to_le_bytes());
-        new_frames.extend_from_slice(&c);
-    }
-    let new_block_comp = new_table.len(); // sizeBlockCompressed = table byte count
-
-    // Rebuild buf2: keep the type stream, write the new tail (length, trailer,
-    // table), then recompress.
+    // Rebuild buf2: keep the type stream, write the new tail (lengths, trailer,
+    // frame table), then recompress.
     let mut new_raw2 = raw2[..types_end].to_vec();
-    new_raw2.extend_from_slice(&fit_i32(new.len())?.to_le_bytes());
+    for b in &blobs {
+        new_raw2.extend_from_slice(&fit_i32(b.len())?.to_le_bytes());
+    }
     new_raw2.extend_from_slice(&BLOB_TRAILER.to_le_bytes());
-    new_raw2.extend_from_slice(&new_table);
+    new_raw2.extend_from_slice(&new_frame_table);
     let new_unc2 = new_raw2.len();
     let comp2_new = lz4_flex::block::compress(&new_raw2);
 
@@ -343,8 +403,14 @@ pub(crate) fn replace_blob_v5(
         .checked_add(comp2_new.len())
         .ok_or(DecodeError::Kv3("compressed size overflow"))?;
     let mut out = orig[..HEADER].to_vec();
+    // sizeUncTotal (48) is unc1 + unc2 (blob region excluded; tracked at 60). unc2
+    // changed because the frame table in buf2's tail grew/shrank, so 48 must move
+    // with it: a stale 48 != unc1+unc2 makes the engine reject the KV3 ("Bad KV3
+    // data" -> crash, observed on a 2-blob ghost2_arm.vmat_c). unc1 is unchanged.
+    let unc1 = usize_at(orig, 72)?;
+    write_i32(&mut out, 48, fit_i32(unc1 + new_unc2)?);
     write_i32(&mut out, 52, fit_i32(total_comp)?);
-    write_i32(&mut out, 60, fit_i32(new.len())?); // sizeBlobs
+    write_i32(&mut out, 60, fit_i32(new_region.len())?); // sizeBlobs (all blobs)
     write_i32(&mut out, 68, fit_i32(new_block_comp)?); // sizeBlockCompressed (table)
     write_i32(&mut out, 80, fit_i32(new_unc2)?); // unc2 (tail grew/shrank)
     write_i32(&mut out, 84, fit_i32(comp2_new.len())?); // comp2
@@ -355,7 +421,25 @@ pub(crate) fn replace_blob_v5(
     // (separate from the one inside buf2's tail). morphic's reader never reads it,
     // but the engine/VRF assert on it (`trailer == 0xFFEEDD00`), so re-append it.
     out.extend_from_slice(&BLOB_TRAILER.to_le_bytes());
+    verify_v5_size_invariants(&out)?;
     Ok(out)
+}
+
+/// Guard a produced blobbed-v5 block against the size-field drift that crashes
+/// the engine: `sizeUncTotal@48` must equal `unc1+unc2` and `sizeCompTotal@52`
+/// must equal `comp1+comp2`. A stale `@48` (forgotten when `unc2` changed) loaded
+/// in morphic's lenient reader but made Source 2 reject the KV3 ("Bad KV3 data"),
+/// so this fails the edit at pack time instead of in-game.
+fn verify_v5_size_invariants(block: &[u8]) -> Result<(), DecodeError> {
+    if i32_at(block, 48) != i32_at(block, 72) + i32_at(block, 80) {
+        return Err(DecodeError::Kv3("blob replace: sizeUncTotal != unc1+unc2"));
+    }
+    if i32_at(block, 52) != i32_at(block, 76) + i32_at(block, 84) {
+        return Err(DecodeError::Kv3(
+            "blob replace: sizeCompTotal != comp1+comp2",
+        ));
+    }
+    Ok(())
 }
 
 /// Decompress a chained-LZ4 blob (inverse of the reader's frame loop in
@@ -448,13 +532,6 @@ fn decompress(
         }
         other => Err(DecodeError::Kv3Compression(other)),
     }
-}
-
-/// Reads the 16-byte format GUID a re-wrapped block carries (unchanged from the
-/// original). Lets callers keep the block's schema id when splicing.
-#[allow(dead_code)]
-pub fn format_of(block: &[u8]) -> Result<Format, DecodeError> {
-    Format::from_payload(block)
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {

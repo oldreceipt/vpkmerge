@@ -2,12 +2,13 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
-    bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_hero_model, export_model,
-    extract_portraits, hero_model_entry, import_clone, import_soul_container_clone, inspect_models,
-    merge, model_draw_call_targets, model_uv_segments, model_vertex_targets, split, urn_target,
-    AnimOptions, CollisionPolicy, GeometryEdit, MergeOptions, ModelPartSelector, NormalSynthesis,
-    OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection, SegmentBy, SoulGlow,
-    SoulImportCloneOptions, SoulOrient, SoundEvents, SplitOptions, SplitOutput,
+    bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_femodel_json, export_hero_model,
+    export_model, extract_portraits, hero_model_entry, import_clone, import_soul_container_clone,
+    inspect_models, live_hero_entries, live_hero_materials, merge, model_draw_call_targets,
+    model_uv_segments, model_vertex_targets, split, urn_target, AnimOptions, CollisionPolicy,
+    GeometryEdit, MergeOptions, ModelPartSelector, NormalSynthesis, OverlapPolicy, PathPredicate,
+    PortraitInfo, PoseSelection, SegmentBy, SoulGlow, SoulImportCloneOptions, SoulOrient,
+    SoundEvents, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -739,6 +740,22 @@ struct VmatCmd {
     #[arg(long = "set-vec", value_name = "NAME=X,Y,Z[,W]")]
     set_vec: Vec<String>,
 
+    /// Raw int material attribute edit `NAME=VALUE`. Probe path for shader
+    /// variables declared as `__Attribute__` in the VCS. Repeatable.
+    #[arg(long = "set-int-attr", value_name = "NAME=V")]
+    set_int_attr: Vec<String>,
+
+    /// Raw float material attribute edit `NAME=VALUE`. Probe path for shader
+    /// variables declared as `__Attribute__` in the VCS. Repeatable.
+    #[arg(long = "set-float-attr", value_name = "NAME=V")]
+    set_float_attr: Vec<String>,
+
+    /// Raw vector material attribute edit `NAME=X,Y,Z[,W]` (W defaults to 0).
+    /// Probe path for shader variables declared as `__Attribute__` in the VCS.
+    /// Repeatable.
+    #[arg(long = "set-vec-attr", value_name = "NAME=X,Y,Z[,W]")]
+    set_vec_attr: Vec<String>,
+
     /// Dynamic-expression param edit `NAME=EXPR`, compiled to engine bytecode
     /// (e.g. `g_vColorTint1=$ent_health<.4?float3(1,.1,.1):float3(1,1,1)`).
     /// Attributes the expression reads are auto-registered. Repeatable.
@@ -830,6 +847,53 @@ enum ModelAction {
     /// base-pak clips; WIP heroes (no embedded clips) print an empty list and
     /// exit 0. `--json` emits a machine-readable array.
     Clips(ModelClipsArgs),
+
+    /// Dump a model's cloth finite-element model (`PHYS.m_pFeModel`) as JSON to
+    /// stdout: node set, distance-constraint rods, per-node integrator
+    /// (gravity/damping/animation-attraction), and the collision capsules and
+    /// spheres. This is the sidecar a renderer-side verlet preview reads to drive
+    /// the cloth bones with the engine's own parameters (so the preview matches
+    /// and the real colliders stop cloth-through-body clipping).
+    Femodel(ModelFemodelArgs),
+
+    /// Resolve a hero through `scripts/heroes.vdata_c` and list the materials
+    /// the live model actually renders, including shader flags and texture slots.
+    /// Use this before shader/material experiments so edits hit live draw calls
+    /// instead of stale `heroes_staging` assets.
+    LiveMaterials(ModelLiveMaterialsArgs),
+}
+
+#[derive(Args)]
+struct ModelLiveMaterialsArgs {
+    /// VPK containing `scripts/heroes.vdata_c` and/or the live model.
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Base `pak01_dir.vpk` to fall back to when `--vpk` is a skin/mod VPK.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
+
+    /// Hero codename from `scripts/heroes.vdata_c` (e.g. `viscous`, `astro`).
+    #[arg(
+        long,
+        value_name = "CODENAME",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    hero: Option<String>,
+
+    /// Scan every selectable hero from `scripts/heroes.vdata_c`.
+    #[arg(long)]
+    all: bool,
+
+    /// Print a compact ranked shader-surface table. This is the default for
+    /// `--all` without `--json`.
+    #[arg(long)]
+    summary: bool,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -862,6 +926,31 @@ struct ModelClipsArgs {
     /// Emit a machine-readable JSON array instead of the human-readable table.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args)]
+struct ModelFemodelArgs {
+    /// VPK containing the `.vmdl_c` (a skin VPK, or the base pak itself).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// VPK-internal model path. Mutually exclusive with `--hero`.
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "hero",
+        conflicts_with = "hero"
+    )]
+    entry: Option<String>,
+
+    /// Hero codename whose body model is auto-discovered. Mutually exclusive with
+    /// `--entry`.
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Base `pak01_dir.vpk` to fall back to when `--vpk` does not ship the mesh.
+    #[arg(long, value_name = "VPK")]
+    base: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1298,6 +1387,8 @@ fn run_model(args: ModelCmd) -> Result<()> {
         Some(ModelAction::Recolor(e)) => return run_model_recolor(&e),
         Some(ModelAction::Mask(m)) => return run_model_mask(&m),
         Some(ModelAction::Clips(c)) => return run_model_clips(&c),
+        Some(ModelAction::Femodel(f)) => return run_model_femodel(&f),
+        Some(ModelAction::LiveMaterials(m)) => return run_model_live_materials(&m),
         None => {}
     }
 
@@ -1341,6 +1432,295 @@ fn run_model(args: ModelCmd) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_model_femodel(f: &ModelFemodelArgs) -> Result<()> {
+    use std::io::Write as _;
+    let entry = match (&f.entry, &f.hero) {
+        (Some(entry), _) => entry.clone(),
+        (None, Some(hero)) => hero_model_entry(&f.vpk, f.base.as_deref(), hero)?,
+        (None, None) => anyhow::bail!("model femodel: provide --entry or --hero"),
+    };
+    let json = export_femodel_json(&f.vpk, f.base.as_deref(), &entry)?;
+    std::io::stdout().write_all(&json)?;
+    Ok(())
+}
+
+fn run_model_live_materials(m: &ModelLiveMaterialsArgs) -> Result<()> {
+    if m.all {
+        return run_model_live_materials_all(m);
+    }
+    let hero = m
+        .hero
+        .as_deref()
+        .context("model live-materials: provide --hero or --all")?;
+    let materials = live_hero_materials(&m.vpk, m.base.as_deref(), hero)
+        .with_context(|| format!("resolving live materials for {hero}"))?;
+    if m.json {
+        let json = serde_json::to_string_pretty(&live_materials_json(&materials))
+            .context("serializing JSON")?;
+        println!("{json}");
+        return Ok(());
+    }
+    if m.summary {
+        if let Some(first) = materials.first() {
+            let entry = vpkmerge_core::LiveHeroEntry {
+                codename: first.codename.clone(),
+                localized_name: first.localized_name.clone(),
+                model_entry: first.model_entry.clone(),
+            };
+            print_live_materials_summary(&[(entry, materials)]);
+        } else {
+            println!("{hero}: no rendered materials found");
+        }
+        return Ok(());
+    }
+
+    let Some(first) = materials.first() else {
+        println!("{hero}: no rendered materials found");
+        return Ok(());
+    };
+    println!(
+        "{}{} -> {}: {} rendered material(s)",
+        first.codename,
+        first
+            .localized_name
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default(),
+        first.model_entry,
+        materials.len()
+    );
+    for mat in &materials {
+        let flags = if mat.feature_flags.is_empty() {
+            "-".to_string()
+        } else {
+            mat.feature_flags
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        println!(
+            "\n  {:>7} verts  {:<7} {}",
+            mat.vertex_count,
+            match (mat.body, mat.weapon) {
+                (true, true) => "shared",
+                (false, true) => "weapon",
+                _ => "body",
+            },
+            mat.material
+        );
+        println!(
+            "          shader={} source={} flags={}",
+            mat.shader_name.as_deref().unwrap_or("-"),
+            mat.material_source.as_deref().unwrap_or("-"),
+            flags
+        );
+        println!("          meshes={}", mat.mesh_names.join(", "));
+        for slot in [
+            "g_tColor",
+            "g_tNormalRoughness",
+            "g_tRoughness",
+            "g_tMetalness",
+            "g_tTintMaskRimLightMask",
+            "g_tSelfIllumMask",
+            "g_tNprOutlineMask",
+        ] {
+            if let Some(tex) = mat.textures.iter().find(|t| t.slot == slot) {
+                println!(
+                    "          {:<24} {} ({})",
+                    slot,
+                    tex.compiled_path,
+                    tex.source.as_deref().unwrap_or("missing")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_model_live_materials_all(m: &ModelLiveMaterialsArgs) -> Result<()> {
+    let entries = live_hero_entries(&m.vpk, m.base.as_deref()).context("listing live heroes")?;
+    let mut scans = Vec::with_capacity(entries.len());
+    let mut errors = Vec::new();
+    for entry in entries {
+        match live_hero_materials(&m.vpk, m.base.as_deref(), &entry.codename) {
+            Ok(materials) => scans.push((entry, materials)),
+            Err(err) => errors.push((entry.codename, err.to_string())),
+        }
+    }
+
+    if m.json {
+        let json = serde_json::to_string_pretty(&live_materials_all_json(&scans, &errors))
+            .context("serializing JSON")?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    print_live_materials_summary(&scans);
+    if !errors.is_empty() {
+        eprintln!("\n{} hero(s) failed:", errors.len());
+        for (codename, err) in errors {
+            eprintln!("  {codename}: {err}");
+        }
+    }
+    Ok(())
+}
+
+fn live_materials_json(materials: &[vpkmerge_core::LiveHeroMaterial]) -> serde_json::Value {
+    use serde_json::json;
+    json!(materials
+        .iter()
+        .map(|m| json!({
+            "codename": &m.codename,
+            "localized_name": &m.localized_name,
+            "model_entry": &m.model_entry,
+            "material": &m.material,
+            "material_source": &m.material_source,
+            "shader_name": &m.shader_name,
+            "feature_flags": m.feature_flags.iter().map(|(name, value)| json!({
+                "name": name,
+                "value": value,
+            })).collect::<Vec<_>>(),
+            "textures": m.textures.iter().map(|t| json!({
+                "slot": &t.slot,
+                "path": &t.path,
+                "compiled_path": &t.compiled_path,
+                "source": &t.source,
+            })).collect::<Vec<_>>(),
+            "mesh_names": &m.mesh_names,
+            "vertex_count": m.vertex_count,
+            "body": m.body,
+            "weapon": m.weapon,
+        }))
+        .collect::<Vec<_>>())
+}
+
+fn live_materials_all_json(
+    scans: &[(
+        vpkmerge_core::LiveHeroEntry,
+        Vec<vpkmerge_core::LiveHeroMaterial>,
+    )],
+    errors: &[(String, String)],
+) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "heroes": scans.iter().map(|(entry, materials)| json!({
+            "codename": &entry.codename,
+            "localized_name": &entry.localized_name,
+            "model_entry": &entry.model_entry,
+            "score": live_materials_shader_score(materials),
+            "materials": live_materials_json(materials),
+        })).collect::<Vec<_>>(),
+        "errors": errors.iter().map(|(codename, error)| json!({
+            "codename": codename,
+            "error": error,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn print_live_materials_summary(
+    scans: &[(
+        vpkmerge_core::LiveHeroEntry,
+        Vec<vpkmerge_core::LiveHeroMaterial>,
+    )],
+) {
+    let mut rows: Vec<_> = scans
+        .iter()
+        .map(|(entry, materials)| {
+            let flags = live_materials_flags(materials);
+            let slots = live_materials_slots(materials);
+            let vertices: usize = materials.iter().map(|m| m.vertex_count).sum();
+            let shared = materials.iter().filter(|m| m.body && m.weapon).count();
+            (
+                live_materials_shader_score(materials),
+                vertices,
+                entry,
+                materials,
+                flags,
+                slots,
+                shared,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    println!(
+        "{:<13} {:>5} {:>4} {:>7} {:>6} {:<58} texture slots",
+        "hero", "score", "mats", "verts", "shared", "shader flags"
+    );
+    for (score, vertices, entry, materials, flags, slots, shared) in rows {
+        println!(
+            "{:<13} {:>5} {:>4} {:>7} {:>6} {:<58} {}",
+            entry.codename,
+            score,
+            materials.len(),
+            vertices,
+            shared,
+            summarize_names(&flags, 7),
+            summarize_names(&slots, 7)
+        );
+    }
+}
+
+fn live_materials_flags(materials: &[vpkmerge_core::LiveHeroMaterial]) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for mat in materials {
+        for (name, _) in &mat.feature_flags {
+            set.insert(name.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn live_materials_slots(materials: &[vpkmerge_core::LiveHeroMaterial]) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for mat in materials {
+        for texture in &mat.textures {
+            set.insert(texture.slot.clone());
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn live_materials_shader_score(materials: &[vpkmerge_core::LiveHeroMaterial]) -> i32 {
+    let flags = live_materials_flags(materials);
+    let slots = live_materials_slots(materials);
+    let flag_score: i32 = flags
+        .iter()
+        .map(|flag| match flag.as_str() {
+            "F_GLASS" | "F_ADVANCED_TRANSLUCENCY" | "F_JITTER_VERTICES" => 4,
+            "F_TRANSLUCENT" | "F_ADDITIVE_BLEND" => 3,
+            "F_SELF_ILLUM" | "F_SOLID_COLOR_OUTLINE" | "F_UNLIT" | "F_SHEEN" => 2,
+            "F_USE_NPR_LIGHTING" => 1,
+            _ => 0,
+        })
+        .sum();
+    let slot_score: i32 = slots
+        .iter()
+        .map(|slot| match slot.as_str() {
+            "g_tGlass" | "g_tAltTranslucency" | "g_tJitterMask" => 3,
+            "g_tSelfIllumMask"
+            | "g_tNprTransmissiveColor"
+            | "g_tNprOutlineMask"
+            | "g_tTintMaskRimLightMask"
+            | "g_tSheen" => 1,
+            _ => 0,
+        })
+        .sum();
+    flag_score + slot_score
+}
+
+fn summarize_names(names: &[String], limit: usize) -> String {
+    if names.is_empty() {
+        return "-".to_string();
+    }
+    let mut out = names.iter().take(limit).cloned().collect::<Vec<_>>();
+    if names.len() > limit {
+        out.push(format!("+{}", names.len() - limit));
+    }
+    out.join(",")
 }
 
 fn run_model_mask(m: &ModelMaskArgs) -> Result<()> {
@@ -3024,6 +3404,22 @@ fn parse_tint(spec: &str) -> Result<[f64; 3]> {
     Ok([parts[0], parts[1], parts[2]])
 }
 
+fn parse_vec_edit<'a>(spec: &'a str, flag: &str) -> Result<(&'a str, [f64; 4])> {
+    let (name, v) = parse_name_eq(spec, flag)?;
+    let comps: Vec<f64> = v
+        .split(',')
+        .map(|p| p.trim().parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("{flag} {spec:?}"))?;
+    anyhow::ensure!(
+        comps.len() == 3 || comps.len() == 4,
+        "{flag} {spec:?}: expected 3 or 4 components"
+    );
+    let mut value = [0.0; 4];
+    value[..comps.len()].copy_from_slice(&comps);
+    Ok((name, value))
+}
+
 fn vmat_edits(args: &VmatCmd) -> Result<Vec<vpkmerge_core::VmatEdit>> {
     let tint = args.tint.as_deref().map(parse_tint).transpose()?;
     let mut edits = Vec::new();
@@ -3045,19 +3441,33 @@ fn vmat_edits(args: &VmatCmd) -> Result<Vec<vpkmerge_core::VmatEdit>> {
         });
     }
     for spec in &args.set_vec {
-        let (name, v) = parse_name_eq(spec, "--set-vec")?;
-        let comps: Vec<f64> = v
-            .split(',')
-            .map(|p| p.trim().parse::<f64>())
-            .collect::<std::result::Result<_, _>>()
-            .with_context(|| format!("--set-vec {spec:?}"))?;
-        anyhow::ensure!(
-            comps.len() == 3 || comps.len() == 4,
-            "--set-vec {spec:?}: expected 3 or 4 components"
-        );
-        let mut value = [0.0; 4];
-        value[..comps.len()].copy_from_slice(&comps);
+        let (name, value) = parse_vec_edit(spec, "--set-vec")?;
         edits.push(vpkmerge_core::VmatEdit::Vector {
+            name: name.to_string(),
+            value,
+        });
+    }
+    for spec in &args.set_int_attr {
+        let (name, v) = parse_name_eq(spec, "--set-int-attr")?;
+        edits.push(vpkmerge_core::VmatEdit::IntAttribute {
+            name: name.to_string(),
+            value: v
+                .parse()
+                .with_context(|| format!("--set-int-attr {spec:?}"))?,
+        });
+    }
+    for spec in &args.set_float_attr {
+        let (name, v) = parse_name_eq(spec, "--set-float-attr")?;
+        edits.push(vpkmerge_core::VmatEdit::FloatAttribute {
+            name: name.to_string(),
+            value: v
+                .parse()
+                .with_context(|| format!("--set-float-attr {spec:?}"))?,
+        });
+    }
+    for spec in &args.set_vec_attr {
+        let (name, value) = parse_vec_edit(spec, "--set-vec-attr")?;
+        edits.push(vpkmerge_core::VmatEdit::VectorAttribute {
             name: name.to_string(),
             value,
         });
@@ -3129,7 +3539,8 @@ fn run_vmat(args: &VmatCmd) -> Result<()> {
         let infos = vpkmerge_core::list_materials(&args.vpk, args.base.as_deref(), &targets)?;
         anyhow::ensure!(!infos.is_empty(), "no materials matched");
         for info in &infos {
-            println!("{} [{}]", info.entry, info.shader);
+            let tag = if info.dynamic { " [dynamic]" } else { "" };
+            println!("{} [{}]{tag}", info.entry, info.shader);
             if !info.flags.is_empty() {
                 let flags: Vec<String> = info
                     .flags
@@ -3147,6 +3558,16 @@ fn run_vmat(args: &VmatCmd) -> Result<()> {
             for (slot, path) in &info.textures {
                 println!("  {slot} -> {path}");
             }
+            for (name, value) in &info.floats {
+                println!("  {name} = {value}");
+            }
+            for (name, lanes) in &info.vectors {
+                let lanes: Vec<String> = lanes.iter().map(ToString::to_string).collect();
+                println!("  {name} = [{}]", lanes.join(", "));
+            }
+            for (name, value) in &info.attributes {
+                println!("  attr {name} = {value}");
+            }
             for (name, expr) in &info.expressions {
                 println!("  expr {name} = {expr}");
             }
@@ -3158,7 +3579,7 @@ fn run_vmat(args: &VmatCmd) -> Result<()> {
     let edits = vmat_edits(args)?;
     anyhow::ensure!(
         !edits.is_empty(),
-        "nothing to do: pass --preset and/or --set-int/--set-float/--set-vec/--set-expr/--edit-expr (or --list)"
+        "nothing to do: pass --preset and/or --set-int/--set-float/--set-vec/--set-int-attr/--set-float-attr/--set-vec-attr/--set-expr/--edit-expr (or --list)"
     );
     let Some(out) = &args.encode_vpk else {
         anyhow::bail!("--encode-vpk OUT_dir.vpk is required when patching");

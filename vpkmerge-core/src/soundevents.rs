@@ -203,7 +203,7 @@ impl SoundEvents {
     }
 }
 
-fn value_to_json(v: &Value) -> serde_json::Value {
+pub(crate) fn value_to_json(v: &Value) -> serde_json::Value {
     use serde_json::Value as J;
     match v {
         Value::Null => J::Null,
