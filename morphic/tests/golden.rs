@@ -177,6 +177,25 @@ fn run_one(vtex_path: &Path) -> Result<(), String> {
             info.width, info.height, info.mip_count, meta.width, meta.height, meta.mip_count
         ));
     }
+    // Verify morphic's own non-pow2 parsing (FILL_TO_POWER_OF_TWO) against VRF's
+    // ActualWidth/Height. A meta `actual == 0` predates those fields and means
+    // "same as stored"; morphic always populates actual (= stored when no block).
+    let meta_actual_w = if meta.actual_width == 0 {
+        meta.width
+    } else {
+        meta.actual_width
+    };
+    let meta_actual_h = if meta.actual_height == 0 {
+        meta.height
+    } else {
+        meta.actual_height
+    };
+    if info.actual_width != meta_actual_w || info.actual_height != meta_actual_h {
+        return Err(format!(
+            "actual (non-pow2) dims mismatch: morphic={}x{}, VRF={}x{}",
+            info.actual_width, info.actual_height, meta_actual_w, meta_actual_h
+        ));
+    }
 
     // Decode + compare.
     let img = match decode(&vtex_bytes) {

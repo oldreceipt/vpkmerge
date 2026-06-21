@@ -130,6 +130,223 @@ enum Command {
     /// retargets the same clone pipeline at the carryable Idol/urn objective. The
     /// one-call bridge for Grimoire's drag-and-drop soul-container / urn import.
     SoulContainer(SoulContainerCmd),
+
+    /// Build the Foundry asset catalog from a Deadlock VPK. `voiceline` emits the
+    /// searchable VO-sound index (one row per `soundevents/vo` event), the
+    /// browse-and-swap backbone for a sound picker.
+    Catalog(CatalogCmd),
+}
+
+#[derive(Args)]
+struct CatalogCmd {
+    #[command(subcommand)]
+    action: CatalogAction,
+}
+
+#[derive(Subcommand)]
+enum CatalogAction {
+    /// List VO sound events as a searchable index: event, hero, a human-readable
+    /// label (the event name as prose, e.g. "ally atlas killed in lane"), clip
+    /// path(s), and duration. The label is the search key; Deadlock ships no
+    /// English subtitles for hero VO, so `caption` is almost always empty. Filter
+    /// with `--hero` / `--search`; `--json` emits a machine-readable array.
+    Voiceline(VoicelineArgs),
+
+    /// List a hero's gameplay sounds (the non-VO surface): weapon, ability,
+    /// movement, and melee events read from `soundevents/hero/<code>.vsndevts_c`.
+    /// Each row carries the event, hero codename, a category (weapon / ability /
+    /// movement / melee / other), the ability name + slot where it resolves, a
+    /// human-readable label, and the clip path(s). Filter with `--hero` /
+    /// `--category` / `--search`; `--json` emits a machine-readable array. The
+    /// clips audition through `catalog voiceclip`, same as voice lines.
+    #[command(name = "herosounds")]
+    HeroSounds(HeroSoundsArgs),
+
+    /// Extract a single VO/ability clip (`.vsnd_c`) to a playable MP3. Deadlock
+    /// stores these clips as a plain MP3 appended after the resource structure, so
+    /// this slices it out (no decode) and writes it to `--out`: the audition path
+    /// for the Foundry Sound tab (pick a voice line, play the clip).
+    Voiceclip(VoiceclipArgs),
+
+    /// Browse the texture / icon index: one row per `.vtex_c`, classified from
+    /// its path (ability icon, item icon, hero portrait, hero skin, ability VFX)
+    /// with a searchable label and hero codename. Filter with `--category` /
+    /// `--hero` / `--search`. `--thumbs DIR` also decodes a small PNG thumbnail
+    /// for each matching entry into DIR (plus a `manifest.json`), the grid
+    /// backbone for the Texture / Item Foundry tabs.
+    Texture(TextureCatalogArgs),
+
+    /// Warm (or refresh) the on-disk catalog cache. Builds the voice-line and
+    /// texture indexes and stores them keyed by the pak's build fingerprint
+    /// (`_dir.vpk` size + mtime), so a later run loads them instantly instead of
+    /// rescanning. Reports per-index hit/miss. `--clear` forces a rebuild.
+    Cache(CatalogCacheArgs),
+
+    /// The hero roster with display names: codename -> in-game name (e.g.
+    /// `hornet` -> `Vindicta`), read from `scripts/heroes.vdata_c` plus the loose
+    /// `resource/localization/citadel_gc_hero_names` file next to the pak. This is
+    /// the lookup table that turns the catalog's codenames into labels. Lists
+    /// selectable heroes by default; `--all` includes in-development / disabled.
+    Heroes(HeroesArgs),
+}
+
+#[derive(Args)]
+struct VoicelineArgs {
+    /// VPK carrying the VO tree (and, for English captions, the base
+    /// `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only events for this hero codename (e.g. `bebop`, `astro`).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only events whose label or name contains this text (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct HeroSoundsArgs {
+    /// VPK carrying the hero-sound tree (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only events for this hero sound-codename (e.g. `abrams`, `gigawatt`,
+    /// `vampirebat` -- the `soundevents/hero/<code>` filename stem).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only this category: `weapon`, `ability`, `movement`, `melee`, or
+    /// `other`.
+    #[arg(long, value_name = "CATEGORY")]
+    category: Option<String>,
+
+    /// Keep only events whose label, ability, or name contains this text
+    /// (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct VoiceclipArgs {
+    /// VPK carrying the clip (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Entry path of the `.vsnd_c` clip inside the VPK (a `vsnd` path from the
+    /// voice-line index, e.g. `sounds/vo/hero/.../clip.vsnd_c`).
+    #[arg(long, value_name = "ENTRY")]
+    entry: String,
+
+    /// Write the extracted MP3 here. Parent directory is created if missing.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
+}
+
+#[derive(Args)]
+struct TextureCatalogArgs {
+    /// VPK to index (the base `citadel/pak01_dir.vpk`, or a mod VPK).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only this category: `ability-icon`, `item-icon`, `hero-image`,
+    /// `hero-model`, `ability-vfx`, or `other`.
+    #[arg(long, value_name = "CATEGORY")]
+    category: Option<String>,
+
+    /// Keep only entries for this hero codename (e.g. `astro`, `archer`).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only entries whose label or path contains this text (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Keep only the single entry at this exact path. Combined with `--thumbs`
+    /// (and a larger `--thumb-size`), this decodes one texture on demand: the
+    /// backbone for the Foundry lightbox (enlarge-on-click). AND-combined with
+    /// the other filters.
+    #[arg(long, value_name = "ENTRY")]
+    path: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    /// Does not limit thumbnail generation.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+
+    /// Also decode a PNG thumbnail for every matching entry into this directory,
+    /// writing a `manifest.json` alongside. Honors `--category` / `--hero` /
+    /// `--search` but ignores `--limit`.
+    #[arg(long, value_name = "DIR")]
+    thumbs: Option<PathBuf>,
+
+    /// Longest-edge pixel size for thumbnails (aspect preserved, never upscaled).
+    #[arg(long, value_name = "N", default_value_t = 128)]
+    thumb_size: u32,
+}
+
+#[derive(Args)]
+struct CatalogCacheArgs {
+    /// VPK to index (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Directory to store the cache files in (`voiceline.json`, `texture.json`).
+    #[arg(long, value_name = "DIR", default_value = "catalog-cache")]
+    dir: PathBuf,
+
+    /// Clear the cache first, forcing a rebuild of both indexes.
+    #[arg(long)]
+    clear: bool,
+
+    /// Emit a machine-readable JSON status object instead of the human summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct HeroesArgs {
+    /// VPK carrying `scripts/heroes.vdata_c` (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Localization directory to resolve display names from. Defaults to
+    /// `resource/localization` next to the pak.
+    #[arg(long, value_name = "DIR")]
+    loc_dir: Option<PathBuf>,
+
+    /// Localization language suffix (file `citadel_gc_hero_names_<lang>.txt`).
+    #[arg(long, value_name = "LANG", default_value = "english")]
+    lang: String,
+
+    /// Include in-development and disabled heroes (default: selectable only).
+    #[arg(long)]
+    all: bool,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -1353,6 +1570,7 @@ fn main() -> Result<()> {
         Some(Command::Vmat(args)) => run_vmat(&args),
         Some(Command::Icon(args)) => run_icon(&args),
         Some(Command::SoulContainer(args)) => run_soul_container(&args),
+        Some(Command::Catalog(args)) => run_catalog(&args),
         None => run_merge(cli),
     }
 }
@@ -2882,6 +3100,418 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
     }
 }
 
+fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
+    match &cmd.action {
+        CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
+        CatalogAction::HeroSounds(args) => run_catalog_herosounds(args),
+        CatalogAction::Voiceclip(args) => run_catalog_voiceclip(args),
+        CatalogAction::Texture(args) => run_catalog_texture(args),
+        CatalogAction::Cache(args) => run_catalog_cache(args),
+        CatalogAction::Heroes(args) => run_catalog_heroes(args),
+    }
+}
+
+fn run_catalog_voiceclip(args: &VoiceclipArgs) -> Result<()> {
+    let mp3 = vpkmerge_core::extract_voiceclip_mp3(&args.vpk, &args.entry)
+        .with_context(|| format!("extracting clip {} from {}", args.entry, args.vpk.display()))?;
+    if let Some(parent) = args.out.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&args.out, &mp3).with_context(|| format!("writing {}", args.out.display()))?;
+    eprintln!("wrote {} bytes of MP3 to {}", mp3.len(), args.out.display());
+    Ok(())
+}
+
+fn run_catalog_heroes(args: &HeroesArgs) -> Result<()> {
+    let mut roster =
+        vpkmerge_core::build_hero_roster(&args.vpk, args.loc_dir.as_deref(), &args.lang)
+            .with_context(|| format!("building hero roster from {}", args.vpk.display()))?;
+
+    if !args.all {
+        roster.retain(|h| h.selectable && !h.disabled);
+    }
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = roster
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "codename": h.codename,
+                    "name": h.name,
+                    "selectable": h.selectable,
+                    "inDevelopment": h.in_development,
+                    "disabled": h.disabled,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else if roster.is_empty() {
+        println!("no heroes match");
+        return Ok(());
+    } else {
+        println!("  {:<14} {:<18} flags", "codename", "name");
+        for h in &roster {
+            let mut flags = Vec::new();
+            if h.selectable {
+                flags.push("selectable");
+            }
+            if h.in_development {
+                flags.push("in-dev");
+            }
+            if h.disabled {
+                flags.push("disabled");
+            }
+            println!("  {:<14} {:<18} {}", h.codename, h.name, flags.join(", "));
+        }
+    }
+
+    eprintln!("{} hero(es)", roster.len());
+    Ok(())
+}
+
+fn run_catalog_cache(args: &CatalogCacheArgs) -> Result<()> {
+    let cache = vpkmerge_core::CatalogCache::new(&args.dir);
+    if args.clear {
+        cache.clear().context("clearing catalog cache")?;
+    }
+
+    let fingerprint = vpkmerge_core::BuildFingerprint::for_vpk(&args.vpk)
+        .with_context(|| format!("fingerprinting {}", args.vpk.display()))?;
+
+    let (voicelines, vo_hit) = cache
+        .voicelines_cached(&args.vpk)
+        .context("loading/building the voice-line index")?;
+    let (textures, tex_hit) = cache
+        .textures_cached(&args.vpk)
+        .context("loading/building the texture index")?;
+
+    if args.json {
+        let status = serde_json::json!({
+            "dir": args.dir,
+            "schema": vpkmerge_core::CACHE_SCHEMA_VERSION,
+            "fingerprint": {
+                "vpkLen": fingerprint.vpk_len,
+                "vpkMtimeSecs": fingerprint.vpk_mtime_secs,
+                "vpkMtimeNanos": fingerprint.vpk_mtime_nanos,
+            },
+            "voiceline": { "count": voicelines.len(), "cacheHit": vo_hit },
+            "texture": { "count": textures.len(), "cacheHit": tex_hit },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&status).context("serializing JSON")?
+        );
+    } else {
+        println!("catalog cache: {}", args.dir.display());
+        println!(
+            "  build fingerprint: {} bytes, mtime {}.{:09}",
+            fingerprint.vpk_len, fingerprint.vpk_mtime_secs, fingerprint.vpk_mtime_nanos
+        );
+        println!(
+            "  voiceline: {} events ({})",
+            voicelines.len(),
+            if vo_hit { "cache hit" } else { "rebuilt" }
+        );
+        println!(
+            "  texture:   {} entries ({})",
+            textures.len(),
+            if tex_hit { "cache hit" } else { "rebuilt" }
+        );
+    }
+    Ok(())
+}
+
+fn run_catalog_voiceline(args: &VoicelineArgs) -> Result<()> {
+    let mut lines = vpkmerge_core::build_voiceline_index(&args.vpk)
+        .with_context(|| format!("building voice-line index from {}", args.vpk.display()))?;
+
+    if let Some(hero) = &args.hero {
+        lines.retain(|l| l.hero.as_deref() == Some(hero.as_str()));
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        lines.retain(|l| {
+            l.label.to_lowercase().contains(&needle) || l.event.to_lowercase().contains(&needle)
+        });
+    }
+
+    let total = lines.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        use serde_json::json;
+        let arr: Vec<serde_json::Value> = lines[..shown]
+            .iter()
+            .map(|l| {
+                json!({
+                    "event": l.event,
+                    "hero": l.hero,
+                    "label": l.label,
+                    "vsnd": l.vsnd,
+                    "duration": l.duration,
+                    "caption": l.caption,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else {
+        if total == 0 {
+            println!("no voice lines match");
+            return Ok(());
+        }
+        println!(
+            "  {:<12} {:>5}  {:>7}  {:<46} label",
+            "hero", "clips", "seconds", "event"
+        );
+        for l in &lines[..shown] {
+            println!(
+                "  {:<12} {:>5}  {:>7}  {:<46} {}",
+                l.hero.as_deref().unwrap_or("-"),
+                l.vsnd.len(),
+                l.duration
+                    .map_or_else(|| "-".to_owned(), |d| format!("{d:.2}")),
+                l.event,
+                l.label,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} voice line(s)");
+    }
+    Ok(())
+}
+
+fn run_catalog_herosounds(args: &HeroSoundsArgs) -> Result<()> {
+    use vpkmerge_core::HeroSoundCategory;
+
+    let category_label = |c: HeroSoundCategory| match c {
+        HeroSoundCategory::Weapon => "weapon",
+        HeroSoundCategory::Ability => "ability",
+        HeroSoundCategory::Movement => "movement",
+        HeroSoundCategory::Melee => "melee",
+        HeroSoundCategory::Other => "other",
+    };
+
+    let mut sounds = vpkmerge_core::build_hero_sound_index(&args.vpk)
+        .with_context(|| format!("building hero-sound index from {}", args.vpk.display()))?;
+
+    if let Some(hero) = &args.hero {
+        sounds.retain(|s| s.hero == *hero);
+    }
+    if let Some(cat) = &args.category {
+        let cat = cat.to_lowercase();
+        sounds.retain(|s| category_label(s.category) == cat);
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        sounds.retain(|s| {
+            s.label.to_lowercase().contains(&needle)
+                || s.event.to_lowercase().contains(&needle)
+                || s.ability
+                    .as_deref()
+                    .is_some_and(|a| a.to_lowercase().contains(&needle))
+        });
+    }
+
+    let total = sounds.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        use serde_json::json;
+        let arr: Vec<serde_json::Value> = sounds[..shown]
+            .iter()
+            .map(|s| {
+                json!({
+                    "event": s.event,
+                    "hero": s.hero,
+                    "category": category_label(s.category),
+                    "ability": s.ability,
+                    "slot": s.slot,
+                    "label": s.label,
+                    "vsnd": s.vsnd,
+                    "duration": s.duration,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else {
+        if total == 0 {
+            println!("no hero sounds match");
+            return Ok(());
+        }
+        println!(
+            "  {:<12} {:<9} {:>5}  {:<46} label",
+            "hero", "category", "clips", "event"
+        );
+        for s in &sounds[..shown] {
+            println!(
+                "  {:<12} {:<9} {:>5}  {:<46} {}",
+                s.hero,
+                category_label(s.category),
+                s.vsnd.len(),
+                s.event,
+                s.label,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} hero sound(s)");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_catalog_texture(args: &TextureCatalogArgs) -> Result<()> {
+    use vpkmerge_core::{TextureCategory, ThumbnailOutcome};
+
+    let category = match &args.category {
+        Some(c) => Some(
+            TextureCategory::from_id(c)
+                .with_context(|| format!("unknown --category {c:?} (try ability-icon, item-icon, hero-image, hero-model, ability-vfx, other)"))?,
+        ),
+        None => None,
+    };
+
+    let mut entries = vpkmerge_core::build_texture_index(&args.vpk)
+        .with_context(|| format!("building texture index from {}", args.vpk.display()))?;
+
+    if let Some(cat) = category {
+        entries.retain(|e| e.category == cat);
+    }
+    if let Some(hero) = &args.hero {
+        entries.retain(|e| e.hero.as_deref() == Some(hero.as_str()));
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        entries.retain(|e| {
+            e.label.to_lowercase().contains(&needle) || e.path.to_lowercase().contains(&needle)
+        });
+    }
+    if let Some(exact) = &args.path {
+        entries.retain(|e| e.path == *exact);
+    }
+
+    // Thumbnail generation runs over the full filtered set, before the --limit
+    // applies to the printed listing.
+    if let Some(dir) = &args.thumbs {
+        let outcomes =
+            vpkmerge_core::cache_texture_thumbnails(&args.vpk, &entries, dir, args.thumb_size)
+                .with_context(|| format!("caching thumbnails to {}", dir.display()))?;
+
+        let mut manifest = Vec::new();
+        let mut skipped = 0usize;
+        for outcome in &outcomes {
+            match outcome {
+                ThumbnailOutcome::Cached(c) => manifest.push(serde_json::json!({
+                    "entry": c.entry,
+                    "file": c.file,
+                    "width": c.width,
+                    "height": c.height,
+                    "sourceWidth": c.source_width,
+                    "sourceHeight": c.source_height,
+                    "format": c.format,
+                })),
+                ThumbnailOutcome::Skipped { entry, reason } => {
+                    skipped += 1;
+                    eprintln!("  skipped {entry}: {reason}");
+                }
+            }
+        }
+        let manifest_path = dir.join("manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).context("serializing thumbnail manifest")?,
+        )
+        .with_context(|| format!("writing {}", manifest_path.display()))?;
+        eprintln!(
+            "wrote {} thumbnail(s) + manifest.json to {} ({skipped} skipped)",
+            manifest.len(),
+            dir.display()
+        );
+    }
+
+    let total = entries.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = entries[..shown]
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "path": e.path,
+                    "category": e.category.id(),
+                    "hero": e.hero,
+                    "label": e.label,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else if total == 0 {
+        println!("no textures match");
+        return Ok(());
+    } else {
+        println!("  {:<13} {:<12} {:<40} path", "category", "hero", "label");
+        for e in &entries[..shown] {
+            println!(
+                "  {:<13} {:<12} {:<40} {}",
+                e.category.id(),
+                e.hero.as_deref().unwrap_or("-"),
+                truncate(&e.label, 40),
+                e.path,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} texture(s)");
+    }
+    Ok(())
+}
+
+/// Truncate a string to `max` chars for fixed-width table display.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let mut t: String = s.chars().take(max.saturating_sub(3)).collect();
+        t.push_str("...");
+        t
+    }
+}
+
 /// Parse a `--rotate X,Y,Z` value into Euler degrees.
 fn parse_soul_rotate(spec: &str) -> Result<[f32; 3]> {
     let parts: Vec<f32> = spec
@@ -2953,6 +3583,14 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
     eprintln!(
         "glow:   hue {:.0} deg (from dominant group)",
         report.glow_hue
+    );
+    eprintln!(
+        "relief: {}",
+        if report.relief {
+            "synthesized normal + roughness (anti-blur)"
+        } else {
+            "flat default normal"
+        }
     );
     eprintln!(
         "wrote {} ({} entries)",

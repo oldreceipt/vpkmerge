@@ -44,18 +44,103 @@ const TEXTURE_HEADER_SIZE: usize = 40;
 #[derive(Debug, Clone, Copy)]
 pub struct TextureInfo {
     pub format: TextureFormat,
+    /// Stored (on-disk) width: the pixel data is laid out at this size, which for
+    /// non-power-of-two textures is padded up to the next power of two.
     pub width: u16,
+    /// Stored (on-disk) height. See [`TextureInfo::width`].
     pub height: u16,
+    /// Real image width at mip 0. Equals [`width`](Self::width) unless the texture
+    /// carries a `FILL_TO_POWER_OF_TWO` extra-data block, in which case the stored
+    /// canvas is padded and the real content occupies the top-left
+    /// `actual_width x actual_height`. Display callers must crop to this; the
+    /// padding region holds undefined pixels the engine never samples.
+    pub actual_width: u16,
+    /// Real image height at mip 0. See [`TextureInfo::actual_width`].
+    pub actual_height: u16,
     pub depth: u16,
     pub mip_count: u8,
     pub flags: TextureFlags,
+    /// The pixels are YCoCg-encoded (DXT5 carries Co/Cg in RGB, Y in alpha) and
+    /// need an inverse transform after block decode to read as RGB. Signalled by
+    /// the `Texture Compiler Version Image YCoCg Conversion` special-dependency in
+    /// the resource's `RED2` edit-info block, not by anything in the DATA header,
+    /// so it is populated by [`inspect`](crate::inspect) / `decode_at`, not by
+    /// [`parse_texture_header`] (which sees only the DATA block and leaves it
+    /// `false`). Skipping it is the classic "muddy / wrong-hue DXT5" decode.
+    pub ycocg: bool,
 }
+
+impl TextureInfo {
+    /// Whether the stored canvas is padded past the real image (non-power-of-two).
+    #[must_use]
+    pub fn is_non_pow2(&self) -> bool {
+        self.actual_width != self.width || self.actual_height != self.height
+    }
+
+    /// Real (cropped) dimensions of mip level `mip`, mirroring VRF: each axis is
+    /// `max(1, actual >> mip)`.
+    #[must_use]
+    pub fn actual_mip_dims(&self, mip: u8) -> (u32, u32) {
+        (
+            (u32::from(self.actual_width) >> mip).max(1),
+            (u32::from(self.actual_height) >> mip).max(1),
+        )
+    }
+}
+
+/// VTEX extra-data block type carrying the unpadded dimensions of a
+/// non-power-of-two texture (VRF `VTexExtraData.FILL_TO_POWER_OF_TWO`).
+const EXTRA_DATA_FILL_TO_POWER_OF_TWO: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub data: ImageData,
+}
+
+/// Crop a decoded mip down to its real (non-power-of-two) dimensions, keeping the
+/// top-left `target_w x target_h` region. This is the display-side counterpart to
+/// [`TextureInfo::actual_mip_dims`]: a decoder yields the full padded canvas, and
+/// anything that *shows* the image (thumbnails, previews, portraits) must crop off
+/// the undefined padding the engine never samples. A no-op when the target already
+/// matches the image (the common power-of-two case) or exceeds it.
+///
+/// Re-encoders (recolor, icon replacement) deliberately do **not** call this: they
+/// rebuild the full mip chain on the stored canvas and need the padded pixels.
+#[must_use]
+pub fn crop_to_actual(image: &Image, target_w: u32, target_h: u32) -> Image {
+    let tw = target_w.min(image.width).max(1);
+    let th = target_h.min(image.height).max(1);
+    if tw == image.width && th == image.height {
+        return image.clone();
+    }
+    let src_stride = image.width as usize;
+    let out_cols = tw as usize;
+    let out_rows = th as usize;
+    let data = match &image.data {
+        ImageData::Rgba8(px) => {
+            let mut out = Vec::with_capacity(out_cols * out_rows * 4);
+            for row in 0..out_rows {
+                let start = row * src_stride * 4;
+                out.extend_from_slice(&px[start..start + out_cols * 4]);
+            }
+            ImageData::Rgba8(out)
+        }
+        ImageData::Rgba16F(px) => {
+            let mut out = Vec::with_capacity(out_cols * out_rows * 4);
+            for row in 0..out_rows {
+                let start = row * src_stride * 4;
+                out.extend_from_slice(&px[start..start + out_cols * 4]);
+            }
+            ImageData::Rgba16F(out)
+        }
+    };
+    Image {
+        width: tw,
+        height: th,
+        data,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,14 +173,145 @@ pub fn parse_texture_header(data: &[u8]) -> Result<TextureInfo, DecodeError> {
     let format_id = data[26];
     let mip_count = data[27];
     let format = format_from_id(format_id)?;
+    // Non-power-of-two textures pad the stored canvas up to a power of two and
+    // record the real size in a FILL_TO_POWER_OF_TWO extra-data block. Default to
+    // the stored dims; override if that block is present and sane.
+    let (actual_width, actual_height) =
+        parse_nonpow2_dims(data).map_or((width, height), |(aw, ah)| {
+            // Guard against malformed blocks: the real image can only be smaller.
+            if aw > 0 && ah > 0 && aw <= width && ah <= height {
+                (aw, ah)
+            } else {
+                (width, height)
+            }
+        });
     Ok(TextureInfo {
         format,
         width,
         height,
+        actual_width,
+        actual_height,
         depth,
         mip_count,
         flags,
+        // Set from the RED2 edit-info by inspect()/decode_at(); the DATA header
+        // alone can't know. Default off so DATA-only callers stay correct for the
+        // common non-YCoCg case.
+        ycocg: false,
     })
+}
+
+/// Detect whether a resource's texture pixels are YCoCg-encoded by inspecting the
+/// `RED2` edit-info block's `m_SpecialDependencies` for the `YCoCg` compiler marker.
+/// `RED2` is KV3; we decode it and scan, falling back to a raw substring match if
+/// the KV3 parse fails or the block is the legacy `REDI` form. Absent block or no
+/// marker -> `false` (the overwhelmingly common case).
+pub(crate) fn detect_ycocg(resource: &crate::resource::Resource) -> bool {
+    const MARKER: &[u8] = b"YCoCg Conversion";
+    for kind in [*b"RED2", *b"REDI"] {
+        let Some(block) = resource.find_block(kind) else {
+            continue;
+        };
+        // Structured path: RED2 is KV3. Look for a SpecialDependencies entry whose
+        // m_String carries the YCoCg marker.
+        if let Ok(value) = crate::kv3::decode(block) {
+            if special_dependency_has(&value, "YCoCg Conversion") {
+                return true;
+            }
+        }
+        // Fallback: the marker string is specific enough that a raw scan of the
+        // edit-info block is a safe backstop (legacy REDI, or a KV3 parse miss).
+        if block.windows(MARKER.len()).any(|w| w == MARKER) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether any `m_SpecialDependencies[*].m_String` contains `needle`.
+fn special_dependency_has(value: &crate::kv3::Value, needle: &str) -> bool {
+    use crate::kv3::Value;
+    let Value::Object(root) = value else {
+        return false;
+    };
+    let Some(Value::Array(deps)) = root
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("m_SpecialDependencies"))
+        .map(|(_, v)| v)
+    else {
+        return false;
+    };
+    deps.iter().any(|dep| {
+        let Value::Object(fields) = dep else {
+            return false;
+        };
+        fields.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("m_String")
+                && matches!(v, Value::String(s) if s.contains(needle))
+        })
+    })
+}
+
+/// Apply the inverse scaled-YCoCg transform in place on an RGBA8 image, matching
+/// VRF (the van Waveren "YCoCg-DXT5" packing the Source 2 texture compiler emits).
+///
+/// After block decode the channels hold `R=Co`, `G=Cg`, `B=scale`, `A=Y`, where
+/// the per-block blue scale maximises chroma precision. Reconstruct:
+/// `scale = (B>>3)+1`, `co = (R-128)/scale`, `cg = (G-128)/scale`, then
+/// `R = Y+co-cg`, `G = Y+cg`, `B = Y-co-cg`, `A = 255`. Integer division
+/// truncates toward zero, matching VRF's C#. A no-op for non-RGBA8 data.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn apply_ycocg(image: &mut Image) {
+    let ImageData::Rgba8(px) = &mut image.data else {
+        return;
+    };
+    for p in px.chunks_exact_mut(4) {
+        let scale = (i32::from(p[2]) >> 3) + 1;
+        let co = (i32::from(p[0]) - 128) / scale;
+        let cg = (i32::from(p[1]) - 128) / scale;
+        let y = i32::from(p[3]);
+        p[0] = (y + co - cg).clamp(0, 255) as u8;
+        p[1] = (y + cg).clamp(0, 255) as u8;
+        p[2] = (y - co - cg).clamp(0, 255) as u8;
+        p[3] = 255;
+    }
+}
+
+/// Scan the VTEX extra-data table for a `FILL_TO_POWER_OF_TWO` block and return
+/// its `(width, height)`. Returns `None` when absent (the common, pow2 case) or
+/// when the table runs past the DATA block (treated as not present rather than an
+/// error: callers fall back to the stored dims).
+///
+/// Layout, all little-endian, relative to the texture header start:
+/// `u32 extra_data_offset @32`, `u32 extra_data_count @36`. The entry table
+/// begins at `32 + extra_data_offset`; each 12-byte entry is `u32 type`,
+/// `u32 rel_offset`, `u32 size`, and its payload sits at
+/// `entry_start + 4 + rel_offset` (matching VRF's `offset - 8` quirk). The
+/// FILL payload is `u16 _unused, u16 width, u16 height`.
+fn parse_nonpow2_dims(data: &[u8]) -> Option<(u16, u16)> {
+    let read_u32 = |o: usize| -> Option<u32> {
+        data.get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let read_u16 =
+        |o: usize| -> Option<u16> { data.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
+    let extra_offset = read_u32(32)? as usize;
+    let extra_count = read_u32(36)? as usize;
+    let table_base = 32usize.checked_add(extra_offset)?;
+    for i in 0..extra_count {
+        let entry = table_base.checked_add(i.checked_mul(12)?)?;
+        let ty = read_u32(entry)?;
+        if ty != EXTRA_DATA_FILL_TO_POWER_OF_TWO {
+            continue;
+        }
+        let rel = read_u32(entry + 4)? as usize;
+        let payload = entry.checked_add(4)?.checked_add(rel)?;
+        // payload: [u16 unused][u16 width][u16 height]
+        let w = read_u16(payload + 2)?;
+        let h = read_u16(payload + 4)?;
+        return Some((w, h));
+    }
+    None
 }
 
 /// Map VRF's `VTexFormat` numeric id to our enum.

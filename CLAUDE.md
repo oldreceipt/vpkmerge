@@ -151,6 +151,127 @@ Built for a Grimoire per-ability sound picker (control `volume`/`pitch`/clip cho
 just swap the audio). Full writeup + the pending in-game verification step:
 [docs/spike-vsndevts-kv3.md](./docs/spike-vsndevts-kv3.md).
 
+**Ability music map (which ult fits a music swap):** `examples/ult_sound_map.rs`
+generates, from `scripts/heroes.vdata_c` (`ESlot_Signature_4` = ult) +
+`scripts/abilities.vdata_c` (sound fields + `AbilityDuration`/`AbilityChannelTime`),
+a per-hero catalog of each ultimate's swap-target **loop event** + intro/outro
+bookends, tiered CHANNELED / SUSTAINED / TRANSIENT by music fit (40 ults: 21/9/10).
+The loop event lives in the hero's `soundevents/hero/<code>.vsndevts_c`, so the
+`SoundEvents` swap path above puts music straight onto an ult. Map + Grimoire
+feature design: [docs/ability-music-mapping.md](./docs/ability-music-mapping.md)
+(committed exports in `exports/ult-sound-map.{txt,json}`). `--json` for the machine
+map. Extends to slots 1-3 via the other `ESlot_Signature_*` keys.
+
+## Foundry catalog / voice-line index (`catalog`)
+
+`vpkmerge_core::catalog` builds the Foundry sound-browse index from a Deadlock VPK:
+`build_voiceline_index(vpk)` returns one `VoiceLine { event, hero, label, vsnd[],
+duration, caption }` per VO sound event under `soundevents/vo/*.vsndevts_c` (against
+live `citadel/pak01`: ~76K events / 56 speakers). `label` is the **searchable text**:
+the event name spelled as prose (`bebop_ally_atlas_killed_in_lane_01_hero_3d` ->
+`"ally atlas killed in lane"`); `event` is the verbatim swap target for the
+soundevents layer; `vsnd` >1 entry == a randomizer pool. `hero` from each event's
+`context_name`.
+
+`CaptionDb` reads the compiled caption DB (`resource/localization/
+citadel_generated_vo/citadel_generated_vo_<lang>.dat`, **VCCD v2**, keyed by
+**CRC-32/ISO-HDLC** of the token via `caption_hash`; English+schinese in base
+`citadel/pak01`, other langs in `citadel_<lang>/pak01`). **Caveat (scanned, corrected):**
+Deadlock ships **no English subtitles for hero VO** (0/76K events resolve to caption
+text); the ~5.7K non-empty captions are UI/store + authored NPC/story dialogue under a
+separate token namespace, not joinable to swappable sound events. So `caption` is a
+best-effort field, essentially always `None` for hero VO, and the descriptive name is
+the search key. Exposed as `vpkmerge catalog voiceline --vpk <VPK> [--hero CODENAME]
+[--search TEXT] [--limit N] [--json]` (table or machine array; logs a truncation note,
+never a silent cap). Example: `examples/voiceline_index.rs`. Full design + findings:
+[../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
+
+## Foundry texture / icon index (`catalog texture`)
+
+`vpkmerge_core::texture_catalog` is the visual counterpart to the voice-line
+index: the browse backbone for the Texture and Item Foundry tabs.
+`build_texture_index(vpk)` returns one `TextureEntry { path, category, hero,
+label }` per `.vtex_c` (12,540 on live `citadel/pak01`), classified **purely from
+the path** so the full index builds instantly with no byte reads.
+`TextureCategory` (grounded in the live pak): `ability-icon`
+(`panorama/images/hud/abilities/<hero?>/`, 232), `item-icon`
+(`panorama/images/items|upgrades/mods_*|shop/`, 447), `hero-image`
+(`panorama/images/heroes/`, 410), `hero-model`
+(`models/heroes_staging|heroes_wip|heroes/<hero>/`, 2193 -- the skin/reskin/recolor
+targets), `ability-vfx` (`materials/particle/abilities/<hero>/`, 456), and `other`
+(8802). `hero` is the codename read from the path segment that encodes it; `label`
+is the filename as prose (content hash + format token + hero prefix stripped:
+`archer_bow_color_png_<hash>` -> `"bow color"`), the search key. `path` is the
+verbatim icon-swap / recolor target.
+
+Thumbnails decode on demand via morphic (the recolor-preview decode path):
+`thumbnail_png(vtex_bytes, max_edge) -> Thumbnail { png, width, height,
+source_*, format }` decodes the smallest mip whose longer edge is still >=
+`max_edge` (the mip chain does the bulk of the downscale for free) then
+box-filters to the exact target, so a 4K BC7 thumbnails in tens of ms.
+`cache_texture_thumbnails(vpk, entries, out_dir, max_edge)` batches it to an
+on-disk PNG set (filename = entry path with `/` -> `__`), returning a per-entry
+`ThumbnailOutcome` (a texture that fails to decode is `Skipped`, never sinks the
+batch). HDR (f16) sources are clamped to `[0,1]` as linear; the browse icons are
+all LDR.
+
+Exposed as `vpkmerge catalog texture --vpk <VPK> [--category <CAT>] [--hero
+CODENAME] [--search TEXT] [--limit N] [--json] [--thumbs DIR [--thumb-size N]]`.
+`--thumbs DIR` writes the PNG set + a `manifest.json` for every matching entry
+(honors the filters, ignores `--limit`). Example: `examples/texture_index.rs`.
+Full design: [../grimoire/docs/foundry-tab-design.md](../grimoire/docs/foundry-tab-design.md).
+
+## Catalog on-disk cache (`catalog cache`)
+
+`vpkmerge_core::catalog_cache` persists the built indexes so a UI does not rescan
+on every launch (the voice-line scan alone touches ~76K events; cold build of both
+indexes ~1.2s, warm load ~0.25s). `CatalogCache::new(dir)` then
+`voicelines_cached(vpk)` / `textures_cached(vpk)` (-> `(items, was_hit)`) or the
+flag-dropping `voicelines(vpk)` / `textures(vpk)` are load-or-build-and-store in one
+call. Each index is one JSON file per kind (`voiceline.json`, `texture.json`),
+written atomically (temp + rename) and wrapped in an envelope carrying the schema
+version + the source build's [`BuildFingerprint`].
+
+**Invalidation is by game build.** The fingerprint is the `_dir.vpk` file's byte
+length + mtime: Steam rewrites that file whenever an update touches the pak (same
+property the chunk-mtime update-diff tooling relies on), so the check is a single
+`stat` (no VPK open) and never serves stale data after a real update. valve_pak does
+not expose the V2 `tree_checksum`, so the file stat stands in; the only cost is a
+needless rebuild if something bumps the mtime without changing bytes (a "verify game
+files" pass). A corrupt / wrong-schema / stale-fingerprint cache is a **miss, not an
+error** (the UI silently rebuilds). `CACHE_SCHEMA_VERSION` bump invalidates all
+caches when the on-disk shape changes; `clear()` forces a rebuild.
+
+Exposed as `vpkmerge catalog cache --vpk <VPK> [--dir DIR] [--clear] [--json]`:
+warms both indexes, prints the fingerprint + per-index hit/miss. Example:
+`examples/catalog_cache.rs`. Still open: a single combined catalog file (today it is
+one-per-kind) and tying the texture-thumbnail dir to the same fingerprint.
+
+## Hero display names (`catalog heroes`)
+
+The catalog indexes key everything by engine **codename** (`hornet`, `vampirebat`);
+a UI wants the **display name** (`Vindicta`, `Mina`). `vpkmerge_core::localization`
+resolves them. The names are **not in pak01**: they live in loose Valve-KeyValues
+`.txt` under `<game>/citadel/resource/localization/`. `build_hero_roster(vpk,
+loc_dir, lang)` reads the codenames + availability flags from `scripts/heroes.vdata_c`
+(inside the pak) and resolves each `hero_<codename>` token against
+`citadel_gc_hero_names/citadel_gc_hero_names_<lang>.txt` (loose, located via
+`localization_dir_for_pak`), returning `HeroInfo { codename, name, selectable,
+in_development, disabled }`. On the live build that is 38 selectable / 59 total, with
+the non-obvious mappings correct (`atlas`->Abrams, `forge`->McGinnis,
+`familiar`->Rem, `orion`->Grey Talon, `synth`->Pocket, `frank`->Victor). A missing
+localization tree degrades names to the codename (still returns the roster + flags).
+
+`parse_kv_tokens(text)` is the generic reader (depth-2 quoted-string pairs, strips
+the `:hint` type marker, handles BOM / `//` comments / `\"` escapes); `hero_name_tokens`
+and `load_token_file` expose it. Exposed as `vpkmerge catalog heroes --vpk <VPK>
+[--loc-dir DIR] [--lang L] [--all] [--json]` (selectable only by default; `--all`
+includes in-dev / disabled). Example: `examples/hero_roster.rs`. This supersedes the
+hardcoded 14-hero map in `examples/ult_sound_map.rs`. **Ability / item display names**
+are the remaining piece: the strings are in the same localization tree but join to
+their icons only through a fuzzy filename / vdata-node mapping (a later pass); the
+catalog's filename-derived `label` already reads fine for those.
+
 ## Texture recolor (`.vtex_c`)
 
 `vpkmerge_core::recolor` hue-shifts a Source 2 texture in place: `morphic::decode` the top

@@ -16,6 +16,8 @@ tempfile = "3"
 # order (e.g. `base` first) so the dump mirrors the file and Grimoire can
 # enumerate events in their original order.
 serde_json = { version = "1", features = ["preserve_order"] }
+# Derive (de)serialization for the on-disk catalog cache (catalog_cache.rs).
+serde = { version = "1", features = ["derive"] }
 # Source 2 .vtex_c decoder (same workspace). Used to turn extracted portrait
 # textures into PNGs; covers the uncompressed, embedded-PNG, and BCn formats.
 morphic = { path = "../morphic", version = "0.8.0" }

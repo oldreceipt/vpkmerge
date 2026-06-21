@@ -33,12 +33,17 @@ pub fn decode_image(
         format: info.format,
         width: mw,
         height: mh,
+        // Block decoders work on the stored canvas; cropping to the non-pow2
+        // actual size is a display-layer concern (see `inspect`/`crop_to_actual`).
+        actual_width: mw,
+        actual_height: mh,
         depth: info.depth,
         mip_count: info.mip_count,
         flags: info.flags,
+        ycocg: info.ycocg,
     };
     let info = &mip_info;
-    match info.format {
+    let mut image = match info.format {
         TextureFormat::Rgba8888 => rgba8::decode_rgba(info, pixels),
         TextureFormat::Bgra8888 => rgba8::decode_bgra(info, pixels),
         TextureFormat::Dxt1 => bcn::decode_bc1(info, pixels),
@@ -51,5 +56,11 @@ pub fn decode_image(
             inline::decode_inline(info, pixels)
         }
         other => Err(DecodeError::Unimplemented(other)),
+    }?;
+    // YCoCg-encoded textures (flagged in RED2, common on DXT5) carry chroma in the
+    // color channels and luma in alpha; reverse it now that the blocks are decoded.
+    if info.ycocg {
+        crate::texture::apply_ycocg(&mut image);
     }
+    Ok(image)
 }

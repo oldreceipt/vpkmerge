@@ -35,6 +35,27 @@ pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 pub mod soundevents;
 pub use soundevents::{EventSummary, SoundEvents};
 
+pub mod catalog;
+pub use catalog::{
+    build_hero_sound_index, build_voiceline_index, build_voiceline_index_with_captions,
+    caption_hash, CaptionDb, HeroSound, HeroSoundCategory, VoiceLine, ENGLISH_CAPTIONS_ENTRY,
+};
+
+pub mod texture_catalog;
+pub use texture_catalog::{
+    build_texture_index, cache_texture_thumbnails, classify_texture, thumbnail_png,
+    CachedThumbnail, TextureCategory, TextureEntry, Thumbnail, ThumbnailOutcome,
+};
+
+pub mod catalog_cache;
+pub use catalog_cache::{BuildFingerprint, CatalogCache, CACHE_SCHEMA_VERSION};
+
+pub mod localization;
+pub use localization::{
+    build_hero_roster, hero_name_tokens, localization_dir_for_pak, parse_kv_tokens, HeroInfo,
+    DEFAULT_LANG,
+};
+
 pub mod cubemap;
 pub use cubemap::{export_cubemap_hdr, CubemapFaceReport, CUBEMAP_FACE_NAMES};
 
@@ -332,6 +353,31 @@ pub fn read_vpk_entry<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result<Vec<u8
         .with_context(|| format!("no entry {entry:?} in {}", vpk_path.display()))?;
     file.read_all()
         .with_context(|| format!("reading {entry:?} from {}", vpk_path.display()))
+}
+
+/// Read a VO/ability `.vsnd_c` clip out of a VPK and return its playable MP3
+/// stream. Combines [`read_vpk_entry`] with [`morphic::extract_vsnd_mp3`]: the
+/// audition path for the Foundry Sound tab (pick a voice line in the catalog,
+/// play the clip). The returned bytes are a complete MP3 file, no decode needed.
+///
+/// # Errors
+/// Propagates a missing entry, or a clip whose container is not an MP3-backed
+/// `CVoiceContainerDefault` (a different codec is reported rather than returned
+/// as bogus `.mp3`).
+pub fn extract_voiceclip_mp3<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result<Vec<u8>> {
+    // The voice-line index reports clip paths with the soundevents `.vsnd`
+    // extension, but the packed VPK entry is the compiled `.vsnd_c`, so accept
+    // either and normalize (callers can pass an index path verbatim).
+    let normalized = if Path::new(entry)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("vsnd"))
+    {
+        format!("{entry}_c")
+    } else {
+        entry.to_owned()
+    };
+    let bytes = read_vpk_entry(&vpk_path, &normalized)?;
+    morphic::extract_vsnd_mp3(&bytes).with_context(|| format!("extracting MP3 from {normalized:?}"))
 }
 
 /// Route entries from `input` into N output VPKs according to `outputs`.

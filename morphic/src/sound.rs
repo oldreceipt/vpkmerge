@@ -101,6 +101,63 @@ pub fn encode_vsnd_c(
     Ok(out)
 }
 
+/// Extract the appended MP3 stream from a `.vsnd_c` container, ready to hand to
+/// an `<audio>` element (no decode needed). Deadlock VO / ability clips store
+/// their audio as a plain MP3 appended after the resource structure, its length
+/// recorded as `m_nStreamingSize` in the CTRL block, so the stream is the final
+/// `m_nStreamingSize` bytes of the file (the exact inverse of [`encode_vsnd_c`]).
+///
+/// This is the audition backbone for the Foundry Sound tab: browse the voice-line
+/// index, pull a clip's bytes, play them.
+///
+/// # Errors
+/// Fails if the input does not parse as a resource, lacks a `CTRL` block / the
+/// expected `m_vSound` shape, declares a zero or oversized streaming size, or the
+/// appended stream is not MP3 (the only container shape Deadlock VO uses; a
+/// different codec is reported rather than handed back as bogus `.mp3`).
+pub fn extract_vsnd_mp3(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    let resource = Resource::parse(data)?;
+    let ctrl_bytes = resource
+        .find_block(BLOCK_CTRL)
+        .ok_or(DecodeError::BadResource("vsnd_c has no CTRL block"))?;
+    let root = kv3::decode(ctrl_bytes)?;
+    let sound = root
+        .get("m_vSound")
+        .ok_or(DecodeError::BadResource("vsnd_c CTRL has no m_vSound"))?;
+    let streaming_size = usize::try_from(
+        sound
+            .get("m_nStreamingSize")
+            .and_then(Value::as_uint)
+            .ok_or(DecodeError::BadResource("vsnd_c m_nStreamingSize missing"))?,
+    )
+    .map_err(|_| DecodeError::BadResource("vsnd_c streaming size too large"))?;
+    if streaming_size == 0 || streaming_size > data.len() {
+        return Err(DecodeError::BadResource(
+            "vsnd_c streaming size out of range",
+        ));
+    }
+    let mp3 = &data[data.len() - streaming_size..];
+    if !looks_like_mp3(mp3) {
+        return Err(DecodeError::BadResource(
+            "vsnd_c streamed audio is not MP3 (unsupported codec for audition)",
+        ));
+    }
+    Ok(mp3.to_vec())
+}
+
+/// Whether `data` starts like an MP3 stream: an `ID3` tag, or an MPEG audio frame
+/// sync (11 set bits: `0xFF` then top 3 bits of the next byte). Cheap guard so a
+/// non-MP3 codec surfaces as an error instead of unplayable `.mp3` bytes.
+fn looks_like_mp3(data: &[u8]) -> bool {
+    if data.len() < 3 {
+        return false;
+    }
+    if &data[..3] == b"ID3" {
+        return true;
+    }
+    data[0] == 0xFF && (data[1] & 0xE0) == 0xE0
+}
+
 /// Overwrite `key` on an object if present, leaving its absence to surface later
 /// as a shape error rather than silently inserting a field the engine ignores.
 fn set_value(obj: &mut Value, key: &str, value: Value) {
