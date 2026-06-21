@@ -950,11 +950,12 @@ fn dress_index_count(model: &morphic::model::Model, needle: &str) -> usize {
         .sum()
 }
 
-/// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
-/// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
+/// Mirrors the GLB writer's shell rule: only the inverted-hull toon-outline /
+/// jitter border is dropped. Additive `*_glow` overlays are KEPT now (the viewer
+/// composites them additively), so they are no longer shells.
 fn is_shell(s: &str) -> bool {
     let lc = s.to_ascii_lowercase();
-    lc.contains("outline") || (lc.contains("glow") && !lc.contains("noglow"))
+    lc.contains("outline") || lc.contains("jitter")
 }
 
 /// M5a: write the `.glb`, re-read it with the `gltf` crate (which validates the
@@ -971,10 +972,10 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
     assert!(gltf.blob.is_some(), "glb carries its binary blob");
     let doc = &gltf.document;
 
-    // The GLB writer drops parts that are entirely non-renderable NPR shells
-    // (inverted-hull `*_outline` and additive `*_glow`), so the glTF carries the
-    // model's renderable parts, not every part. Mirror that rule and check the
-    // surviving meshes are exactly those parts (by name).
+    // The GLB writer drops parts that are entirely inverted-hull toon-outline /
+    // jitter shells, so the glTF carries the model's renderable parts (including
+    // the kept additive `*_glow` overlays), not every part. Mirror that rule and
+    // check the surviving meshes are exactly those parts (by name).
     let mut expected_meshes: Vec<&str> = model
         .meshes
         .iter()
