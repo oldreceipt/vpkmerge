@@ -152,6 +152,12 @@ enum CatalogAction {
     /// with `--hero` / `--search`; `--json` emits a machine-readable array.
     Voiceline(VoicelineArgs),
 
+    /// Extract a single VO/ability clip (`.vsnd_c`) to a playable MP3. Deadlock
+    /// stores these clips as a plain MP3 appended after the resource structure, so
+    /// this slices it out (no decode) and writes it to `--out`: the audition path
+    /// for the Foundry Sound tab (pick a voice line, play the clip).
+    Voiceclip(VoiceclipArgs),
+
     /// Browse the texture / icon index: one row per `.vtex_c`, classified from
     /// its path (ability icon, item icon, hero portrait, hero skin, ability VFX)
     /// with a searchable label and hero codename. Filter with `--category` /
@@ -199,6 +205,22 @@ struct VoicelineArgs {
 }
 
 #[derive(Args)]
+struct VoiceclipArgs {
+    /// VPK carrying the clip (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Entry path of the `.vsnd_c` clip inside the VPK (a `vsnd` path from the
+    /// voice-line index, e.g. `sounds/vo/hero/.../clip.vsnd_c`).
+    #[arg(long, value_name = "ENTRY")]
+    entry: String,
+
+    /// Write the extracted MP3 here. Parent directory is created if missing.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
+}
+
+#[derive(Args)]
 struct TextureCatalogArgs {
     /// VPK to index (the base `citadel/pak01_dir.vpk`, or a mod VPK).
     #[arg(long, value_name = "VPK")]
@@ -216,6 +238,13 @@ struct TextureCatalogArgs {
     /// Keep only entries whose label or path contains this text (case-insensitive).
     #[arg(long, value_name = "TEXT")]
     search: Option<String>,
+
+    /// Keep only the single entry at this exact path. Combined with `--thumbs`
+    /// (and a larger `--thumb-size`), this decodes one texture on demand: the
+    /// backbone for the Foundry lightbox (enlarge-on-click). AND-combined with
+    /// the other filters.
+    #[arg(long, value_name = "ENTRY")]
+    path: Option<String>,
 
     /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
     /// Does not limit thumbnail generation.
@@ -3034,10 +3063,24 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
 fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
     match &cmd.action {
         CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
+        CatalogAction::Voiceclip(args) => run_catalog_voiceclip(args),
         CatalogAction::Texture(args) => run_catalog_texture(args),
         CatalogAction::Cache(args) => run_catalog_cache(args),
         CatalogAction::Heroes(args) => run_catalog_heroes(args),
     }
+}
+
+fn run_catalog_voiceclip(args: &VoiceclipArgs) -> Result<()> {
+    let mp3 = vpkmerge_core::extract_voiceclip_mp3(&args.vpk, &args.entry)
+        .with_context(|| format!("extracting clip {} from {}", args.entry, args.vpk.display()))?;
+    if let Some(parent) = args.out.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&args.out, &mp3)
+        .with_context(|| format!("writing {}", args.out.display()))?;
+    eprintln!("wrote {} bytes of MP3 to {}", mp3.len(), args.out.display());
+    Ok(())
 }
 
 fn run_catalog_heroes(args: &HeroesArgs) -> Result<()> {
@@ -3237,6 +3280,9 @@ fn run_catalog_texture(args: &TextureCatalogArgs) -> Result<()> {
         entries.retain(|e| {
             e.label.to_lowercase().contains(&needle) || e.path.to_lowercase().contains(&needle)
         });
+    }
+    if let Some(exact) = &args.path {
+        entries.retain(|e| e.path == *exact);
     }
 
     // Thumbnail generation runs over the full filtered set, before the --limit

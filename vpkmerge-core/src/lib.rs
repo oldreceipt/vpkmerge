@@ -355,6 +355,29 @@ pub fn read_vpk_entry<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result<Vec<u8
         .with_context(|| format!("reading {entry:?} from {}", vpk_path.display()))
 }
 
+/// Read a VO/ability `.vsnd_c` clip out of a VPK and return its playable MP3
+/// stream. Combines [`read_vpk_entry`] with [`morphic::extract_vsnd_mp3`]: the
+/// audition path for the Foundry Sound tab (pick a voice line in the catalog,
+/// play the clip). The returned bytes are a complete MP3 file, no decode needed.
+///
+/// # Errors
+/// Propagates a missing entry, or a clip whose container is not an MP3-backed
+/// `CVoiceContainerDefault` (a different codec is reported rather than returned
+/// as bogus `.mp3`).
+pub fn extract_voiceclip_mp3<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result<Vec<u8>> {
+    // The voice-line index reports clip paths with the soundevents `.vsnd`
+    // extension, but the packed VPK entry is the compiled `.vsnd_c`, so accept
+    // either and normalize (callers can pass an index path verbatim).
+    let normalized = if entry.ends_with(".vsnd") {
+        format!("{entry}_c")
+    } else {
+        entry.to_owned()
+    };
+    let bytes = read_vpk_entry(&vpk_path, &normalized)?;
+    morphic::extract_vsnd_mp3(&bytes)
+        .with_context(|| format!("extracting MP3 from {normalized:?}"))
+}
+
 /// Route entries from `input` into N output VPKs according to `outputs`.
 /// Reads `input` once. Returns a per-output entry count.
 ///
