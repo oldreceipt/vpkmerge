@@ -3,11 +3,11 @@ use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use vpkmerge_core::{
     bake_uv_atlas, bake_uv_mask, edit_model_geometry, export_hero_model, export_model,
-    extract_portraits, hero_model_entry, import_soul_container_clone, inspect_models, merge,
-    model_draw_call_targets, model_uv_segments, model_vertex_targets, split, AnimOptions,
-    CollisionPolicy, GeometryEdit, MergeOptions, ModelPartSelector, OverlapPolicy, PathPredicate,
-    PortraitInfo, PoseSelection, SegmentBy, SoulGlow, SoulImportCloneOptions, SoulOrient,
-    SoundEvents, SplitOptions, SplitOutput,
+    extract_portraits, hero_model_entry, import_clone, import_soul_container_clone, inspect_models,
+    merge, model_draw_call_targets, model_uv_segments, model_vertex_targets, split, urn_target,
+    AnimOptions, CollisionPolicy, GeometryEdit, MergeOptions, ModelPartSelector, NormalSynthesis,
+    OverlapPolicy, PathPredicate, PortraitInfo, PoseSelection, SegmentBy, SoulGlow,
+    SoulImportCloneOptions, SoulOrient, SoundEvents, SplitOptions, SplitOutput,
 };
 
 #[derive(Parser)]
@@ -125,8 +125,9 @@ enum Command {
     /// Build a custom soul-container override VPK from a user `.glb`. `import`
     /// clones the model's mesh into the stock soul container, atlases its
     /// materials into one albedo, fits it to the orb's bounds, and (by default)
-    /// recolors the soul-glow particles to the model's dominant hue. The
-    /// one-call bridge for Grimoire's drag-and-drop soul-container import.
+    /// recolors the soul-glow particles to the model's dominant hue. `import-urn`
+    /// retargets the same clone pipeline at the carryable Idol/urn objective. The
+    /// one-call bridge for Grimoire's drag-and-drop soul-container / urn import.
     SoulContainer(SoulContainerCmd),
 }
 
@@ -160,6 +161,12 @@ struct SoulContainerCmd {
 enum SoulContainerAction {
     /// Clone a `.glb` into a soul-container override VPK.
     Import(SoulImportArgs),
+    /// Clone a `.glb` into an override VPK for the carryable Idol/urn objective
+    /// (`idol_urn.vmdl_c`). Reuses the soul-container envelope (the urn's own
+    /// legacy format is not editable) and packs the result at the urn's slot, so
+    /// the imported model replaces the urn in-game. Ships no particles and is
+    /// sized by `--span` (the urn is bigger than a soul orb).
+    ImportUrn(UrnImportArgs),
 }
 
 #[derive(Args)]
@@ -215,6 +222,62 @@ struct SoulImportArgs {
     /// What to do with the orb's soul-glow particles.
     #[arg(long, value_enum, default_value_t = GlowArg::Recolor)]
     glow: GlowArg,
+
+    /// Don't synthesize a relief/roughness `g_tNormalRoughness` from the albedo.
+    /// By default a relief map is synthesized so a solid prop reads crisp instead
+    /// of soft/matte (the flat-default-normal "blurry" look). Pass this for the
+    /// literal emissive glow orb, which wants the flat default.
+    #[arg(long)]
+    no_relief: bool,
+
+    /// Relief bump strength when synthesizing the normal (default 1.0; higher =
+    /// steeper). Ignored with --no-relief.
+    #[arg(long, value_name = "F")]
+    relief_strength: Option<f32>,
+
+    /// Uniform roughness packed into the synthesized normal's B channel, 0.0
+    /// (mirror) .. 1.0 (matte). Default 0.4 (crisper than the flat ~0.5). Ignored
+    /// with --no-relief.
+    #[arg(long, value_name = "F")]
+    roughness: Option<f32>,
+}
+
+#[derive(Args)]
+struct UrnImportArgs {
+    /// The model to import (binary glTF `.glb`).
+    #[arg(long, value_name = "FILE")]
+    glb: PathBuf,
+
+    /// Base `pak01_dir.vpk` to read the soul-container envelope + donor textures from.
+    #[arg(long, value_name = "VPK")]
+    pak: PathBuf,
+
+    /// Output addon VPK; overrides the stock Idol/urn (`idol_urn.vmdl_c`) in place.
+    #[arg(long, value_name = "OUT_dir.vpk")]
+    out: PathBuf,
+
+    /// Material/texture basename used inside the VPK.
+    #[arg(long, default_value = "custom_urn")]
+    name: String,
+
+    /// Largest-axis size in Source units to fit the import to (the urn is bigger
+    /// than a soul orb, so the envelope's bounds are not used).
+    #[arg(long, default_value_t = 28.0, value_name = "UNITS")]
+    span: f32,
+
+    /// Coordinate convention applied to the GLB before fitting. `auto` is not
+    /// reliable for cube-like props; prefer manual correction.
+    #[arg(long, value_enum, default_value_t = OrientArg::Auto)]
+    orient: OrientArg,
+
+    /// Extra Euler rotation in degrees as `X,Y,Z`, applied after --orient.
+    #[arg(long, value_name = "X,Y,Z")]
+    rotate: Option<String>,
+
+    /// Lift the fitted mesh so its lowest Source-Z point sits at the model
+    /// origin/floor instead of centering it.
+    #[arg(long)]
+    ground: bool,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -2435,6 +2498,7 @@ fn run_icon(args: &IconCmd) -> Result<()> {
 fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
     match &cmd.action {
         SoulContainerAction::Import(args) => run_soul_container_import(args),
+        SoulContainerAction::ImportUrn(args) => run_soul_container_import_urn(args),
     }
 }
 
@@ -2451,6 +2515,29 @@ fn parse_soul_rotate(spec: &str) -> Result<[f32; 3]> {
     Ok([parts[0], parts[1], parts[2]])
 }
 
+/// Build the relief option from the shared `--no-relief / --relief-strength /
+/// --roughness` flags, starting from the default synthesis and overriding what the
+/// caller set. `None` (=> flat default normal) when `--no-relief` is passed.
+fn relief_from_flags(
+    no_relief: bool,
+    strength: Option<f32>,
+    roughness: Option<f32>,
+) -> Option<NormalSynthesis> {
+    if no_relief {
+        return None;
+    }
+    let default = SoulImportCloneOptions::default()
+        .relief
+        .unwrap_or(NormalSynthesis {
+            strength: 1.0,
+            roughness: 0.4,
+        });
+    Some(NormalSynthesis {
+        strength: strength.unwrap_or(default.strength),
+        roughness: roughness.unwrap_or(default.roughness),
+    })
+}
+
 fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
     let rotate = args.rotate.as_deref().map(parse_soul_rotate).transpose()?;
     let glb =
@@ -2463,6 +2550,7 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
         orient_upright: !args.no_upright,
         ground: args.ground,
         glow: args.glow.into(),
+        relief: relief_from_flags(args.no_relief, args.relief_strength, args.roughness),
     };
     let report = import_soul_container_clone(&args.pak, &glb, &args.out, &opts)
         .with_context(|| format!("importing {} into a soul container", args.glb.display()))?;
@@ -2509,6 +2597,84 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
         "upright": report.upright,
         "glowHue": report.glow_hue,
         "entryCount": report.entry_count,
+        "relief": report.relief,
+    });
+    println!("{json}");
+    Ok(())
+}
+
+/// Clone a `.glb` into an override VPK for the carryable Idol/urn objective. Reuses
+/// the soul-container clone pipeline retargeted at `idol_urn.vmdl_c` (see
+/// `urn_target`): no particles, sized by `--span`, flat default normal.
+fn run_soul_container_import_urn(args: &UrnImportArgs) -> Result<()> {
+    let rotate = args.rotate.as_deref().map(parse_soul_rotate).transpose()?;
+    let glb =
+        std::fs::read(&args.glb).with_context(|| format!("reading GLB {}", args.glb.display()))?;
+    let opts = SoulImportCloneOptions {
+        name: args.name.clone(),
+        orient: args.orient.into(),
+        rotate,
+        // The urn is a carried objective, not a spinning orb: no yaw/upright recipe,
+        // no soul-glow particles. Relief is driven by urn_target's own synth_normal
+        // (flat default), so opts.relief is irrelevant here.
+        yaw: 0.0,
+        orient_upright: false,
+        ground: args.ground,
+        glow: SoulGlow::Off,
+        relief: None,
+    };
+    let report = import_clone(&args.pak, &glb, &args.out, &opts, &urn_target(args.span))
+        .with_context(|| format!("importing {} into the Idol/urn", args.glb.display()))?;
+
+    // Human-readable progress on stderr.
+    eprintln!("orient: {}", report.orient_label);
+    eprintln!(
+        "mesh:   {} prims -> {} group(s), {} verts, {} tris; atlas {}x{} ({}px)",
+        report.prim_count,
+        report.group_count,
+        report.vert_count,
+        report.tri_count,
+        report.atlas_cols,
+        report.atlas_rows,
+        report.atlas_px,
+    );
+    eprintln!(
+        "fit:    source span {:.3} -> target {:.1} (x{:.3})",
+        report.source_span, report.target_span, report.fit_scale,
+    );
+    eprintln!(
+        "normal: {}",
+        if report.relief {
+            "synthesized g_tNormalRoughness (relief + roughness)"
+        } else {
+            "flat default (one texture)"
+        }
+    );
+    eprintln!(
+        "wrote {} ({} entries) -> overrides idol_urn.vmdl_c",
+        args.out.display(),
+        report.entry_count,
+    );
+
+    // Machine-readable report on stdout (one JSON object) so Grimoire can record the
+    // transform + fitted bounds without scraping logs. Mirrors the soul-container
+    // handler's shape; `targetSpan` is the requested --span.
+    let json = serde_json::json!({
+        "orient": report.orient_label,
+        "version": env!("CARGO_PKG_VERSION"),
+        "primCount": report.prim_count,
+        "groupCount": report.group_count,
+        "vertCount": report.vert_count,
+        "triCount": report.tri_count,
+        "atlasPx": report.atlas_px,
+        "fitScale": report.fit_scale,
+        "sourceSpan": report.source_span,
+        "targetSpan": report.target_span,
+        "yaw": report.yaw,
+        "upright": report.upright,
+        "glowHue": report.glow_hue,
+        "entryCount": report.entry_count,
+        "relief": report.relief,
     });
     println!("{json}");
     Ok(())

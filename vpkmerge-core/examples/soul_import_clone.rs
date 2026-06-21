@@ -11,7 +11,32 @@
 //   SOUL_ROTATE=X,Y,Z                    (extra Euler degrees, applied after orient)
 //   SOUL_GLOW=recolor|base|off           (default recolor)
 use anyhow::{anyhow, Context, Result};
-use vpkmerge_core::{import_soul_container_clone, SoulGlow, SoulImportCloneOptions, SoulOrient};
+use vpkmerge_core::{
+    import_soul_container_clone, NormalSynthesis, SoulGlow, SoulImportCloneOptions, SoulOrient,
+};
+
+// Surface relief is on by default (fixes the flat-normal "blurry" look). Disable
+// with SOUL_RELIEF=off for the literal glow orb; tune with SOUL_ROUGHNESS (0..1,
+// lower = glossier) and SOUL_RELIEF_STRENGTH.
+fn env_relief() -> Option<NormalSynthesis> {
+    if matches!(
+        std::env::var("SOUL_RELIEF").unwrap_or_default().as_str(),
+        "0" | "off" | "false" | "none"
+    ) {
+        return None;
+    }
+    let default = SoulImportCloneOptions::default().relief?;
+    Some(NormalSynthesis {
+        strength: std::env::var("SOUL_RELIEF_STRENGTH")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(default.strength),
+        roughness: std::env::var("SOUL_ROUGHNESS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(default.roughness),
+    })
+}
 
 fn env_orient() -> Result<SoulOrient> {
     let raw = std::env::var("SOUL_ORIENT").unwrap_or_else(|_| "y-up".to_string());
@@ -87,6 +112,7 @@ fn main() -> Result<()> {
         yaw,
         orient_upright,
         glow: env_glow(),
+        relief: env_relief(),
         ..Default::default()
     };
     let report = import_soul_container_clone(&pak, &glb, &out, &opts)?;
@@ -106,6 +132,14 @@ fn main() -> Result<()> {
     eprintln!(
         "glow:   hue {:.0} deg (from dominant group)",
         report.glow_hue
+    );
+    eprintln!(
+        "relief: {}",
+        if report.relief {
+            "synthesized normal + roughness"
+        } else {
+            "flat default normal"
+        }
     );
     eprintln!("wrote {out} ({} entries)", report.entry_count);
     Ok(())
