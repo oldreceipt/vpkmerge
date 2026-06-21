@@ -152,6 +152,16 @@ enum CatalogAction {
     /// with `--hero` / `--search`; `--json` emits a machine-readable array.
     Voiceline(VoicelineArgs),
 
+    /// List a hero's gameplay sounds (the non-VO surface): weapon, ability,
+    /// movement, and melee events read from `soundevents/hero/<code>.vsndevts_c`.
+    /// Each row carries the event, hero codename, a category (weapon / ability /
+    /// movement / melee / other), the ability name + slot where it resolves, a
+    /// human-readable label, and the clip path(s). Filter with `--hero` /
+    /// `--category` / `--search`; `--json` emits a machine-readable array. The
+    /// clips audition through `catalog voiceclip`, same as voice lines.
+    #[command(name = "herosounds")]
+    HeroSounds(HeroSoundsArgs),
+
     /// Extract a single VO/ability clip (`.vsnd_c`) to a playable MP3. Deadlock
     /// stores these clips as a plain MP3 appended after the resource structure, so
     /// this slices it out (no decode) and writes it to `--out`: the audition path
@@ -192,6 +202,36 @@ struct VoicelineArgs {
     hero: Option<String>,
 
     /// Keep only events whose label or name contains this text (case-insensitive).
+    #[arg(long, value_name = "TEXT")]
+    search: Option<String>,
+
+    /// Cap the number of rows printed (0 = no cap). A truncation note is logged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    limit: usize,
+
+    /// Emit a machine-readable JSON array instead of the human-readable table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct HeroSoundsArgs {
+    /// VPK carrying the hero-sound tree (the base `citadel/pak01_dir.vpk`).
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Keep only events for this hero sound-codename (e.g. `abrams`, `gigawatt`,
+    /// `vampirebat` -- the `soundevents/hero/<code>` filename stem).
+    #[arg(long, value_name = "CODENAME")]
+    hero: Option<String>,
+
+    /// Keep only this category: `weapon`, `ability`, `movement`, `melee`, or
+    /// `other`.
+    #[arg(long, value_name = "CATEGORY")]
+    category: Option<String>,
+
+    /// Keep only events whose label, ability, or name contains this text
+    /// (case-insensitive).
     #[arg(long, value_name = "TEXT")]
     search: Option<String>,
 
@@ -3063,6 +3103,7 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
 fn run_catalog(cmd: &CatalogCmd) -> Result<()> {
     match &cmd.action {
         CatalogAction::Voiceline(args) => run_catalog_voiceline(args),
+        CatalogAction::HeroSounds(args) => run_catalog_herosounds(args),
         CatalogAction::Voiceclip(args) => run_catalog_voiceclip(args),
         CatalogAction::Texture(args) => run_catalog_texture(args),
         CatalogAction::Cache(args) => run_catalog_cache(args),
@@ -3251,6 +3292,96 @@ fn run_catalog_voiceline(args: &VoicelineArgs) -> Result<()> {
         eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
     } else {
         eprintln!("{total} voice line(s)");
+    }
+    Ok(())
+}
+
+fn run_catalog_herosounds(args: &HeroSoundsArgs) -> Result<()> {
+    use vpkmerge_core::HeroSoundCategory;
+
+    let category_label = |c: HeroSoundCategory| match c {
+        HeroSoundCategory::Weapon => "weapon",
+        HeroSoundCategory::Ability => "ability",
+        HeroSoundCategory::Movement => "movement",
+        HeroSoundCategory::Melee => "melee",
+        HeroSoundCategory::Other => "other",
+    };
+
+    let mut sounds = vpkmerge_core::build_hero_sound_index(&args.vpk)
+        .with_context(|| format!("building hero-sound index from {}", args.vpk.display()))?;
+
+    if let Some(hero) = &args.hero {
+        sounds.retain(|s| s.hero == *hero);
+    }
+    if let Some(cat) = &args.category {
+        let cat = cat.to_lowercase();
+        sounds.retain(|s| category_label(s.category) == cat);
+    }
+    if let Some(needle) = &args.search {
+        let needle = needle.to_lowercase();
+        sounds.retain(|s| {
+            s.label.to_lowercase().contains(&needle)
+                || s.event.to_lowercase().contains(&needle)
+                || s
+                    .ability
+                    .as_deref()
+                    .is_some_and(|a| a.to_lowercase().contains(&needle))
+        });
+    }
+
+    let total = sounds.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        args.limit.min(total)
+    };
+
+    if args.json {
+        use serde_json::json;
+        let arr: Vec<serde_json::Value> = sounds[..shown]
+            .iter()
+            .map(|s| {
+                json!({
+                    "event": s.event,
+                    "hero": s.hero,
+                    "category": category_label(s.category),
+                    "ability": s.ability,
+                    "slot": s.slot,
+                    "label": s.label,
+                    "vsnd": s.vsnd,
+                    "duration": s.duration,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).context("serializing JSON")?
+        );
+    } else {
+        if total == 0 {
+            println!("no hero sounds match");
+            return Ok(());
+        }
+        println!(
+            "  {:<12} {:<9} {:>5}  {:<46} label",
+            "hero", "category", "clips", "event"
+        );
+        for s in &sounds[..shown] {
+            println!(
+                "  {:<12} {:<9} {:>5}  {:<46} {}",
+                s.hero,
+                category_label(s.category),
+                s.vsnd.len(),
+                s.event,
+                s.label,
+            );
+        }
+    }
+
+    if shown < total {
+        eprintln!("showing {shown} of {total} (raise or drop --limit to see the rest)");
+    } else {
+        eprintln!("{total} hero sound(s)");
     }
     Ok(())
 }

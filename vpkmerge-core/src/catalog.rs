@@ -37,6 +37,11 @@ const VO_TREE_PREFIX: &str = "soundevents/vo/";
 /// Per-hero VO files are named `generated_vo_hero_<code>.vsndevts_c`.
 const HERO_VO_STEM: &str = "generated_vo_hero_";
 
+/// The per-hero gameplay-sound tree: one `soundevents/hero/<code>.vsndevts_c`
+/// per hero, holding weapon / ability / movement / melee events (the non-VO
+/// counterpart to the VO tree).
+const HERO_TREE_PREFIX: &str = "soundevents/hero/";
+
 /// One VO sound event, ready to search and swap.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceLine {
@@ -315,6 +320,336 @@ pub fn caption_hash(token: &str) -> u32 {
     !crc
 }
 
+/// Which broad family a hero gameplay sound belongs to. Derived from the event
+/// name's grouping segment (`Haze.Wpn.Fire.Main` -> `Weapon`,
+/// `Haze.Finesse.Dagger.Cast` -> `Ability`); see [`build_hero_sound_index`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeroSoundCategory {
+    /// Primary-weapon sounds: fire, reload, zoom, whizby, impact, foley.
+    Weapon,
+    /// A hero ability (named, e.g. `Finesse`, or slot-tagged `A1`..`A4`).
+    Ability,
+    /// Locomotion: footsteps, jump/land, mantle, ladder steps.
+    Movement,
+    /// Melee swing.
+    Melee,
+    /// Anything that doesn't fit the above (e.g. the progression-page stingers).
+    Other,
+}
+
+/// One playable hero gameplay sound event (weapon / ability / movement / melee),
+/// the non-VO counterpart to [`VoiceLine`]. Read from `soundevents/hero/`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HeroSound {
+    /// Soundevent name, e.g. `Haze.Finesse.Dagger.Cast`. Usable verbatim as the
+    /// swap target in the soundevents layer.
+    pub event: String,
+    /// Hero "sound" codename from the source filename stem (`abrams`, `gigawatt`,
+    /// `vampirebat`). This is the sound-path namespace, which diverges from the
+    /// roster/script codename for some heroes (Abrams' roster codename is `atlas`).
+    pub hero: String,
+    /// Which family the event belongs to.
+    pub category: HeroSoundCategory,
+    /// The ability's display name when `category` is `Ability` (e.g. `Finesse`,
+    /// `Siphon Life`), else `None`. The grouping key for an ability picker.
+    pub ability: Option<String>,
+    /// Ability slot 1..4 when the event carries an `A1`..`A4` token (Abrams), else
+    /// `None`. Most heroes name abilities instead of slot-tagging them.
+    pub slot: Option<u8>,
+    /// Human-readable label derived from the event name, e.g. `"Fire Main"`,
+    /// `"Dagger Cast"`. The searchable text.
+    pub label: String,
+    /// Clip path(s) the event plays (more than one == a randomizer pool).
+    pub vsnd: Vec<String>,
+    /// Engine playback duration in seconds, if the event records one.
+    pub duration: Option<f64>,
+}
+
+/// Build the hero gameplay-sound index from the `soundevents/hero/` tree in
+/// `vpk_path`: one [`HeroSound`] per event across every `soundevents/hero/<code>
+/// .vsndevts_c` (the shared `_shared` template file and `base` inheritance keys
+/// are skipped). Rows are sorted by hero then event for a stable index.
+///
+/// This is the gameplay-sound counterpart to [`build_voiceline_index`]; together
+/// they cover a hero's full audible surface (abilities + gun here, voice barks
+/// there).
+pub fn build_hero_sound_index(vpk_path: impl AsRef<Path>) -> Result<Vec<HeroSound>> {
+    let vpk_path = vpk_path.as_ref();
+    let vpk =
+        valve_pak::open(vpk_path).with_context(|| format!("opening {}", vpk_path.display()))?;
+
+    let mut entries: Vec<String> = vpk
+        .file_paths()
+        .filter(|p| p.starts_with(HERO_TREE_PREFIX) && p.ends_with(".vsndevts_c"))
+        .cloned()
+        .collect();
+    entries.sort();
+
+    let mut sounds = Vec::new();
+    for entry in &entries {
+        let Some(hero) = hero_from_hero_entry(entry) else {
+            continue; // `_shared` and any other non-hero file
+        };
+        let mut file = vpk
+            .get_file(entry)
+            .with_context(|| format!("locating {entry}"))?;
+        let bytes = file
+            .read_all()
+            .with_context(|| format!("reading {entry}"))?;
+        // A file that fails to decode should not sink the whole index.
+        let Ok(se) = SoundEvents::from_bytes(bytes) else {
+            continue;
+        };
+        let Value::Object(pairs) = &se.root else {
+            continue;
+        };
+        for (name, event) in pairs {
+            // The `base` key is a shared template, not a playable event.
+            if name == "base" {
+                continue;
+            }
+            let vsnd = match event.get("vsnd_files") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+                Some(Value::String(s)) => vec![s.clone()],
+                _ => Vec::new(),
+            };
+            // Events with no clips (pure parameter/template rows) aren't playable.
+            if vsnd.is_empty() {
+                continue;
+            }
+            let mut classified = classify_hero_event(name);
+            // Most heroes name abilities instead of slot-tagging the event, but
+            // the clip path usually still carries an `aN` folder
+            // (`sounds/abilities/<code>/a2_batblink/...`). Use it to recover the
+            // slot so an ability picker can order 1..4 like in-game.
+            if classified.slot.is_none() && classified.category == HeroSoundCategory::Ability {
+                classified.slot = slot_from_vsnd(&vsnd);
+            }
+            sounds.push(HeroSound {
+                category: classified.category,
+                ability: classified.ability,
+                slot: classified.slot,
+                label: classified.label,
+                duration: event.get("vsnd_duration").and_then(Value::as_f64),
+                hero: hero.clone(),
+                vsnd,
+                event: name.clone(),
+            });
+        }
+    }
+
+    sounds.sort_by(|a, b| a.hero.cmp(&b.hero).then_with(|| a.event.cmp(&b.event)));
+    Ok(sounds)
+}
+
+/// Hero sound-codename from a hero-tree entry path, or `None` for the shared
+/// template. `soundevents/hero/abrams.vsndevts_c` -> `Some("abrams")`;
+/// `soundevents/hero/_shared.vsndevts_c` -> `None`.
+fn hero_from_hero_entry(entry: &str) -> Option<String> {
+    let stem = entry.rsplit('/').next()?.strip_suffix(".vsndevts_c")?;
+    if stem.starts_with('_') {
+        return None;
+    }
+    Some(stem.to_owned())
+}
+
+/// Generic grouping segments that pin a non-ability category. Anything not in
+/// these (after the speaker prefix and an optional `A1..A4` slot token) is read
+/// as a named ability.
+const WEAPON_GROUPS: &[&str] = &[
+    "wpn", "weapon", "zoomin", "zoomout", "bulletwhizby", "whizby", "reload", "foley",
+];
+const MOVEMENT_GROUPS: &[&str] = &[
+    "footstep",
+    "footsteps",
+    "movement",
+    "jumpland",
+    "jump",
+    "land",
+    "mantle",
+    "ladderstep",
+    "sprint",
+    "slide",
+    "dash",
+    "rope",
+    "zipline",
+    "wallrun",
+];
+const MELEE_GROUPS: &[&str] = &["melee"];
+/// Progression-page stingers (`Atlas.Progession.Page.Win.VO`); the in-game key is
+/// misspelled `Progession`, so match both spellings.
+const OTHER_GROUPS: &[&str] = &["progession", "progression"];
+
+struct ClassifiedEvent {
+    category: HeroSoundCategory,
+    ability: Option<String>,
+    slot: Option<u8>,
+    label: String,
+}
+
+/// Classify a hero soundevent name into a category + ability/slot + label.
+///
+/// Events are namespaced `<Speaker>.<Group>.<detail...>`, where the speaker is a
+/// hero prefix that can differ from the file stem (Gigawatt's file mixes `Seven.*`
+/// and `Gigawatt.*`). A leading literal `Ability.` and an `A1..A4` slot token are
+/// peeled first; the grouping segment then decides the category (a known generic,
+/// else a named ability). The label is the prose remainder after the speaker.
+fn classify_hero_event(event: &str) -> ClassifiedEvent {
+    let segs: Vec<&str> = event.split('.').filter(|s| !s.is_empty()).collect();
+    // segs[0] is the speaker; a few events lead with a literal `Ability` first.
+    let mut i = usize::from(segs.first() == Some(&"Ability"));
+    i += 1; // skip the speaker prefix itself
+    let after_speaker = &segs[i.min(segs.len())..];
+
+    // Peel an A1..A4 slot token if present (Abrams). The ability name then follows.
+    let mut slot = None;
+    let mut rest = after_speaker;
+    if let Some(first) = rest.first() {
+        if first.len() == 2
+            && first.as_bytes()[0] == b'A'
+            && (b'1'..=b'4').contains(&first.as_bytes()[1])
+        {
+            slot = Some(first.as_bytes()[1] - b'0');
+            rest = &rest[1..];
+        }
+    }
+
+    let group = rest.first().copied();
+    // The label is the detail *after* the grouping segment, since the category
+    // (and, for abilities, the ability name) already convey the group. When there
+    // is no detail, fall back to the group's own pretty name.
+    let detail = rest.get(1..).unwrap_or(&[]);
+    let label = if detail.is_empty() {
+        prettify_segment(group.unwrap_or(event))
+    } else {
+        prettify_segments(detail)
+    };
+
+    let Some(group) = group else {
+        // No grouping segment at all (a bare speaker event); treat as Other.
+        return ClassifiedEvent {
+            category: HeroSoundCategory::Other,
+            ability: None,
+            slot,
+            label,
+        };
+    };
+    let g = group.to_ascii_lowercase();
+
+    let category = if WEAPON_GROUPS.contains(&g.as_str()) {
+        HeroSoundCategory::Weapon
+    } else if MOVEMENT_GROUPS.contains(&g.as_str()) {
+        HeroSoundCategory::Movement
+    } else if MELEE_GROUPS.contains(&g.as_str()) {
+        HeroSoundCategory::Melee
+    } else if OTHER_GROUPS.contains(&g.as_str()) {
+        HeroSoundCategory::Other
+    } else {
+        // A named group (or one proved an ability by its A1..A4 slot token).
+        HeroSoundCategory::Ability
+    };
+
+    let ability = if category == HeroSoundCategory::Ability {
+        Some(prettify_segment(group))
+    } else {
+        None
+    };
+
+    ClassifiedEvent {
+        category,
+        ability,
+        slot,
+        label,
+    }
+}
+
+/// Recover an ability slot (1..4) from a clip path's `aN` token: a folder
+/// `.../a2_batblink/...`, a bare `.../a4/...`, or an infix `..._a1_...`. Returns
+/// the first match across `paths`. Mirrors the path convention the Locker's
+/// per-ability sound classifier relies on.
+fn slot_from_vsnd(paths: &[String]) -> Option<u8> {
+    for path in paths {
+        let lower = path.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        // Scan for `a` preceded by a `/` or `_` boundary, followed by 1..4 and a
+        // `_` or `/` boundary.
+        for i in 0..bytes.len() {
+            if bytes[i] != b'a' {
+                continue;
+            }
+            let before_ok = i == 0 || bytes[i - 1] == b'/' || bytes[i - 1] == b'_';
+            if !before_ok {
+                continue;
+            }
+            let Some(&digit) = bytes.get(i + 1) else {
+                continue;
+            };
+            if !(b'1'..=b'4').contains(&digit) {
+                continue;
+            }
+            let after = bytes.get(i + 2).copied();
+            if matches!(after, None | Some(b'_' | b'/')) {
+                return Some(digit - b'0');
+            }
+        }
+    }
+    None
+}
+
+/// Prettify one event segment: split CamelCase (`LoveBites` -> `Love Bites`,
+/// `ZoomIn` -> `Zoom In`) and Title-case the words. `Wpn` reads as `Weapon`.
+fn prettify_segment(seg: &str) -> String {
+    if seg.eq_ignore_ascii_case("wpn") {
+        return "Weapon".to_owned();
+    }
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for ch in seg.chars() {
+        if ch.is_uppercase() && prev_lower && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur.push(ch);
+        prev_lower = ch.is_lowercase() || ch.is_ascii_digit();
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+        .iter()
+        .map(|w| title_case_word(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Prettify a run of segments, joining with spaces (`["Dagger", "Cast"]` ->
+/// `"Dagger Cast"`). A leading `Wpn` is spelled `Weapon`.
+fn prettify_segments(segs: &[&str]) -> String {
+    segs.iter()
+        .map(|s| prettify_segment(s))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Upper-case the first character, lower-case the rest (`fire` -> `Fire`,
+/// `BulletWhizby` after a split is already one word). Leaves all-caps short tokens
+/// like `Lp` readable.
+fn title_case_word(w: &str) -> String {
+    let mut chars = w.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            first.to_ascii_uppercase().to_string()
+                + &chars.as_str().to_ascii_lowercase()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +752,88 @@ mod tests {
     #[test]
     fn rejects_non_vccd() {
         assert!(CaptionDb::parse(b"not a caption db").is_err());
+    }
+
+    #[test]
+    fn hero_from_hero_entry_strips_stem_and_skips_shared() {
+        assert_eq!(
+            hero_from_hero_entry("soundevents/hero/abrams.vsndevts_c").as_deref(),
+            Some("abrams")
+        );
+        assert_eq!(
+            hero_from_hero_entry("soundevents/hero/_shared.vsndevts_c"),
+            None
+        );
+    }
+
+    #[test]
+    fn classifies_weapon_movement_melee() {
+        let w = classify_hero_event("Haze.Wpn.Fire.Main");
+        assert_eq!(w.category, HeroSoundCategory::Weapon);
+        assert_eq!(w.label, "Fire Main");
+        assert_eq!(w.ability, None);
+
+        // Bare weapon token, no detail segments.
+        let z = classify_hero_event("Seven.ZoomIn");
+        assert_eq!(z.category, HeroSoundCategory::Weapon);
+        assert_eq!(z.label, "Zoom In");
+
+        assert_eq!(
+            classify_hero_event("Haze.Footstep").category,
+            HeroSoundCategory::Movement
+        );
+        assert_eq!(
+            classify_hero_event("Abrams.Melee.Swing.Charged").category,
+            HeroSoundCategory::Melee
+        );
+        assert_eq!(
+            classify_hero_event("Atlas.Progession.Page.Win.VO").category,
+            HeroSoundCategory::Other
+        );
+    }
+
+    #[test]
+    fn classifies_named_and_slotted_abilities() {
+        // Named ability: the grouping segment is the ability.
+        let n = classify_hero_event("Haze.Finesse.Dagger.Cast");
+        assert_eq!(n.category, HeroSoundCategory::Ability);
+        assert_eq!(n.ability.as_deref(), Some("Finesse"));
+        assert_eq!(n.label, "Dagger Cast");
+        assert_eq!(n.slot, None);
+
+        // CamelCase ability name splits into words.
+        assert_eq!(
+            classify_hero_event("VampireBat.LoveBites.Buildup").ability.as_deref(),
+            Some("Love Bites")
+        );
+
+        // A1..A4 slot token is peeled; the ability name follows.
+        let s = classify_hero_event("Abrams.A1.SiphonLife.Cast");
+        assert_eq!(s.category, HeroSoundCategory::Ability);
+        assert_eq!(s.slot, Some(1));
+        assert_eq!(s.ability.as_deref(), Some("Siphon Life"));
+        assert_eq!(s.label, "Cast");
+
+        // Leading literal `Ability.` prefix is skipped.
+        let a = classify_hero_event("Ability.Abrams.Charge.Step");
+        assert_eq!(a.category, HeroSoundCategory::Ability);
+        assert_eq!(a.ability.as_deref(), Some("Charge"));
+    }
+
+    #[test]
+    fn slot_recovered_from_clip_path() {
+        assert_eq!(
+            slot_from_vsnd(&["sounds/abilities/vampirebat/a2_batblink/x_01.vsnd".to_owned()]),
+            Some(2)
+        );
+        assert_eq!(
+            slot_from_vsnd(&["sounds/abilities/h/a4/ult_01.vsnd".to_owned()]),
+            Some(4)
+        );
+        // No aN token anywhere.
+        assert_eq!(
+            slot_from_vsnd(&["sounds/weapons/abrams/fire_01.vsnd".to_owned()]),
+            None
+        );
     }
 }
