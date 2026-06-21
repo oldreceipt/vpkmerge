@@ -84,6 +84,8 @@ fn main() -> Result<()> {
         // The urn ships no soul-glow particles; Off is also enforced by an empty
         // particle list in urn_target, so this is belt-and-braces.
         glow: SoulGlow::Off,
+        // Relief is driven by urn_target's own synth_normal, not opts.relief.
+        ..Default::default()
     };
     let report = import_clone(&pak, &glb, &out, &opts, &urn_target(span))?;
 
@@ -102,7 +104,11 @@ fn main() -> Result<()> {
         "fit:    source span {:.3} -> target {:.1} (x{:.3})",
         report.source_span, report.target_span, report.fit_scale,
     );
-    eprintln!("normal: synthesized g_tNormalRoughness (relief from albedo + glossy roughness)");
+    if report.relief {
+        eprintln!("normal: synthesized g_tNormalRoughness (relief from albedo + glossy roughness)");
+    } else {
+        eprintln!("normal: flat default (no extra texture)");
+    }
     eprintln!(
         "wrote {out} ({} entries) -> overrides idol_urn.vmdl_c",
         report.entry_count

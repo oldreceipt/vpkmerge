@@ -217,6 +217,35 @@ A true mute should be implemented as a new mode, likely `SOUL_GLOW=mute`, that
 ships inert overrides for those three particle paths or patches spawn/intensity
 or alpha to zero.
 
+## "Blurry" is shading, not resolution (the real lever)
+
+Imported props read soft/matte/"blurry" even with a sharp, high-res albedo, and
+**raising the albedo resolution does not fix it** (512 vs 4096 looks identical at
+in-game distance). The softness comes from the lighting, not the texels: the stock
+soul material ships a *flat* `g_tNormalRoughness` (flat normal, ~0.5 roughness), so
+light hits the whole surface uniformly with no specular relief. This is the same
+thing the urn import already hit and fixed (`urn_target` synthesizes a relief +
+roughness map; see [[urn-model-swap]]).
+
+So the importer now **synthesizes a `g_tNormalRoughness` by default** for
+soul-container imports (height-from-albedo normal + a tuned roughness), the same
+`NormalSynthesis` path the urn uses. Knobs:
+
+```bash
+# CLI
+vpkmerge soul-container import ... [--no-relief] [--roughness 0..1] [--relief-strength N]
+# example env
+SOUL_RELIEF=off  SOUL_ROUGHNESS=0.4  SOUL_RELIEF_STRENGTH=1.0
+```
+
+`--no-relief` keeps the legacy flat normal, correct only for the literal emissive
+glow orb (where relief fights the glow look). Default roughness 0.4 reads crisper
+than the matte ~0.5 default without going mirror-glossy. The build report / JSON now
+carries a `relief` flag, and a relief build packs one extra `*_normal.vtex_c` entry.
+
+**In-game verification still pending** for the relief default on soul imports
+(structurally validated: normal map packed + bound, `v0sanity` clean).
+
 ## Albedo Atlas Resolution (and a dead end)
 
 The albedo atlas is spliced into a same-size BCn donor texture

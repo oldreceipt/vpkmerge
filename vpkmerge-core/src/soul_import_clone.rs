@@ -126,6 +126,14 @@ pub struct SoulImportCloneOptions {
     /// model origin/floor instead of centering it on the stock orb.
     pub ground: bool,
     pub glow: SoulGlow,
+    /// Surface relief for the imported model. The stock soul material ships a
+    /// *flat* `g_tNormalRoughness` (flat normal, ~0.5 roughness), which makes a
+    /// solid prop read soft/matte/"blurry" no matter how sharp its albedo is, the
+    /// softness comes from the lighting, not the texels (raising the albedo
+    /// resolution does not fix it). `Some(..)` synthesizes a relief + roughness
+    /// map from the albedo (the urn's in-game-proven blur fix); `None` keeps the
+    /// flat normal, right only for the literal emissive glow orb. Default `Some`.
+    pub relief: Option<NormalSynthesis>,
 }
 
 impl Default for SoulImportCloneOptions {
@@ -138,6 +146,14 @@ impl Default for SoulImportCloneOptions {
             orient_upright: true,
             ground: false,
             glow: SoulGlow::Recolor,
+            // Relief on by default: most imports are solid props that read soft
+            // with the flat default normal. Strength 1.0 is the subtle-safe bump;
+            // 0.4 roughness reads crisper than the matte ~0.5 default without going
+            // mirror-glossy. Set `None` for the literal glowing soul orb.
+            relief: Some(NormalSynthesis {
+                strength: 1.0,
+                roughness: 0.4,
+            }),
         }
     }
 }
@@ -228,14 +244,16 @@ pub fn urn_target(span: f32) -> CloneTarget {
         mat_dir: "models/props_gameplay/idol_urn/materials".to_string(),
         particles: Vec::new(),
         target_span: Some(span),
-        atlas_px: 4096,
-        // Solid prop: give it real surface relief + glossy metal/ceramic roughness so
-        // it doesn't read as a soft, flat, matte blob (the flat-default look that made
-        // the first urn imports look "blurry" despite a high-res albedo).
-        synth_normal: Some(NormalSynthesis {
-            strength: 1.0,
-            roughness: 0.35,
-        }),
+        // Match the source, do not inflate it. 2048 gives the label group a native
+        // ~1024 cell in the 2x2 grid (no upscale); 4096 just 4x-upscaled a 1024 source
+        // for 4x the bytes and zero added detail (CSDK ships the same can at native
+        // 1024, 1.7 MB, and reads no softer). The real in-game softness is mip/UV-density
+        // metadata, not albedo resolution, so do not chase it with a bigger atlas.
+        atlas_px: 2048,
+        // No synthesized normal: it was a whole second texture invented from the albedo
+        // (doubling VPK size) on the theory that flat default normals read "blurry". They
+        // don't; keep the flat default and ship one texture.
+        synth_normal: None,
     }
 }
 
@@ -268,6 +286,9 @@ pub struct SoulImportReport {
     pub glow_hue: f64,
     /// Number of entries packed into the output VPK.
     pub entry_count: usize,
+    /// Whether a synthesized relief/roughness `g_tNormalRoughness` was shipped
+    /// (vs. the flat default normal). `true` is the anti-blur path.
+    pub relief: bool,
 }
 
 /// Build a soul-container override VPK from an in-memory GLB, fitting it to the
@@ -280,7 +301,11 @@ pub fn import_soul_container_clone(
     out: impl AsRef<Path>,
     opts: &SoulImportCloneOptions,
 ) -> Result<SoulImportReport> {
-    import_clone(pak, glb, out, opts, &soul_target())
+    // Soul-container default ships a flat normal; let the caller's `relief` opt
+    // drive whether we synthesize surface relief instead (the urn's blur fix).
+    let mut target = soul_target();
+    target.synth_normal = opts.relief;
+    import_clone(pak, glb, out, opts, &target)
 }
 
 /// Generalized clone: build the GLB into `target.envelope_model` and pack the
@@ -355,8 +380,13 @@ pub fn import_clone(
     } else {
         (64u32, FLAT_DONOR)
     };
+    // Square cells: use a square grid (rows == cols) so a source texture is never
+    // stretched into a non-square cell. `div_ceil` rows would give e.g. 2x1 for two
+    // groups -> 2048x4096 cells that squash a square label 2:1 (reads as blurry /
+    // "off"). A square grid wastes the few unused cells but keeps every cell's aspect
+    // 1:1, so the albedo maps in undistorted at its native aspect.
     let cols = (n as f64).sqrt().ceil() as u32;
-    let rows = n.div_ceil(cols as usize) as u32;
+    let rows = cols;
     let cw = atlas / cols;
     let ch = atlas / rows;
     let cell_rect = |i: usize| -> (u32, u32, u32, u32) {
@@ -619,6 +649,7 @@ pub fn import_clone(
         upright: opts.orient_upright,
         glow_hue: hue,
         entry_count: refs.len(),
+        relief: target.synth_normal.is_some(),
     })
 }
 
