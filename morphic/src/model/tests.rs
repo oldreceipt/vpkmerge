@@ -918,19 +918,40 @@ fn outline_materials_are_detected() {
 }
 
 #[test]
-fn glow_shells_are_detected_but_noglow_is_kept() {
-    // The additive glow effect shell (mesh part `ghost_glow`, material
-    // `*_glow.vmat`) is a shell to drop.
+fn glow_overlays_are_classified_but_kept() {
+    // Additive glow overlays (mesh part `ghost_glow`, material `*_glow.vmat`)
+    // are recognized by `is_glow_material` for debug/classification, but they
+    // are NOT shells: they are real additive self-illum geometry the viewer
+    // composites, so they must survive export (the `blend_mode='additive'`
+    // extras tell three.js to render them with AdditiveBlending).
     assert!(super::glb::is_glow_material("ghost_glow"));
     assert!(super::glb::is_glow_material(
         "models/heroes_staging/hornet_v3/materials/vindicta_glow.vmat"
     ));
-    assert!(super::glb::is_shell("ghost_glow"));
-    // A normal material that merely has glow turned off must be kept.
+
+    // The plan's explicit keep/drop table (Phase 1): glow overlays are kept...
+    for kept in [
+        "models/heroes_staging/inferno/materials/inferno_armglow.vmat",
+        "models/heroes_staging/inferno/materials/inferno_headglow.vmat",
+        "ghost_glow",
+        // A material with glow turned OFF was always an ordinary opaque material.
+        "models/heroes_staging/astro/materials/astro_barrelv2_noglow.vmat",
+    ] {
+        assert!(!super::glb::is_shell(kept), "{kept} must not be a shell");
+        assert!(!super::glb::is_dropped(kept), "{kept} must not be dropped");
+    }
+
+    // ...while the inverted-hull outline / jitter shells are still dropped.
+    for dropped in [
+        "models/heroes_staging/hornet_v3/materials/vindicta_outline.vmat",
+        "punkgoat_border_jitter01",
+    ] {
+        assert!(super::glb::is_shell(dropped), "{dropped} must be a shell");
+        assert!(super::glb::is_dropped(dropped), "{dropped} must be dropped");
+    }
+
+    // `*noglow*` is not even classified as a glow overlay.
     assert!(!super::glb::is_glow_material(
-        "models/heroes_staging/astro/materials/astro_barrelv2_noglow.vmat"
-    ));
-    assert!(!super::glb::is_shell(
         "models/heroes_staging/astro/materials/astro_barrelv2_noglow.vmat"
     ));
     assert!(!super::glb::is_shell("body"));

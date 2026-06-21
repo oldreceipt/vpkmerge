@@ -36,11 +36,15 @@ the Grimoire/Electron side.
   retarget hazard. Verified: the Wraith and a Vindicta skin pose from base
   `ui_hero_pose`; Vampire Bat (`vampirebat`) has no clips even in base, so it
   stays bind.
-- **Glow-effect shells dropped.** Extends the `*_outline` drop (below) to
-  Deadlock's additive glow shells (mesh part `ghost_glow`, `*_glow` materials),
-  which collapse to an opaque "white halo" as plain glTF geometry. `is_shell`
-  covers both; `*_noglow` (a normal material with glow off, e.g.
-  `astro_barrelv2_noglow`) is explicitly kept.
+- **Glow overlays kept (additive).** Earlier the `*_outline` drop was extended to
+  Deadlock's `*_glow` meshes too (mesh part `ghost_glow`, `*_glow` materials), but
+  that was over-broad: those are real additive self-illum overlays the engine
+  composites, not white-hull shells. They are now KEPT (`is_shell` covers only the
+  inverted-hull `*_outline`/`*jitter*` shells) and carry `blend_mode='additive'`
+  morphic extras so the three.js viewer renders them with `AdditiveBlending`
+  instead of a solid hull. `is_glow_material` survives as a debug/test classifier
+  only. `*_noglow` (a normal material with glow off, e.g. `astro_barrelv2_noglow`)
+  was and stays an ordinary opaque material. See the VRF renderer gap report.
 
 ## Working cadence (user's choice)
 
