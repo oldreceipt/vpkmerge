@@ -242,9 +242,12 @@ mod tests {
             format: fmt,
             width: w,
             height: h,
+            actual_width: w,
+            actual_height: h,
             depth: 1,
             mip_count: 1,
             flags: TextureFlags::empty(),
+            ycocg: false,
         }
     }
 

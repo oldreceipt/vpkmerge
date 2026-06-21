@@ -132,9 +132,12 @@ fn bgra8888_encode_decode_roundtrip() {
         format: TextureFormat::Bgra8888,
         width: 8,
         height: 8,
+        actual_width: 8,
+        actual_height: 8,
         depth: 1,
         mip_count: 1,
         flags: TextureFlags::empty(),
+        ycocg: false,
     };
     let opts = morphic::DecodeOptions::default();
     let back = decode_image(&info, &encoded, &opts).expect("decode");

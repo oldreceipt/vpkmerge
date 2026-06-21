@@ -252,6 +252,13 @@ pub fn thumbnail_png(vtex_bytes: &[u8], max_edge: u32) -> Result<Thumbnail> {
     )
     .context("decoding texture mip for thumbnail")?;
 
+    // Non-power-of-two textures decode to a padded canvas; the real art is the
+    // top-left `actual_mip_dims` region. Crop it off before downscaling, or the
+    // thumbnail reads "shrunken" with dead padding (e.g. 256-stored / 200-actual
+    // item icons). A no-op for pow2 textures.
+    let (aw, ah) = info.actual_mip_dims(mip);
+    let image = morphic::crop_to_actual(&image, aw, ah);
+
     let (sw, sh) = (image.width.max(1), image.height.max(1));
     let rgba = to_rgba8(&image);
     let src = image::RgbaImage::from_raw(sw, sh, rgba)
@@ -272,8 +279,8 @@ pub fn thumbnail_png(vtex_bytes: &[u8], max_edge: u32) -> Result<Thumbnail> {
         png,
         width: tw,
         height: th,
-        source_width: u32::from(info.width),
-        source_height: u32::from(info.height),
+        source_width: u32::from(info.actual_width),
+        source_height: u32::from(info.actual_height),
         format: format!("{:?}", info.format),
     })
 }

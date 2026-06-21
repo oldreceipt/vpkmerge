@@ -33,7 +33,7 @@ pub use texture::{
     encode::encode_image,
     encode_vtex_png_rgba8888, encode_vtex_png_rgba8888_from_png,
     format::{TextureFlags, TextureFormat},
-    parse_texture_header, Image, ImageData, TextureInfo,
+    crop_to_actual, parse_texture_header, Image, ImageData, TextureInfo,
 };
 
 /// Decode options for [`decode_at`]. Defaults select mip 0, slice 0, face 0.
@@ -49,7 +49,9 @@ pub struct DecodeOptions {
 pub fn inspect(bytes: &[u8]) -> Result<TextureInfo, DecodeError> {
     let resource = resource::Resource::parse(bytes)?;
     let data = resource.data_block()?;
-    parse_texture_header(data)
+    let mut info = parse_texture_header(data)?;
+    info.ycocg = texture::detect_ycocg(&resource);
+    Ok(info)
 }
 
 /// Decode the top mip of the first slice/face. Convenience entry point.
@@ -61,7 +63,8 @@ pub fn decode(bytes: &[u8]) -> Result<Image, DecodeError> {
 pub fn decode_at(bytes: &[u8], opts: &DecodeOptions) -> Result<Image, DecodeError> {
     let resource = resource::Resource::parse(bytes)?;
     let data = resource.data_block()?;
-    let info = parse_texture_header(data)?;
+    let mut info = parse_texture_header(data)?;
+    info.ycocg = texture::detect_ycocg(&resource);
     let pixels = texture::pixel_data(&resource, &info, *opts)?;
     decode_image(&info, pixels, opts)
 }
