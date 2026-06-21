@@ -485,12 +485,13 @@ impl Builder {
 
     /// Builds one glTF mesh (its primitives + shared per-vertex-buffer
     /// accessors), or `None` when the whole part is dropped ([`is_dropped`]).
-    /// Deadlock's NPR shells (the inverted-hull `*_outline` and the additive
-    /// `*_glow` effect meshes) are dropped: as plain glTF geometry they collapse
-    /// to an opaque hull that whitewashes the model. Reproducing them is a
-    /// renderer-side (three.js) concern, not a baked one. Hidden-by-default
-    /// alt-forms (Viscous's `inflated` Goo Ball) are dropped too: see
-    /// [`is_alt_form`].
+    /// Deadlock's inverted-hull toon-outline shells (`*_outline`/`*jitter*`) are
+    /// dropped: as plain glTF geometry they collapse to an opaque hull that
+    /// whitewashes the model, and reproducing them is a renderer-side (three.js)
+    /// concern. Additive `*_glow` overlays are KEPT (they composite additively in
+    /// the viewer via `blend_mode='additive'` extras; see [`is_glow_material`]).
+    /// Hidden-by-default alt-forms (Viscous's `inflated` Goo Ball) are dropped
+    /// too: see [`is_alt_form`].
     fn add_mesh(
         &mut self,
         part: &MeshPart,
@@ -1320,21 +1321,35 @@ pub(crate) fn is_outline_material(path: &str) -> bool {
     lc.contains("outline") || lc.contains("jitter")
 }
 
-/// True for Deadlock's additive glow-effect shells (mesh part `ghost_glow`,
-/// material `*_glow.vmat`). In-game an additive NPR shader draws them; as plain
-/// glTF geometry they collapse to an opaque shell ("white halo") over the model,
-/// so they are dropped. Excludes `*noglow*` (a normal material with glow turned
-/// off, e.g. `astro_barrelv2_noglow`), which must be kept.
+/// True for Deadlock's additive glow overlays (mesh part `ghost_glow`, material
+/// `*_glow.vmat`): an additive self-illum second draw the engine composites over
+/// the body (Inferno's arm/head glow, Hornet/Vindicta's `ghost_glow`). These are
+/// KEPT in the export -- they are NOT [`is_shell`] -- and carry
+/// `blend_mode='additive'` morphic extras so the viewer composites them with
+/// `AdditiveBlending` instead of dropping a real overlay. The classifier survives
+/// for debug/classification and to document the overlay convention. Excludes
+/// `*noglow*` (an ordinary opaque material with glow turned off, e.g.
+/// `astro_barrelv2_noglow`).
+// Retained for tests/debug classification per the Source 2 preview plan: it no
+// longer gates export dropping (`is_shell` keeps glow overlays), so the lib build
+// has no non-test caller.
+#[allow(dead_code)]
 pub(crate) fn is_glow_material(path: &str) -> bool {
     let lc = path.to_ascii_lowercase();
     lc.contains("glow") && !lc.contains("noglow")
 }
 
-/// True for any mesh part or material that exports as a non-renderable shell:
-/// the toon outline (`is_outline_material`) or the additive glow
-/// (`is_glow_material`). Such geometry is dropped from the GLB.
+/// True for any mesh part or material that exports as a non-renderable shell.
+/// Only the inverted-hull toon outline / jitter border ([`is_outline_material`])
+/// qualifies: as plain glTF geometry it collapses to an opaque hull that
+/// whitewashes the model, and reproducing it is a renderer-side concern.
+///
+/// Additive glow overlays ([`is_glow_material`]) are deliberately NOT shells:
+/// they are real, in-game-rendered additive self-illum geometry, kept in the
+/// export so the viewer can composite them additively (see the VRF renderer gap
+/// report). Dropping them was over-broad; only outline/jitter hulls are dropped.
 pub(crate) fn is_shell(name: &str) -> bool {
-    is_outline_material(name) || is_glow_material(name)
+    is_outline_material(name)
 }
 
 /// True for a hero "alt-form" mesh part that is hidden in the default

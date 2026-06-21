@@ -171,6 +171,57 @@ fn export_glb_from_env() {
     );
 }
 
+/// Real-data regression guard for the additive glow-overlay keep (Phase 1 of the
+/// Source 2 preview plan): decode a glow-bearing hero, export the textured GLB,
+/// re-read it, and confirm the additive `*_glow` overlay mesh survived export
+/// while the inverted-hull `*_outline` / `*jitter*` shells are still dropped.
+/// Gated on `MORPHIC_MODEL_VPK` (the base Deadlock `pak01_dir.vpk`); the default
+/// entry is hornet, whose `ghost_glow` overlay is the canonical case. The
+/// `blend_mode='additive'` extras the viewer reads are covered separately (the
+/// grimoire `source2Preview` unit tests use the exact exported extras values).
+#[test]
+fn glow_overlay_survives_export_local() {
+    let Ok(vpk_path) = std::env::var("MORPHIC_MODEL_VPK") else {
+        eprintln!("MORPHIC_MODEL_VPK not set; skipping glow-overlay export check");
+        return;
+    };
+    let entry = std::env::var("MORPHIC_MODEL_ENTRY")
+        .unwrap_or_else(|_| "models/heroes_staging/hornet_v3/hornet.vmdl_c".to_string());
+
+    let vpk = valve_pak::open(&vpk_path).expect("open vpk");
+    let mut vf = vpk.get_file(&entry).expect("locate entry");
+    let bytes = vf.read_all().expect("read entry");
+    let model = morphic::model::decode(&bytes).expect("decode model");
+
+    let resolver = VpkResolver { vpks: vec![vpk] };
+    let glb = morphic::model::to_glb_textured(&model, &resolver).expect("write glb");
+
+    let gltf = gltf::Gltf::from_slice(&glb).expect("re-read glb");
+    let mesh_names: Vec<String> = gltf
+        .document
+        .meshes()
+        .filter_map(|m| m.name().map(str::to_string))
+        .collect();
+
+    // The additive glow overlay (hornet's `ghost_glow`) survived export.
+    assert!(
+        mesh_names
+            .iter()
+            .any(|n| n.to_ascii_lowercase().contains("glow")),
+        "expected a kept *glow* overlay mesh, got {mesh_names:?}"
+    );
+    // The inverted-hull outline / jitter shells are still dropped.
+    assert!(
+        !mesh_names.iter().any(|n| {
+            let lc = n.to_ascii_lowercase();
+            lc.contains("outline") || lc.contains("jitter")
+        }),
+        "outline/jitter shells must not survive export, got {mesh_names:?}"
+    );
+
+    eprintln!("glow overlay export OK: meshes {mesh_names:?}");
+}
+
 /// Lists hero body-model entries in a VPK: `<dir>/<name>/<name>.vmdl_c` under a
 /// `models/heroes*` path (the body model convention, skipping LODs/backups/props).
 /// Set `MORPHIC_DIAG_VPK`; skipped otherwise. Cheap (path listing only, no decode).
@@ -950,11 +1001,12 @@ fn dress_index_count(model: &morphic::model::Model, needle: &str) -> usize {
         .sum()
 }
 
-/// Mirrors the GLB writer's shell rule (inverted-hull `*_outline` and additive
-/// `*_glow`, but not `*_noglow`): such geometry is dropped from the export.
+/// Mirrors the GLB writer's shell rule: only the inverted-hull toon-outline /
+/// jitter border is dropped. Additive `*_glow` overlays are KEPT now (the viewer
+/// composites them additively), so they are no longer shells.
 fn is_shell(s: &str) -> bool {
     let lc = s.to_ascii_lowercase();
-    lc.contains("outline") || (lc.contains("glow") && !lc.contains("noglow"))
+    lc.contains("outline") || lc.contains("jitter")
 }
 
 /// M5a: write the `.glb`, re-read it with the `gltf` crate (which validates the
@@ -971,10 +1023,10 @@ fn assert_glb_roundtrip(model: &morphic::model::Model) {
     assert!(gltf.blob.is_some(), "glb carries its binary blob");
     let doc = &gltf.document;
 
-    // The GLB writer drops parts that are entirely non-renderable NPR shells
-    // (inverted-hull `*_outline` and additive `*_glow`), so the glTF carries the
-    // model's renderable parts, not every part. Mirror that rule and check the
-    // surviving meshes are exactly those parts (by name).
+    // The GLB writer drops parts that are entirely inverted-hull toon-outline /
+    // jitter shells, so the glTF carries the model's renderable parts (including
+    // the kept additive `*_glow` overlays), not every part. Mirror that rule and
+    // check the surviving meshes are exactly those parts (by name).
     let mut expected_meshes: Vec<&str> = model
         .meshes
         .iter()
