@@ -344,8 +344,23 @@ pub fn trippy_skin_to_addon(
     options: &TrippySkinOptions,
     out: impl AsRef<Path>,
 ) -> Result<TrippySkinReport> {
-    let vpks = open_vpks(vpk.as_ref(), base)?;
-    let targets = discover_targets(&vpks, codename, options)?;
+    let vpk = vpk.as_ref();
+    let live_materials = match crate::model::live_hero_materials(vpk, base, codename) {
+        Ok(materials) => Some(materials),
+        Err(err) => {
+            eprintln!(
+                "  note: live hero material resolution failed for {codename}: {err:#}; \
+                 falling back to legacy path-name discovery"
+            );
+            None
+        }
+    };
+    let vpks = open_vpks(vpk, base)?;
+    let targets = if let Some(materials) = live_materials.as_deref() {
+        discover_live_targets(&vpks, materials, options)
+    } else {
+        discover_legacy_targets(&vpks, codename, options)
+    };
     anyhow::ensure!(
         !targets.is_empty(),
         "no hero-specific body/weapon color textures found for {codename:?}"
@@ -710,12 +725,47 @@ pub fn trippy_ability_vfx_to_addon(
     Ok(report)
 }
 
-#[allow(clippy::unnecessary_wraps)]
-fn discover_targets(
+fn discover_live_targets(
+    vpks: &[valve_pak::VPK],
+    materials: &[crate::model::LiveHeroMaterial],
+    options: &TrippySkinOptions,
+) -> Vec<TrippyTarget> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for material in materials {
+        if !((material.weapon && options.include_weapons)
+            || (material.body && options.include_body))
+        {
+            continue;
+        }
+        let Some(texture) = base_color_texture_param(&material.textures) else {
+            continue;
+        };
+        let texture_entry = texture.compiled_path.clone();
+        if shared_default_texture(&texture_entry) {
+            continue;
+        }
+        let material_entry = compiled_resource_path(&material.material);
+        let placeholder = read_entry(vpks, &texture_entry)
+            .and_then(|b| morphic::inspect(&b).ok())
+            .is_some_and(|info| u32::from(info.width) <= 8 || u32::from(info.height) <= 8);
+        if seen.insert((material_entry.clone(), texture_entry.clone())) {
+            out.push(TrippyTarget {
+                material_entry,
+                texture_entry,
+                weapon: material.weapon && !material.body,
+                placeholder,
+            });
+        }
+    }
+    out
+}
+
+fn discover_legacy_targets(
     vpks: &[valve_pak::VPK],
     codename: &str,
     options: &TrippySkinOptions,
-) -> Result<Vec<TrippyTarget>> {
+) -> Vec<TrippyTarget> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut materials = BTreeSet::new();
@@ -761,7 +811,7 @@ fn discover_targets(
             });
         }
     }
-    Ok(out)
+    out
 }
 
 fn base_color_texture(mat: &morphic::material::Material) -> Option<&str> {
@@ -769,6 +819,18 @@ fn base_color_texture(mat: &morphic::material::Material) -> Option<&str> {
         .or_else(|| mat.texture("g_tColorA"))
         .or_else(|| mat.texture("g_tBaseColor"))
         .or_else(|| mat.texture("g_tAlbedo"))
+}
+
+fn base_color_texture_param(
+    textures: &[crate::model::ResolvedTextureParam],
+) -> Option<&crate::model::ResolvedTextureParam> {
+    ["g_tColor", "g_tColorA", "g_tBaseColor", "g_tAlbedo"]
+        .iter()
+        .find_map(|slot| textures.iter().find(|texture| texture.slot == *slot))
+}
+
+fn shared_default_texture(entry: &str) -> bool {
+    entry.starts_with("materials/default/")
 }
 
 fn find_donor_texture(vpks: &[valve_pak::VPK], targets: &[TrippyTarget]) -> Option<Vec<u8>> {

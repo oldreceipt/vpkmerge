@@ -2680,23 +2680,28 @@ fn read_cstr(buf: &[u8], pos: &mut usize) -> Result<String, DecodeError> {
 /// Errors if lengths differ, if `old` is empty, or if `old` is absent or occurs
 /// more than once in the block.
 pub fn set_blob(block: &[u8], old: &[u8], new: &[u8]) -> Result<Vec<u8>, DecodeError> {
-    if old.len() != new.len() {
-        return Err(DecodeError::Kv3("blob replace requires equal length"));
-    }
     if old.is_empty() {
         return Err(DecodeError::Kv3("blob replace: empty blob"));
     }
 
-    // The common case (Deadlock `.vnmclip_c`): a blobbed-LZ4 v5 block whose blob
-    // lives in a compressed frame. Recompress the frame in place, keeping the
-    // block compressed (the engine misreads a blobbed block flipped to raw).
+    // The common case (Deadlock `.vnmclip_c` pose stream, `.vmat_c` dynamic
+    // expression): a blobbed-LZ4 v5 block whose blob lives in a compressed frame.
+    // `replace_blob_v5` content-keys the target by `old` and re-chunks the region,
+    // so `new` may be any length and a multi-blob block (several `m_dynamicParams`
+    // expressions) is fine. Keep the block compressed (the engine misreads a
+    // blobbed block flipped to raw).
     if super::rewrap::is_blobbed_lz4_v5(block) {
         return super::rewrap::replace_blob_v5(block, new, Some(old));
     }
 
     // Otherwise the block has no compressed blob frames: re-wrap it uncompressed
     // (a no-op if already raw) and overwrite the blob bytes where they sit. The
-    // blob is the only large opaque run, so an exact-content match is unambiguous.
+    // raw-overwrite path can only swap equal-length bytes in place.
+    if old.len() != new.len() {
+        return Err(DecodeError::Kv3(
+            "blob replace requires equal length for a non-frame-compressed blob",
+        ));
+    }
     let mut out = rewrap_uncompressed(block)?;
     let mut found = None;
     for start in 0..=out.len().saturating_sub(old.len()) {
@@ -2849,6 +2854,62 @@ mod tests {
         let (buf2_new, frames_new) = buf2_and_frames(&patched);
         assert_eq!(buf2_new, buf2_old, "buf2 (main) byte-identical");
         assert_eq!(frames_new, frames_old, "blob frames byte-identical");
+    }
+
+    /// Editing an existing dynamic-expression blob: decode the material's one
+    /// `m_dynamicParams` expression bytecode, recompile a *different-length*
+    /// expression, splice it in via the content-keyed [`super::set_blob`] (the
+    /// path `vmat --edit-expr` now takes on blobbed materials), then re-decode and
+    /// assert the param reads back the new bytecode and the block stays an
+    /// engine-loadable compressed v5 blob. The new bytecode differs in length from
+    /// the old, exercising the re-chunk (not just an equal-length in-place patch).
+    #[test]
+    fn set_blob_replaces_a_different_length_expression_blob() {
+        let res = Resource::parse(NECRO_HANDS).expect("parse resource");
+        let data = res.data_block().expect("DATA block");
+        assert_eq!(field(data, 56), 1, "fixture carries one blob");
+
+        let tree = crate::kv3::decode(data).expect("decode tree");
+        let attrs: Vec<String> = tree
+            .get("m_renderAttributesUsed")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(Value::Binary(old)) = tree
+            .get("m_dynamicParams")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|p| p.get("m_value"))
+        else {
+            panic!("expected one binary expression blob");
+        };
+        // Decompile -> tweak source -> recompile to a (longer) bytecode.
+        let src = crate::vfx_expr::decompile(old, &attrs).expect("decompile");
+        let new_src = format!("({src}) * 2 + 1");
+        let new = crate::vfx_expr::compile(&new_src)
+            .expect("recompile")
+            .bytecode;
+        assert_ne!(new.len(), old.len(), "new bytecode must differ in length");
+
+        let patched = set_blob(data, old, &new).expect("blob-aware replace");
+
+        // Still engine-loadable: compressed v5, one blob.
+        assert_eq!(u32_at(&patched, 0).unwrap() & 0xFF, 5);
+        assert_eq!(u32_at(&patched, 20).unwrap(), 1, "stays LZ4");
+        assert_eq!(field(&patched, 56), 1, "one blob");
+
+        // Re-decode: the expression param now carries the new bytecode.
+        let after = crate::kv3::decode(&patched).expect("re-decode patched");
+        let got = after
+            .get("m_dynamicParams")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|p| p.get("m_value"));
+        assert_eq!(got, Some(&Value::Binary(new)), "blob replaced");
     }
 
     #[test]

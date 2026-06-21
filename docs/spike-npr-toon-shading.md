@@ -142,7 +142,7 @@ Tier B posterize.
    the diffuse terminator. A/B with `r_citadel_disable_npr_lighting` /
    `r_citadel_npr_force_solid_outline` to learn the baseline.
 
-## 5. Shipped: `vpkmerge vmat` (2026-06-10)
+## 5. Shipped: `vpkmerge vmat`
 
 `vpkmerge_core::vmat_style` + the `vmat` CLI command implement Tier A as a
 generic set-or-insert param patcher plus curated presets:
@@ -152,15 +152,31 @@ vpkmerge vmat --vpk <VPK> [--base <VPK>] (--hero CODENAME | --entry PATH...)
     [--list]
     [--preset gem|glass|pbr|unlit|ink] [--tint R,G,B|#RRGGBB]
     [--set-int NAME=V]... [--set-float NAME=V]... [--set-vec NAME=X,Y,Z[,W]]...
+    [--set-int-attr NAME=V]... [--set-float-attr NAME=V]...
+    [--set-vec-attr NAME=X,Y,Z[,W]]...
     [--targets all|body|weapons] [--encode-vpk OUT_dir.vpk]
 ```
 
 - `--list` prints each targeted material's shader, nonzero `F_*` flags, and
-  bound texture channels (the "what is this skin made of" view).
+  bound texture channels (the "what is this skin made of" view). It also prints
+  any existing or injected material attributes as `attr NAME = VALUE`.
+- `--hero` now resolves through `scripts/heroes.vdata_c` and the live model's
+  draw calls before patching, then falls back to legacy path-name matching only
+  when live metadata is unavailable. This matters for shader probes: edits hit
+  the materials the current hero actually renders, not stale `heroes_staging`
+  leftovers.
 - Presets: `gem` (constant-only sheen, recipe = `xmas_vindicta_dress`),
   `glass` (recipe = `viscous_body` minus its mask texture), `pbr`
   (`F_USE_NPR_LIGHTING=0`, real reflections), `unlit`, `ink` (thick solid
   outline). `gem`/`ink` take `--tint`.
+- Tier C probe support: `--set-float-attr`,
+  `--set-int-attr`, and `--set-vec-attr` insert into `m_floatAttributes`,
+  `m_intAttributes`, and `m_vectorAttributes`, then register the same name in
+  `m_renderAttributesUsed`. This is for live in-game A/B tests of
+  `__Attribute__` NPR vars such as `g_flNPRDiffuseStepSharpness`,
+  `g_nNPRSpecularSteps`, `g_flNPRRimLightStrength`,
+  `g_vNPROutlineBrightColor`, and `g_vNPRExposureTargets`; it is still
+  unknown whether the renderer consults material attributes for those globals.
 - Patch engine: byte-faithful in-place set (`patch_kv3_resource_scalars` /
   `_doubles`) or structural insert (`patch_kv3_resource_array_insert`);
   tagless 0/1 values fall back to a full `encode_kv3_resource` re-encode on
@@ -172,11 +188,52 @@ vpkmerge vmat --vpk <VPK> [--base <VPK>] (--hero CODENAME | --entry PATH...)
   pipeline does not translate sheen/glass/NPR params, so the viewer only
   proves the material is well-formed; the look itself is an in-game gate.
 
-Probe addons (gem/pbr/glass dress + whole-hero ink, all Vindicta) are
-installed and registered as Grimoire local mods, pak01..pak04, pending
-in-game confirmation.
+## 6. Live shader candidate scan
 
-## 6. Artifacts
+Do not over-index on Geist/Ghost. It is useful as a stale-path regression test,
+but Viscous and several other heroes have much richer live shader surfaces.
+The repeatable roster scan is now:
+
+```
+vpkmerge model live-materials --vpk citadel/pak01_dir.vpk --all --summary
+vpkmerge model live-materials --vpk citadel/pak01_dir.vpk --all --json > live-shader-scan.json
+```
+
+The score is a triage heuristic for shader-experiment value. It rewards live
+materials that use glass, advanced translucency, jitter, additive blend,
+self-illum, unlit, sheen, solid outlines, and their matching texture slots. It
+is not a quality score for a hero model.
+
+Current top ranked live candidates from pak01:
+
+| Hero | Why it is interesting | Best first targets |
+|---|---|---|
+| `viscous` (33) | Top shader candidate. Uses `F_GLASS`, `F_ADVANCED_TRANSLUCENCY`, `F_TRANSLUCENT`, `F_JITTER_VERTICES`, `F_SOLID_COLOR_OUTLINE`, `F_SELF_ILLUM`, plus `g_tGlass`, `g_tAltTranslucency`, `g_tJitterMask`, NPR outline/transmissive/rim/self-illum slots. | `viscous_ball`, `viscous_glass`, `viscous_head`, `viscous_body`, `viscous_outline`, `viscous_swatches`. `black` is shared by body/gun/inflated, so body/weapon filters must preserve shared materials. |
+| `nano` (26) | Advanced translucency plus jitter and self-illum on the shadow form. `testhero` currently duplicates this same live model and should be ignored as an alias/noise row. | `nano_shadow_form` for ghost/afterimage shader experiments. |
+| `punkgoat` (25) | Advanced translucency, jitter, unlit, vertex color, disabled-outline pockets, self-illum. | `punkgoat_border_jitter01`, `punkgoat_border_jitter02`, body/head/patch materials for aggressive punk-neon looks. |
+| `inferno` (22) | Translucent additive jitter/detail glow materials on huge vertex counts, and existing dynamic self-illum expressions. | `inferno_armglow`, `inferno_headglow` for animated heat shimmer; `inferno_body` for outline/tint baseline. |
+| `hornet` / Vindicta (22) | Translucent additive jitter, strong solid-outline body materials, rich NPR masks. | `vindicta_glow` for jitter/additive, dress/props/hair for controlled NPR probes. |
+| `mirage` (19) | Jitter, vertex color, self-illum, translucent surfaces. | `mirage_gen_man_cyclonewrap`, `mirage_gen_man_cyclonewrap_glow`, `mirage_gen_man_genieglow`. |
+| `dynamo` (16) | Glass, unlit void material, disabled outlines, huge live material vertex counts. | `dynamo_void`, `dynamo_glass`, head/clothes for NPR-off, void, and glass probes. |
+| `familiar` (16) | Glass plus detail and self-illum, including watch-glass materials. | `familiar_watchglass`, clothes/body for lens/glass styling. |
+| `forge` / McGinnis (15) | Sheen, translucent greenglass, many solid-outline body/weapon materials. | `mcginnis_clothes` for sheen, `mcginnis_greenglass` for translucency. |
+| `bookworm` / Paige (15) | Additive translucent lens plus strong self-illum and outline surfaces. | `bookworm_lens`, books, upper/lower/body materials. |
+
+Aliases/noise in the current game data:
+
+- `testhero` maps to the same model as `nano`; ignore it in manual ranking.
+- `airheart` and `swan` map to Chrono's model in this pak snapshot; treat them
+  as duplicate Chrono rows unless that changes in a future update.
+- `boho`, `druid`, `fortuna`, and `graf` are selectable in `heroes.vdata_c` but
+  their referenced WIP model entries are missing from pak01, so `--all` reports
+  them as scan errors rather than silently skipping them.
+
+Implementation note: live material usage now records `body` and `weapon`
+separately. Shared materials such as Viscous `black.vmat` are both, not forced
+into the weapon bucket. This keeps `vpkmerge vmat --hero viscous --targets body`
+from silently missing body-visible shader surfaces.
+
+## 7. Artifacts
 
 - `vpkmerge-core/examples/npr_vmat_survey.rs`: the survey tool (rerun after
   game updates; also useful to find heroes with unusual NPR setups).

@@ -48,6 +48,68 @@ pub struct Material {
     pub float_params: BTreeMap<String, f32>,
     /// `m_vectorParams` (each a 4-component vector).
     pub vector_params: BTreeMap<String, [f32; 4]>,
+    /// `m_dynamicParams`: per-frame expressions that override a static scalar or
+    /// vector param. A consumer must not trust the static value when a dynamic
+    /// expression exists for the same name.
+    pub dynamic_params: BTreeMap<String, DynamicExpr>,
+    /// `m_dynamicTextureParams`: per-frame expressions on a texture slot.
+    pub dynamic_texture_params: BTreeMap<String, DynamicExpr>,
+    /// `m_renderAttributesUsed`: the entity/scene attributes the expressions read
+    /// (the lookup table `vfx_expr::decompile` needs to recover `$attr` names).
+    pub render_attributes_used: Vec<String>,
+}
+
+/// A dynamic material expression (`m_dynamicParams` / `m_dynamicTextureParams`):
+/// per-frame bytecode the engine evaluates each frame, which a single static
+/// value cannot represent. Decompiled to source via [`crate::vfx_expr::decompile`]
+/// where the grammar allows; on failure the blob is reported, not guessed.
+/// Serialized into the GLB by the writer (`glb::dynamic_exprs_json`); kept
+/// serde-free here so the decoder carries no serialization coupling.
+#[derive(Debug, Clone)]
+pub struct DynamicExpr {
+    /// Decompiled source (empty when `decompiled` is false).
+    pub source: String,
+    /// Whether decompilation succeeded.
+    pub decompiled: bool,
+    /// Length of the original bytecode blob, in bytes.
+    pub byte_len: usize,
+    /// `$attribute` tokens referenced by `source` (empty when not decompiled).
+    pub attributes: Vec<String>,
+    /// FNV-1a-64 hash of the bytecode blob, hex: a stable id for the blob (so a
+    /// decompile failure names a specific bytecode).
+    pub hash: String,
+    /// Decompile error text, present only when `decompiled` is false.
+    pub error: Option<String>,
+}
+
+impl DynamicExpr {
+    /// Decompiles one expression blob against the material's render-attribute
+    /// table. Never fails: a decompile error is captured in `error`.
+    fn from_bytecode(bytes: &[u8], attrs: &[String]) -> DynamicExpr {
+        let hash = fnv1a64(bytes);
+        let byte_len = bytes.len();
+        match crate::vfx_expr::decompile(bytes, attrs) {
+            Ok(source) => {
+                let attributes = attrs_in_source(&source);
+                DynamicExpr {
+                    source,
+                    decompiled: true,
+                    byte_len,
+                    attributes,
+                    hash,
+                    error: None,
+                }
+            }
+            Err(e) => DynamicExpr {
+                source: String::new(),
+                decompiled: false,
+                byte_len,
+                attributes: Vec::new(),
+                hash,
+                error: Some(e.to_string()),
+            },
+        }
+    }
 }
 
 /// Parameters for the constrained `pbr.vfx` material writer.
@@ -354,6 +416,24 @@ impl Material {
             }
         }
 
+        let render_attrs: Vec<String> = array(data, "m_renderAttributesUsed")
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        for kv in array(data, "m_dynamicParams") {
+            if let (Some(name), Some(bytes)) = (name_of(kv), expr_bytecode(kv)) {
+                mat.dynamic_params
+                    .insert(name, DynamicExpr::from_bytecode(&bytes, &render_attrs));
+            }
+        }
+        for kv in array(data, "m_dynamicTextureParams") {
+            if let (Some(name), Some(bytes)) = (name_of(kv), expr_bytecode(kv)) {
+                mat.dynamic_texture_params
+                    .insert(name, DynamicExpr::from_bytecode(&bytes, &render_attrs));
+            }
+        }
+        mat.render_attributes_used = render_attrs;
+
         Ok(mat)
     }
 
@@ -447,6 +527,56 @@ fn name_of(kv: &Value) -> Option<String> {
 
 fn str_of<'a>(kv: &'a Value, key: &str) -> Option<&'a str> {
     kv.get(key).and_then(Value::as_str)
+}
+
+/// Pulls an expression's bytecode from `m_value`, which KV3 stores either as a
+/// binary blob (v5) or as an array of byte-valued ints (older writers).
+fn expr_bytecode(kv: &Value) -> Option<Vec<u8>> {
+    match kv.get("m_value")? {
+        Value::Binary(b) => Some(b.clone()),
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(|x| x.as_int().and_then(|n| u8::try_from(n).ok()))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// `$attribute` tokens appearing in a decompiled expression source.
+fn attrs_in_source(src: &str) -> Vec<String> {
+    let bytes = src.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let tok = src[start..i].to_owned();
+            if tok.len() > 1 && !out.contains(&tok) {
+                out.push(tok);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// FNV-1a 64-bit content hash, lowercase hex.
+// ponytail: stable across runs/machines (std DefaultHasher is not); a blob
+// identifier for debug, not a cryptographic hash.
+fn fnv1a64(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 fn vec4(v: &Value) -> Option<[f32; 4]> {

@@ -19,7 +19,7 @@ pub mod kv3;
 pub mod material;
 mod meshopt;
 pub mod model;
-mod resource;
+pub mod resource;
 pub mod sound;
 mod texture;
 pub mod vfx_expr;

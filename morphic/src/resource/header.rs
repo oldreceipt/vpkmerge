@@ -72,15 +72,18 @@ impl<'a> Resource<'a> {
         Ok(Self { bytes, blocks })
     }
 
+    #[must_use]
     pub fn raw(&self) -> &'a [u8] {
         self.bytes
     }
 
     #[allow(dead_code)] // surfaced when a caller needs RERL/REDI inspection
+    #[must_use]
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
     }
 
+    #[must_use]
     pub fn find_block(&self, kind: [u8; 4]) -> Option<&'a [u8]> {
         let b = self.blocks.iter().find(|b| b.kind == kind)?;
         let start = b.offset as usize;
@@ -91,6 +94,7 @@ impl<'a> Resource<'a> {
         Some(&self.bytes[start..end])
     }
 
+    #[must_use]
     pub fn find_block_meta(&self, kind: [u8; 4]) -> Option<Block> {
         self.blocks.iter().find(|b| b.kind == kind).copied()
     }
@@ -99,6 +103,7 @@ impl<'a> Resource<'a> {
     /// model control data references mesh/buffer blocks by this index
     /// (`m_nDataBlock`, `m_nBlockIndex`), not by FOURCC, so the model decoder
     /// resolves them positionally.
+    #[must_use]
     pub fn get_block_by_index(&self, n: usize) -> Option<&'a [u8]> {
         let b = self.blocks.get(n)?;
         let start = b.offset as usize;

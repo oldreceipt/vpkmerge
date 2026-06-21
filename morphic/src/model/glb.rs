@@ -823,13 +823,29 @@ impl Builder {
         // constant metalness as a real 4x4 BC4 texture (e.g. shiv_glasses R=255),
         // so a 4x4 metalness is meaningful data, not a no-op placeholder.
         let metalness = pbr.metalness.and_then(|p| decode_slot(files, p));
+        // Standalone roughness texture (g_tRoughness), parsed but previously dropped.
+        let roughness = pbr.roughness.and_then(|p| decode_slot(files, p));
         let mut metalness_wired = false;
 
-        // Normal map (RGB) + roughness (its alpha) from the packed normal texture.
-        // Skip the 4x4 default_normal placeholder (a flat normal is a no-op).
+        // Normal map. Skip the 4x4 default_normal placeholder (a flat normal is a
+        // no-op). `packed_rough` carries the normal's RGBA when it is a PACKED
+        // normal-roughness (blue = roughness), so the metallic-roughness image
+        // below can source roughness from its blue.
+        let mut packed_rough: Option<(u32, u32, Vec<u8>)> = None;
         if let Some(p) = pbr.normal {
             if let Some((w, h, rgba)) = decode_slot(files, p).filter(|&(w, h, _)| w.min(h) > 4) {
-                if let Some(t) = self.texture_png(&normal_png(w, h, &rgba)) {
+                // Some heroes bind a PURE normal map here (blue = normal Z), not a
+                // packed normal-roughness (blue = roughness). The slot name does not
+                // distinguish them, so probe the texel content: a pure normal map
+                // keeps its authored normal and must NOT have its blue read as
+                // roughness (which produced normal-Z-shaped garbage roughness).
+                let pure_normal = is_pure_normal_map(&rgba);
+                let normal_bytes = if pure_normal {
+                    normal_passthrough_png(w, h, &rgba)
+                } else {
+                    normal_png(w, h, &rgba)
+                };
+                if let Some(t) = self.texture_png(&normal_bytes) {
                     material.normal_texture = Some(json::material::NormalTexture {
                         index: t,
                         tex_coord: 0,
@@ -838,19 +854,54 @@ impl Builder {
                         extras: Default::default(),
                     });
                 }
-                if let Some(t) = self.texture_png(&metal_rough_png(w, h, &rgba, metalness.as_ref()))
-                {
-                    material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
-                    material.pbr_metallic_roughness.roughness_factor =
-                        json::material::StrengthFactor(1.0);
-                    if metalness.is_some() {
-                        // The texture multiplies the factor; a wired metalness
-                        // mask needs metallicFactor 1.0, not the 0.0 default.
-                        material.pbr_metallic_roughness.metallic_factor =
-                            json::material::StrengthFactor(1.0);
-                        metalness_wired = true;
-                    }
+                if !pure_normal {
+                    packed_rough = Some((w, h, rgba));
                 }
+            }
+        }
+
+        // Metallic-roughness texture. Roughness source priority: a standalone
+        // g_tRoughness (its R channel) > a packed normal-roughness (the normal's
+        // blue) > the constant factor fallback below. Metalness (B) comes from the
+        // metalness mask, resampled to the roughness image.
+        if let Some((rw, rh, rough)) = roughness.as_ref() {
+            if let Some(t) = self.texture_png(&rough_metal_png(*rw, *rh, rough, metalness.as_ref()))
+            {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.roughness_factor =
+                    json::material::StrengthFactor(1.0);
+                if metalness.is_some() {
+                    material.pbr_metallic_roughness.metallic_factor =
+                        json::material::StrengthFactor(1.0);
+                    metalness_wired = true;
+                }
+            }
+        } else if let Some((w, h, rgba)) = packed_rough.as_ref() {
+            if let Some(t) = self.texture_png(&metal_rough_png(*w, *h, rgba, metalness.as_ref())) {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.roughness_factor =
+                    json::material::StrengthFactor(1.0);
+                if metalness.is_some() {
+                    // The texture multiplies the factor; a wired metalness mask
+                    // needs metallicFactor 1.0, not the 0.0 default.
+                    material.pbr_metallic_roughness.metallic_factor =
+                        json::material::StrengthFactor(1.0);
+                    metalness_wired = true;
+                }
+            }
+        } else if let Some(&(mw, mh, ref m)) = metalness.as_ref() {
+            // Pure normal / no normal, and no authored roughness texture: a
+            // metalness-only ORM with a neutral roughness lane (G = 255), so the
+            // constant roughness factor below still applies.
+            if let Some(t) = self.texture_png(&metal_only_png(mw, mh, m)) {
+                material.pbr_metallic_roughness.metallic_roughness_texture = Some(tex_info(t));
+                material.pbr_metallic_roughness.metallic_factor =
+                    json::material::StrengthFactor(1.0);
+                if let Some(v) = mat.vector_params.get("TextureRoughness1") {
+                    material.pbr_metallic_roughness.roughness_factor =
+                        json::material::StrengthFactor(v[0].clamp(0.0, 1.0));
+                }
+                metalness_wired = true;
             }
         }
         // Constant roughness fallback: materials with no normal-roughness texture
@@ -899,7 +950,23 @@ impl Builder {
         // the overbright part, since emissiveFactor clamps at 1.
         if let Some(tex) = pbr.emissive.and_then(|p| self.texture_from(files, p)) {
             material.emissive_texture = Some(tex_info(tex));
-            material.emissive_factor = json::material::EmissiveFactor([1.0, 1.0, 1.0]);
+            // g_vSelfIllumTint1 is the authored glow color the engine multiplies
+            // the self-illum mask by; without it every emissive surface rendered
+            // white (Paige's green ult glow [0.44,0.84,0.53] was lost). Maps 1:1
+            // onto emissiveFactor (both linear). ponytail: same RGB-tint read as
+            // g_vColorTint1/sheen above; alpha lane (unused by glTF) dropped.
+            let tint = mat
+                .vector_params
+                .get("g_vSelfIllumTint1")
+                .or_else(|| mat.vector_params.get("g_vSelfIllumTint"))
+                .map_or([1.0f32; 3], |v| {
+                    [
+                        v[0].clamp(0.0, 1.0),
+                        v[1].clamp(0.0, 1.0),
+                        v[2].clamp(0.0, 1.0),
+                    ]
+                });
+            material.emissive_factor = json::material::EmissiveFactor(tint);
             let scale = mat
                 .float_params
                 .get("g_flSelfIllumScale1")
@@ -1032,8 +1099,8 @@ impl Builder {
 
     /// Builds the `morphic` extras payload the Grimoire viewer reads as
     /// `material.userData.morphic`: the full shader name + int/float/vector
-    /// param tables, plus the NPR mask textures embedded exactly like the PBR
-    /// ones and referenced by glTF texture index. (glTF validators flag
+    /// param tables, plus preview-only mask textures embedded exactly like the
+    /// PBR ones and referenced by glTF texture index. (glTF validators flag
     /// textures referenced only from extras as unused; that is intentional,
     /// matching VRF's exporter.) The masks are data textures (linear); the PNG
     /// embed path applies no color-space conversion.
@@ -1043,7 +1110,7 @@ impl Builder {
         files: &dyn FileResolver,
     ) -> json::Extras {
         let mut textures = serde_json::Map::new();
-        for slot in NPR_TEXTURE_SLOTS {
+        for slot in SOURCE2_PREVIEW_TEXTURE_SLOTS {
             if let Some(tex) = mat
                 .texture(slot)
                 .and_then(|p| self.texture_from_any(files, p))
@@ -1051,13 +1118,55 @@ impl Builder {
                 textures.insert((*slot).to_owned(), jval!(tex.value()));
             }
         }
+        let is_glass = mat.int_params.get("F_GLASS").copied().unwrap_or(0) > 0
+            || mat.shader_name.ends_with("_glass.vfx");
+        let additive = mat.int_params.get("F_ADDITIVE_BLEND").copied().unwrap_or(0) > 0;
+        let translucent = mat.int_params.get("F_TRANSLUCENT").copied().unwrap_or(0) > 0
+            || mat
+                .int_params
+                .get("F_ADVANCED_TRANSLUCENCY")
+                .copied()
+                .unwrap_or(0)
+                > 0;
+        let blend_mode = if is_glass {
+            "opaque"
+        } else if additive {
+            "additive"
+        } else if translucent {
+            "blend_zwrite"
+        } else if matches!(mat.alpha_mode(), crate::material::AlphaMode::Blend) {
+            "blend"
+        } else {
+            "opaque"
+        };
+        let self_illum_valid = mat
+            .pbr()
+            .emissive
+            .and_then(|p| decode_slot(files, p))
+            .is_some_and(|(w, h, _)| w > 4 && h > 4);
         let extras = jval!({
             "morphic": {
+                // Bump on any wire-shape change; the viewer treats a missing
+                // version as v1 and falls back. See npr-material plan A1.
+                "schema_version": 2,
                 "shader": mat.shader_name,
+                "blend_mode": blend_mode,
+                "self_illum_valid": self_illum_valid,
                 "ints": mat.int_params,
                 "floats": mat.float_params,
                 "vectors": mat.vector_params,
                 "textures": textures,
+                // Full slot -> .vtex path identity for every bound slot (strings,
+                // no embedded bytes). Lets the viewer name every texture by its
+                // Source 2 slot, incl. ones already embedded as PBR bindings
+                // (g_tColor1, g_tNormalRoughness1, g_tAmbientOcclusion) that are
+                // deliberately not re-embedded above.
+                "texture_slots": mat.texture_params,
+                // Dynamic (per-frame) expressions: a static value for the same
+                // name must not be trusted when one of these exists.
+                "dynamic_params": dynamic_exprs_json(&mat.dynamic_params),
+                "dynamic_texture_params": dynamic_exprs_json(&mat.dynamic_texture_params),
+                "render_attributes_used": mat.render_attributes_used,
             }
         });
         serde_json::value::to_raw_value(&extras).ok()
@@ -1322,6 +1431,61 @@ fn normal_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     png_encode(w, h, &out).unwrap_or_default()
 }
 
+/// Distinguish a PURE tangent-space normal map (BLUE = normal Z) from a packed
+/// Source 2 normal-roughness texture (BLUE = roughness). Both arrive in the same
+/// slot with the same `_normal` naming, so the only reliable signal is per-texel
+/// content: in a normal map the blue equals the Z reconstructed from R,G (the
+/// normal is unit length, and Z is stored with the same `n*0.5+0.5` encoding as
+/// X,Y), while in a packed texture blue is roughness and does not track R,G.
+/// Samples a stride of texels and returns true when the decoded blue matches the
+/// reconstructed Z for the large majority of them.
+///
+/// This preserves the blue-as-roughness behavior for genuinely packed textures
+/// (their blue does not follow the reconstructed Z) while sparing pure normal maps
+/// from having their normal-Z misread as roughness.
+pub(super) fn is_pure_normal_map(rgba: &[u8]) -> bool {
+    const TOLERANCE: f32 = 0.06;
+    let mut checked: u32 = 0;
+    let mut matched: u32 = 0;
+    // Every 4th texel keeps the scan cheap on full-size masks without losing signal.
+    for px in rgba.chunks_exact(4).step_by(4) {
+        let nx = (f32::from(px[0]) / 255.0) * 2.0 - 1.0;
+        let ny = (f32::from(px[1]) / 255.0) * 2.0 - 1.0;
+        let blue_z = (f32::from(px[2]) / 255.0) * 2.0 - 1.0;
+        let recon_z = (1.0 - (nx * nx + ny * ny)).max(0.0).sqrt();
+        checked += 1;
+        if (blue_z - recon_z).abs() <= TOLERANCE {
+            matched += 1;
+        }
+    }
+    // >= 90% match, computed in integers to avoid lossy float casts.
+    checked > 0 && u64::from(matched) * 10 >= u64::from(checked) * 9
+}
+
+/// Pass a PURE normal map through unchanged (authored R,G,B normal, forced opaque
+/// alpha). Unlike [`normal_png`] this keeps the authored blue (the real normal Z)
+/// instead of reconstructing it from R,G, preserving detail and non-unit normals.
+fn normal_passthrough_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    png_encode(w, h, &out).unwrap_or_default()
+}
+
+/// glTF metallic-roughness texture carrying ONLY metalness (B = the mask's R
+/// channel) with a neutral roughness lane (G = 255, so the final roughness is the
+/// material's `roughnessFactor`). Used when the normal slot is a pure normal map,
+/// so its blue must not become roughness, but a separate metalness mask still
+/// needs wiring. Emitted at the mask's own resolution.
+pub(super) fn metal_only_png(mw: u32, mh: u32, mask: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(mask.len());
+    for px in mask.chunks_exact(4) {
+        out.extend_from_slice(&[0, 255, px[0], 255]);
+    }
+    png_encode(mw, mh, &out).unwrap_or_default()
+}
+
 /// glTF metallic-roughness texture: G = roughness (from the normal texture's
 /// BLUE channel; Source 2 `g_tNormalRoughness` packs roughness in B while the
 /// alpha is a constant ~1.0 placeholder, so reading alpha yielded fully-rough
@@ -1348,6 +1512,32 @@ pub(super) fn metal_rough_png(
     png_encode(w, h, &out).unwrap_or_default()
 }
 
+/// glTF metallic-roughness from a SEPARATE roughness texture (Source 2
+/// `g_tRoughness`, roughness in its R channel) plus an optional metalness mask
+/// (R channel, nearest-neighbor resampled to the roughness image's dimensions).
+/// G = roughness, B = metalness. Used for heroes that author roughness as its own
+/// texture (e.g. Ghost) instead of packing it into the normal's blue; that
+/// standalone texture was parsed but dropped by the writer before this.
+pub(super) fn rough_metal_png(
+    rw: u32,
+    rh: u32,
+    rough: &[u8],
+    metalness: Option<&(u32, u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rough.len());
+    for (i, px) in rough.chunks_exact(4).enumerate() {
+        let metal = metalness.map_or(0, |&(mw, mh, ref m)| {
+            let x = i as u64 % u64::from(rw);
+            let y = i as u64 / u64::from(rw);
+            let mx = x * u64::from(mw) / u64::from(rw);
+            let my = y * u64::from(mh) / u64::from(rh);
+            m[((my * u64::from(mw) + mx) * 4) as usize]
+        });
+        out.extend_from_slice(&[0, px[0], metal, 255]);
+    }
+    png_encode(rw, rh, &out).unwrap_or_default()
+}
+
 /// glTF `sheenRoughnessTexture`: glTF reads sheen roughness from the ALPHA
 /// channel. Source 2's `g_tSheen` packs sheen color in RGB and sheen roughness
 /// in alpha, so copy alpha into the output alpha and leave RGB at 255 (the
@@ -1360,14 +1550,48 @@ fn sheen_roughness_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     png_encode(w, h, &out).unwrap_or_default()
 }
 
-/// NPR mask texture slots embedded for the viewer and referenced from the
-/// `morphic` extras payload (R = tint enable, G = rim light constant for the
-/// first; outline + transmissive color for the others).
-const NPR_TEXTURE_SLOTS: &[&str] = &[
+/// Material texture slots embedded for the viewer and referenced from the
+/// `morphic` extras payload. These are not ordinary glTF PBR bindings; Grimoire
+/// resolves them into data textures for shader approximation and debug scans.
+const SOURCE2_PREVIEW_TEXTURE_SLOTS: &[&str] = &[
     "g_tTintMaskRimLightMask",
     "g_tNprOutlineMask",
     "g_tNprTransmissiveColor",
+    "g_tGlass",
+    "g_tAltTranslucency",
+    "g_tJitterMask",
+    "g_tSelfIllumMask",
+    "g_tSheen",
+    // Genuinely-missing data textures the shader path samples but no PBR binding
+    // embeds. (g_tColor1 / g_tNormalRoughness1 / g_tAmbientOcclusion are
+    // intentionally absent: already embedded via PBR/occlusion bindings, and now
+    // resolvable by name through the `texture_slots` identity map.)
+    "g_tDetail",
+    "g_tMasks1",
+    "g_tTintMask",
+    "g_tPacked1",
 ];
+
+/// Serializes a dynamic-expression table for the `morphic` extras payload. Lives
+/// here rather than as a serde derive on `DynamicExpr` because serde's `derive`
+/// feature is a dev-only dependency of this crate; the GLB writer owns the wire
+/// format. The `error` key is emitted only on a decompile failure.
+fn dynamic_exprs_json(map: &BTreeMap<String, crate::material::DynamicExpr>) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for (name, e) in map {
+        let mut entry = serde_json::Map::new();
+        entry.insert("source".to_owned(), jval!(e.source));
+        entry.insert("decompiled".to_owned(), jval!(e.decompiled));
+        entry.insert("byte_len".to_owned(), jval!(e.byte_len));
+        entry.insert("attributes".to_owned(), jval!(e.attributes));
+        entry.insert("hash".to_owned(), jval!(e.hash));
+        if let Some(err) = &e.error {
+            entry.insert("error".to_owned(), jval!(err));
+        }
+        out.insert(name.clone(), serde_json::Value::Object(entry));
+    }
+    serde_json::Value::Object(out)
+}
 
 /// Injects per-material KHR extension objects into the serialized glTF JSON
 /// and lists their names in the root `extensionsUsed` array (required for
