@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.17.0
+
+The **Foundry catalog** engine: build a searchable index of a Deadlock install's own assets, offline, from the user's `citadel/pak01`, plus the decode primitives a browse-and-audition UI needs. This is the backend for Grimoire's Foundry tab. All pre-existing commands are unchanged.
+
+### CLI (`vpkmerge` 0.17)
+
+- New `catalog` subcommand group (all support `--json`):
+  - `catalog voiceline` lists VO sound events (one row per `soundevents/vo` event: event, hero, prose label, clip paths, duration), filterable by `--hero` / `--search`.
+  - `catalog herosounds` lists the non-VO hero gameplay sounds (weapon / ability / movement / melee) from `soundevents/hero/<code>.vsndevts_c`, with a derived category, ability name, and slot. Filter by `--hero` / `--category` / `--search`.
+  - `catalog voiceclip` slices the appended MP3 out of a `.vsnd_c` clip for audition (no decode), for both VO and gameplay clips.
+  - `catalog texture` lists the texture/icon index (one row per `.vtex_c`, path-classified), with `--thumbs DIR` to decode a PNG set + manifest and `--path` for a single on-demand decode (the lightbox backbone).
+  - `catalog cache` warms/refreshes both indexes on disk, keyed by the pak build fingerprint.
+  - `catalog heroes` resolves codename -> in-game display name from `heroes.vdata_c` + the loose localization tree.
+
+### Library (`vpkmerge-core` 0.17)
+
+- New `catalog` module: `build_voiceline_index` / `build_hero_sound_index` (-> `VoiceLine` / `HeroSound` + `HeroSoundCategory`), `CaptionDb`, `caption_hash`.
+- New `texture_catalog` (`build_texture_index`, `thumbnail_png`, `cache_texture_thumbnails`), `catalog_cache` (`CatalogCache`, build-fingerprint invalidation), and `localization` (`build_hero_roster`) modules.
+- `extract_voiceclip_mp3` normalizes a `.vsnd` index path to the packed `.vsnd_c` and returns the clip's MP3 bytes.
+
+### morphic (0.9.0)
+
+- `extract_vsnd_mp3` slices the appended MP3 out of a `CVoiceContainerDefault` `.vsnd_c` (inverse of `encode_vsnd_c`).
+- Texture decode fixes: correct non-power-of-two cropping (`crop_to_actual` + `TextureInfo.actual_width/height`) and YCoCg DXT5 decode (`TextureInfo.ycocg`), both verified pixel-perfect vs the VRF oracle.
+
 ## v0.16.0
 
 Static posed bakes now anchor FeModel cloth bones to their true driver bones, so fabric (Pocket's scarf, coat hems, etc.) settles to its rest drape instead of detaching. Adds a read-only `model clips` discovery command and generalizes the soul-container clone path into a reusable GLB import primitive (urn swap, head-bone hat weld). Built for Grimoire's per-hero pose stills and custom-prop pipeline. All other commands are unchanged.
