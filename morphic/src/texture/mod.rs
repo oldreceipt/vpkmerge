@@ -293,9 +293,8 @@ fn parse_nonpow2_dims(data: &[u8]) -> Option<(u16, u16)> {
         data.get(o..o + 4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
-    let read_u16 = |o: usize| -> Option<u16> {
-        data.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
-    };
+    let read_u16 =
+        |o: usize| -> Option<u16> { data.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
     let extra_offset = read_u32(32)? as usize;
     let extra_count = read_u32(36)? as usize;
     let table_base = 32usize.checked_add(extra_offset)?;

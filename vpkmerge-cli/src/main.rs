@@ -3118,8 +3118,7 @@ fn run_catalog_voiceclip(args: &VoiceclipArgs) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&args.out, &mp3)
-        .with_context(|| format!("writing {}", args.out.display()))?;
+    std::fs::write(&args.out, &mp3).with_context(|| format!("writing {}", args.out.display()))?;
     eprintln!("wrote {} bytes of MP3 to {}", mp3.len(), args.out.display());
     Ok(())
 }
@@ -3322,8 +3321,7 @@ fn run_catalog_herosounds(args: &HeroSoundsArgs) -> Result<()> {
         sounds.retain(|s| {
             s.label.to_lowercase().contains(&needle)
                 || s.event.to_lowercase().contains(&needle)
-                || s
-                    .ability
+                || s.ability
                     .as_deref()
                     .is_some_and(|a| a.to_lowercase().contains(&needle))
         });
@@ -3386,6 +3384,7 @@ fn run_catalog_herosounds(args: &HeroSoundsArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_catalog_texture(args: &TextureCatalogArgs) -> Result<()> {
     use vpkmerge_core::{TextureCategory, ThumbnailOutcome};
 
@@ -3553,20 +3552,6 @@ fn run_soul_container_import(args: &SoulImportArgs) -> Result<()> {
     let rotate = args.rotate.as_deref().map(parse_soul_rotate).transpose()?;
     let glb =
         std::fs::read(&args.glb).with_context(|| format!("reading GLB {}", args.glb.display()))?;
-    let relief = if args.no_relief {
-        None
-    } else {
-        let default = SoulImportCloneOptions::default()
-            .relief
-            .unwrap_or(NormalSynthesis {
-                strength: 1.0,
-                roughness: 0.4,
-            });
-        Some(NormalSynthesis {
-            strength: args.relief_strength.unwrap_or(default.strength),
-            roughness: args.roughness.unwrap_or(default.roughness),
-        })
-    };
     let opts = SoulImportCloneOptions {
         name: args.name.clone(),
         orient: args.orient.into(),

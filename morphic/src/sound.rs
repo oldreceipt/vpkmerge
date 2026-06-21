@@ -132,7 +132,9 @@ pub fn extract_vsnd_mp3(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
     )
     .map_err(|_| DecodeError::BadResource("vsnd_c streaming size too large"))?;
     if streaming_size == 0 || streaming_size > data.len() {
-        return Err(DecodeError::BadResource("vsnd_c streaming size out of range"));
+        return Err(DecodeError::BadResource(
+            "vsnd_c streaming size out of range",
+        ));
     }
     let mp3 = &data[data.len() - streaming_size..];
     if !looks_like_mp3(mp3) {

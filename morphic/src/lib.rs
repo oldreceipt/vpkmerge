@@ -29,11 +29,12 @@ pub use error::{DecodeError, EncodeError};
 pub use material::{compile_pbr_vmat, encode_pbr_vmat_c, PbrVmatParams};
 pub use sound::{encode_vsnd_c, extract_vsnd_mp3, VsndParams};
 pub use texture::{
+    crop_to_actual,
     decode::decode_image,
     encode::encode_image,
     encode_vtex_png_rgba8888, encode_vtex_png_rgba8888_from_png,
     format::{TextureFlags, TextureFormat},
-    crop_to_actual, parse_texture_header, Image, ImageData, TextureInfo,
+    parse_texture_header, Image, ImageData, TextureInfo,
 };
 
 /// Decode options for [`decode_at`]. Defaults select mip 0, slice 0, face 0.

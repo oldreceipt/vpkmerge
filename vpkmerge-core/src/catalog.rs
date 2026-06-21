@@ -462,7 +462,14 @@ fn hero_from_hero_entry(entry: &str) -> Option<String> {
 /// these (after the speaker prefix and an optional `A1..A4` slot token) is read
 /// as a named ability.
 const WEAPON_GROUPS: &[&str] = &[
-    "wpn", "weapon", "zoomin", "zoomout", "bulletwhizby", "whizby", "reload", "foley",
+    "wpn",
+    "weapon",
+    "zoomin",
+    "zoomout",
+    "bulletwhizby",
+    "whizby",
+    "reload",
+    "foley",
 ];
 const MOVEMENT_GROUPS: &[&str] = &[
     "footstep",
@@ -644,8 +651,7 @@ fn title_case_word(w: &str) -> String {
     match chars.next() {
         None => String::new(),
         Some(first) => {
-            first.to_ascii_uppercase().to_string()
-                + &chars.as_str().to_ascii_lowercase()
+            first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
         }
     }
 }
@@ -803,7 +809,9 @@ mod tests {
 
         // CamelCase ability name splits into words.
         assert_eq!(
-            classify_hero_event("VampireBat.LoveBites.Buildup").ability.as_deref(),
+            classify_hero_event("VampireBat.LoveBites.Buildup")
+                .ability
+                .as_deref(),
             Some("Love Bites")
         );
 

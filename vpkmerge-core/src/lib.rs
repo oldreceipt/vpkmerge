@@ -368,14 +368,16 @@ pub fn extract_voiceclip_mp3<P: AsRef<Path>>(vpk_path: P, entry: &str) -> Result
     // The voice-line index reports clip paths with the soundevents `.vsnd`
     // extension, but the packed VPK entry is the compiled `.vsnd_c`, so accept
     // either and normalize (callers can pass an index path verbatim).
-    let normalized = if entry.ends_with(".vsnd") {
+    let normalized = if Path::new(entry)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("vsnd"))
+    {
         format!("{entry}_c")
     } else {
         entry.to_owned()
     };
     let bytes = read_vpk_entry(&vpk_path, &normalized)?;
-    morphic::extract_vsnd_mp3(&bytes)
-        .with_context(|| format!("extracting MP3 from {normalized:?}"))
+    morphic::extract_vsnd_mp3(&bytes).with_context(|| format!("extracting MP3 from {normalized:?}"))
 }
 
 /// Route entries from `input` into N output VPKs according to `outputs`.
