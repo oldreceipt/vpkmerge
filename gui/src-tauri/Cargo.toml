@@ -1,6 +1,6 @@
 [package]
 name = "vpkmerge-gui"
-version = "0.17.0"
+version = "0.17.1"
 description = "Visual VPK merger for Deadlock mods"
 edition = "2021"
 license = "MIT"

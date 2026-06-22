@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.17.1
+
+GLB export now keeps a model's additive glow/emissive overlays instead of dropping them, so a previewed material matches its in-game appearance (relevant to Grimoire's hero/prop preview). No CLI or library API changes; all commands are unchanged.
+
+### morphic (0.9.1)
+
+- `to_glb` preserves Source 2 additive glow/emissive overlay materials in the export instead of discarding them. Adds a gated real-data guard test (skipped in CI without `MORPHIC_MODEL_VPK`).
+
 ## v0.17.0
 
 The **Foundry catalog** engine: build a searchable index of a Deadlock install's own assets, offline, from the user's `citadel/pak01`, plus the decode primitives a browse-and-audition UI needs. This is the backend for Grimoire's Foundry tab. All pre-existing commands are unchanged.
