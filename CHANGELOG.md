@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.17.2
+
+Drop your own audio onto any hero sound. The new `soundswap` command replaces a clip's (or a whole soundevent pool's) audio with a user-supplied MP3, packed into a standalone addon VPK that overrides in place.
+
+Releases are now **CLI-only**: the Tauri desktop GUI is no longer built or attached to releases (it is a prototype, not the shipped tool). The `gui/` sources stay in the tree.
+
+### CLI (`vpkmerge` 0.17)
+
+- New `soundswap` subcommand:
+  - Clip mode (`--clip ENTRY.vsnd_c`) mints a new `.vsnd_c` around the supplied `--audio FILE.mp3` using the clip itself as the donor template, packed at the clip's entry path.
+  - Event mode (`--event NAME` with `--hero CODE` or `--soundevents ENTRY`) resolves the event's clip pool and handles all of it: `--pool all` (default) overrides every pool clip in place; `--pool collapse` mints once and rewrites the event to that single clip.
+  - Loop is auto-detected from the donor clip (`--loop auto|on|off`), with pure-Rust MP3 trim/normalize: `--trim-start`/`--trim-end` (frame-snapped, bit-identical) and `--gain-db` (lossless mp3gain `global_gain` shift).
+
+### Library (`vpkmerge-core` 0.17)
+
+- New `soundswap` module: `mint_swapped_clip`, `swap_event_audio` (-> `EventSwap`, `PoolPolicy`), `parse_mp3_params`, `donor_is_looped`.
+- New `mp3` module: `trim_mp3`, `apply_mp3_gain` (raw MPEG-frame edits, no decode).
+- `morphic::sound::vsnd_looped` reads a clip's loop state for the auto loop default.
+
 ## v0.17.1
 
 GLB export now keeps a model's additive glow/emissive overlays instead of dropping them, so a previewed material matches its in-game appearance (relevant to Grimoire's hero/prop preview). No CLI or library API changes; all commands are unchanged.
