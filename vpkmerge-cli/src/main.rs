@@ -123,6 +123,13 @@ enum Command {
     /// Locker custom hero-card upload: pass one `--set` per card variant.
     Icon(IconCmd),
 
+    /// Swap one Deadlock sound clip with your own MP3. Reads the clip's `.vsnd_c`
+    /// from `--from-vpk` as a donor template, mints a new container around your
+    /// `--audio` MP3 (rate/channels/duration parsed from the MP3, no ffmpeg), and
+    /// packs it at the clip's entry path so it overrides in place. The Foundry
+    /// sound-swap backbone: drop audio -> mint -> addon VPK -> install.
+    Soundswap(SoundswapCmd),
+
     /// Build a custom soul-container override VPK from a user `.glb`. `import`
     /// clones the model's mesh into the stock soul container, atlases its
     /// materials into one albedo, fits it to the orb's bounds, and (by default)
@@ -367,6 +374,107 @@ struct IconCmd {
     /// so it overrides the base art in place.
     #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
     encode_vpk: PathBuf,
+}
+
+#[derive(Args)]
+struct SoundswapCmd {
+    /// VPK to read the donor clip from (the base `pak01_dir.vpk`, or any VPK that
+    /// ships the clip you target). The `.vsnd_c` at `--clip` is reused as the
+    /// container template (its format GUID, envelope, and loop info are kept).
+    #[arg(long = "from-vpk", value_name = "VPK")]
+    from_vpk: PathBuf,
+
+    /// Single-clip mode: entry path of the clip `.vsnd_c` to swap, inside
+    /// `--from-vpk` (e.g. `sounds/abilities/abrams/...vsnd_c`). Also the pack
+    /// target unless `--vpk-entry` overrides it, so the result overrides this clip
+    /// in place. Mutually exclusive with `--event`.
+    #[arg(long, value_name = "ENTRY")]
+    clip: Option<String>,
+
+    /// Event mode: swap a soundevent by name (the swap target the catalog
+    /// surfaces, e.g. `Gigawatt.Ability.PowerCycle.Cast`). Its clip pool is read
+    /// from the `.vsndevts_c` (`--hero` or `--soundevents`) and `--pool` decides
+    /// how a randomizer pool is handled. Mutually exclusive with `--clip`.
+    #[arg(long, value_name = "NAME", conflicts_with = "clip")]
+    event: Option<String>,
+
+    /// Event mode: hero sound-codename whose gameplay soundevents file carries
+    /// `--event` (resolves to `soundevents/hero/<code>.vsndevts_c`). For VO or
+    /// other trees pass `--soundevents` instead.
+    #[arg(long, value_name = "CODENAME", requires = "event")]
+    hero: Option<String>,
+
+    /// Event mode: explicit `.vsndevts_c` entry inside `--from-vpk` carrying
+    /// `--event` (e.g. `soundevents/vo/hero/gigawatt.vsndevts_c`). Overrides
+    /// `--hero`.
+    #[arg(long, value_name = "ENTRY", requires = "event")]
+    soundevents: Option<String>,
+
+    /// Event mode: how to handle a randomizer pool (event with several clips).
+    /// `all` (default) mints your audio into every clip so it always plays;
+    /// `collapse` rewrites the event to a single clip (no randomization).
+    #[arg(long = "pool", value_enum, default_value_t = PoolMode::All, requires = "event")]
+    pool: PoolMode,
+
+    /// The replacement audio: an **MP3** file on disk. Its sample rate, channel
+    /// count, and duration are read from the MP3 frame headers (no ffmpeg).
+    #[arg(long, value_name = "FILE.mp3")]
+    audio: PathBuf,
+
+    /// Trim the audio to start at this offset (milliseconds) before minting. The
+    /// cut snaps to the nearest MP3 frame (~26 ms). Requires `--trim-end`.
+    #[arg(long = "trim-start", value_name = "MS", requires = "trim_end")]
+    trim_start: Option<u32>,
+
+    /// Trim the audio to end at this offset (milliseconds) before minting. The
+    /// cut snaps to the nearest MP3 frame (~26 ms). Requires `--trim-start`.
+    #[arg(long = "trim-end", value_name = "MS", requires = "trim_start")]
+    trim_end: Option<u32>,
+
+    /// Apply a loudness gain in decibels before minting (positive boosts, negative
+    /// attenuates). Lossless: shifts the MP3 `global_gain` (mp3gain technique), so
+    /// no transcode. Used by the GUI's "match volume" normalizer.
+    #[arg(long = "gain-db", value_name = "DB", allow_negative_numbers = true)]
+    gain_db: Option<f64>,
+
+    /// Loop the minted clip: `auto` (default) inherits the donor clip's own loop
+    /// flag (so a `..._loop`/music clip stays looping and a one-shot VO line stays
+    /// one-shot); `on`/`off` force it.
+    #[arg(long = "loop", value_enum, default_value_t = LoopMode::Auto)]
+    loop_mode: LoopMode,
+
+    /// Pack the minted clip into this one addon VPK so it overrides in place.
+    #[arg(long = "encode-vpk", value_name = "OUT_dir.vpk")]
+    encode_vpk: PathBuf,
+
+    /// Single-clip mode: entry path for the minted clip inside `--encode-vpk`.
+    /// Defaults to `--clip` (override to pack at a different path than the donor).
+    /// Event + `--pool collapse` mode: the **new** clip path to mint at and repoint
+    /// the event to, instead of overriding the first pool clip in place (use this to
+    /// swap a hero-shared clip, e.g. `sounds/player/melee/shared/...`, for one hero
+    /// only).
+    #[arg(long = "vpk-entry", value_name = "PATH")]
+    vpk_entry: Option<String>,
+}
+
+/// How `soundswap` decides whether the minted clip loops.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum LoopMode {
+    /// Inherit the donor clip's own loop flag (`m_nLoopStart`).
+    Auto,
+    /// Force the minted clip to loop.
+    On,
+    /// Force the minted clip to play once.
+    Off,
+}
+
+/// How `soundswap` handles an event's randomizer clip pool in event mode.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PoolMode {
+    /// Mint the audio into every clip in the pool (always plays your sound).
+    All,
+    /// Rewrite the event to a single clip (removes randomization).
+    Collapse,
 }
 
 #[derive(Args)]
@@ -1569,6 +1677,7 @@ fn main() -> Result<()> {
         Some(Command::RainbowScan(args)) => run_rainbow_scan(&args),
         Some(Command::Vmat(args)) => run_vmat(&args),
         Some(Command::Icon(args)) => run_icon(&args),
+        Some(Command::Soundswap(args)) => run_soundswap(&args),
         Some(Command::SoulContainer(args)) => run_soul_container(&args),
         Some(Command::Catalog(args)) => run_catalog(&args),
         None => run_merge(cli),
@@ -3090,6 +3199,150 @@ fn run_icon(args: &IconCmd) -> Result<()> {
         refs.len(),
         if refs.len() == 1 { "y" } else { "ies" }
     );
+    Ok(())
+}
+
+/// Apply the optional pre-mint edits (trim window, then loudness gain) to the raw
+/// MP3 in the order a user authors them: cut the clip down, then match its volume.
+/// Both are pure-Rust frame-level edits (no decode / re-encode); either absent is
+/// a passthrough.
+fn prepare_swap_audio(raw: &[u8], args: &SoundswapCmd) -> Result<Vec<u8>> {
+    let mut audio = match (args.trim_start, args.trim_end) {
+        (Some(start), Some(end)) => {
+            let cut = vpkmerge_core::trim_mp3(raw, start, end)
+                .with_context(|| format!("trimming audio to {start}..{end} ms"))?;
+            eprintln!("trimmed audio to {start}..{end} ms ({} bytes)", cut.len());
+            cut
+        }
+        _ => raw.to_vec(),
+    };
+    if let Some(db) = args.gain_db {
+        audio = vpkmerge_core::apply_mp3_gain(&audio, db)
+            .with_context(|| format!("applying {db:+.1} dB gain to audio"))?;
+        eprintln!("applied {db:+.1} dB loudness gain");
+    }
+    Ok(audio)
+}
+
+fn run_soundswap(args: &SoundswapCmd) -> Result<()> {
+    let raw = std::fs::read(&args.audio)
+        .with_context(|| format!("reading audio {}", args.audio.display()))?;
+    let audio = prepare_swap_audio(&raw, args)?;
+
+    if let Some(event) = &args.event {
+        return run_soundswap_event(args, event, &audio);
+    }
+
+    let Some(clip) = &args.clip else {
+        anyhow::bail!("pass --clip <ENTRY.vsnd_c> for a single clip, or --event <NAME> (with --hero/--soundevents) for an event");
+    };
+
+    // The clip being swapped is its own donor template: read it from the pak for
+    // its container shape (format GUID, envelope, loop flag).
+    let donor = vpkmerge_core::read_vpk_entry(&args.from_vpk, clip).with_context(|| {
+        format!(
+            "reading donor clip {} from {}",
+            clip,
+            args.from_vpk.display()
+        )
+    })?;
+
+    // Resolve whether the minted clip loops: inherit the donor's own flag unless
+    // forced. Inheriting keeps a `..._loop`/music clip looping and a VO line one-shot.
+    let looped = match args.loop_mode {
+        LoopMode::On => true,
+        LoopMode::Off => false,
+        LoopMode::Auto => vpkmerge_core::donor_is_looped(&donor)
+            .with_context(|| format!("reading the loop flag of donor {clip}"))?,
+    };
+
+    let minted = vpkmerge_core::mint_swapped_clip(&donor, &audio, looped)
+        .with_context(|| format!("minting {} from {}", clip, args.audio.display()))?;
+
+    let entry = args.vpk_entry.as_deref().unwrap_or(clip);
+    vpkmerge_core::pack(&[(entry, minted.as_slice())], &args.encode_vpk)?;
+    eprintln!(
+        "wrote {}: {entry} ({}) <- {} overrides the clip in place",
+        args.encode_vpk.display(),
+        if looped { "looping" } else { "one-shot" },
+        args.audio.display(),
+    );
+    Ok(())
+}
+
+/// Event mode: swap a whole soundevent's clip pool (the catalog-surfaced swap
+/// target) rather than one known clip.
+fn run_soundswap_event(args: &SoundswapCmd, event: &str, audio: &[u8]) -> Result<()> {
+    // Resolve the .vsndevts_c carrying the event: explicit --soundevents wins,
+    // else the hero gameplay tree from --hero.
+    let soundevents = if let Some(se) = &args.soundevents {
+        se.clone()
+    } else if let Some(hero) = &args.hero {
+        format!("soundevents/hero/{hero}.vsndevts_c")
+    } else {
+        anyhow::bail!(
+            "event mode needs --hero <CODENAME> or --soundevents <ENTRY> to locate the event"
+        );
+    };
+
+    let looped_override = match args.loop_mode {
+        LoopMode::Auto => None,
+        LoopMode::On => Some(true),
+        LoopMode::Off => Some(false),
+    };
+    let policy = match args.pool {
+        PoolMode::All => vpkmerge_core::PoolPolicy::ReplaceAll,
+        PoolMode::Collapse => vpkmerge_core::PoolPolicy::Collapse,
+    };
+
+    // In collapse mode, `--vpk-entry` (when given) is the custom clip path to mint
+    // at and repoint the event to, instead of overriding the first pool clip in
+    // place. Needed to swap a hero-shared clip (e.g. melee swing) for one hero only.
+    let collapse_target = match args.pool {
+        PoolMode::Collapse => args.vpk_entry.as_deref(),
+        PoolMode::All => None,
+    };
+    let swap = vpkmerge_core::swap_event_audio(
+        &args.from_vpk,
+        &soundevents,
+        event,
+        audio,
+        looped_override,
+        policy,
+        collapse_target,
+    )
+    .with_context(|| format!("swapping event {event} from {soundevents}"))?;
+
+    let files: Vec<(&str, &[u8])> = swap
+        .files
+        .iter()
+        .map(|(e, b)| (e.as_str(), b.as_slice()))
+        .collect();
+    vpkmerge_core::pack(&files, &args.encode_vpk)?;
+
+    let mode = match args.pool {
+        PoolMode::All => "replace-all",
+        PoolMode::Collapse => "collapse",
+    };
+    eprintln!(
+        "wrote {}: event {event} ({}, pool {}, {mode}) <- {}",
+        args.encode_vpk.display(),
+        if swap.looped { "looping" } else { "one-shot" },
+        swap.pool_size,
+        args.audio.display(),
+    );
+    eprintln!(
+        "  {} clip(s) minted at: {}",
+        swap.clips.len(),
+        swap.clips.first().map_or("", String::as_str)
+    );
+    if !swap.skipped.is_empty() {
+        eprintln!(
+            "  note: {} pool clip(s) not in --from-vpk, left unchanged (e.g. {})",
+            swap.skipped.len(),
+            swap.skipped.first().map_or("", String::as_str)
+        );
+    }
     Ok(())
 }
 
