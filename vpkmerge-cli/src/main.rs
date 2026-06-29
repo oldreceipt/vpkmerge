@@ -6,9 +6,10 @@ use vpkmerge_core::{
     export_model, extract_portraits, hero_model_entry, import_clone, import_soul_container_clone,
     inspect_models, live_hero_entries, live_hero_materials, merge, model_draw_call_targets,
     model_uv_segments, model_vertex_targets, split, urn_target, AnimOptions, CollisionPolicy,
-    GeometryEdit, MergeOptions, ModelPartSelector, NormalSynthesis, OverlapPolicy, PathPredicate,
-    PortraitInfo, PoseSelection, SegmentBy, SoulGlow, SoulImportCloneOptions, SoulOrient,
-    SoundEvents, SplitOptions, SplitOutput,
+    GeometryEdit, MergeOptions, ModelPartSelector, NormalSynthesis, OverlapPolicy,
+    PanoramaBuildOptions, PanoramaDumpOptions, PathPredicate, PortraitInfo, PoseSelection,
+    SegmentBy, SoulGlow, SoulImportCloneOptions, SoulOrient, SoundEvents, SplitOptions,
+    SplitOutput,
 };
 
 #[derive(Parser)]
@@ -142,6 +143,80 @@ enum Command {
     /// searchable VO-sound index (one row per `soundevents/vo` event), the
     /// browse-and-swap backbone for a sound picker.
     Catalog(CatalogCmd),
+
+    /// Dump HUD/Panorama-heavy VPKs into a readable workspace. Extracts
+    /// `.vjs_c` / `.vcss_c` / `.vxml_c` source where possible, decodes readable
+    /// PNG/MP3/WAV/JSON asset sidecars, copies raw compiled entries under `_raw`,
+    /// and writes `_manifest.json` for rebuild tooling.
+    Panorama(PanoramaCmd),
+}
+
+#[derive(Args)]
+struct PanoramaCmd {
+    #[command(subcommand)]
+    action: PanoramaAction,
+}
+
+#[derive(Subcommand)]
+enum PanoramaAction {
+    /// Dump a HUD/Panorama mod VPK to a readable directory. By default this dumps
+    /// every entry, because HUD mods often include non-`panorama/` assets
+    /// referenced by the UI. Use `--panorama-only` or `--prefix` to narrow it.
+    Dump(PanoramaDumpArgs),
+
+    /// Rebuild a dumped Panorama workspace into an override VPK. Recompiles
+    /// edited `.vjs` / `.vcss` / `.vsvg` sources into their compiled resource
+    /// containers and preserves unchanged raw compiled resources for sidecars
+    /// that are decode-only today.
+    Build(PanoramaBuildArgs),
+}
+
+#[derive(Args)]
+struct PanoramaDumpArgs {
+    /// VPK to dump, e.g. a HUD mod `pak02_dir.vpk`.
+    #[arg(long, value_name = "VPK")]
+    vpk: PathBuf,
+
+    /// Output directory for the readable workspace.
+    #[arg(long, value_name = "DIR")]
+    out_dir: PathBuf,
+
+    /// Only dump entries under `panorama/`.
+    #[arg(long)]
+    panorama_only: bool,
+
+    /// Only dump entries matching this prefix. Repeatable. Prefixes are
+    /// Combined with `--panorama-only` when both are present.
+    #[arg(long, value_name = "PREFIX")]
+    prefix: Vec<String>,
+
+    /// Do not write `_raw/<entry>` compiled/raw copies.
+    #[arg(long)]
+    no_raw: bool,
+
+    /// Emit the full report JSON to stdout instead of the short summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct PanoramaBuildArgs {
+    /// Readable workspace produced by `vpkmerge panorama dump`.
+    #[arg(long, value_name = "DIR")]
+    workspace: PathBuf,
+
+    /// Output addon VPK path.
+    #[arg(long, value_name = "VPK")]
+    output: PathBuf,
+
+    /// Permit changed decode-only sidecars (XML/PNG/audio/soundevents JSON) and
+    /// pack their previous compiled raw resource unchanged.
+    #[arg(long)]
+    allow_stale_raw: bool,
+
+    /// Emit the full report JSON to stdout instead of the short summary.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -1680,6 +1755,7 @@ fn main() -> Result<()> {
         Some(Command::Soundswap(args)) => run_soundswap(&args),
         Some(Command::SoulContainer(args)) => run_soul_container(&args),
         Some(Command::Catalog(args)) => run_catalog(&args),
+        Some(Command::Panorama(args)) => run_panorama(&args),
         None => run_merge(cli),
     }
 }
@@ -3351,6 +3427,88 @@ fn run_soul_container(cmd: &SoulContainerCmd) -> Result<()> {
         SoulContainerAction::Import(args) => run_soul_container_import(args),
         SoulContainerAction::ImportUrn(args) => run_soul_container_import_urn(args),
     }
+}
+
+fn run_panorama(cmd: &PanoramaCmd) -> Result<()> {
+    match &cmd.action {
+        PanoramaAction::Dump(args) => run_panorama_dump(args),
+        PanoramaAction::Build(args) => run_panorama_build(args),
+    }
+}
+
+fn run_panorama_dump(args: &PanoramaDumpArgs) -> Result<()> {
+    let options = PanoramaDumpOptions {
+        include_all: !args.panorama_only,
+        include_raw: !args.no_raw,
+        prefixes: args.prefix.clone(),
+    };
+    let report = vpkmerge_core::dump_panorama_workspace(&args.vpk, &args.out_dir, &options)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).context("serializing panorama dump report")?
+        );
+    } else {
+        println!(
+            "dumped {} / {} entries to {}",
+            report.entries_dumped, report.entries_total, report.out_dir
+        );
+        println!(
+            "source: {} DATA source(s), {} text file(s), {} raw-only entry(s)",
+            report.data_sources, report.text_files, report.raw_only
+        );
+        println!(
+            "assets: {} XML layout(s), {} PNG preview(s), {} MP3 clip(s), {} WAV clip(s), {} copied asset(s), {} soundevents JSON file(s)",
+            report.layout_xml,
+            report.texture_pngs,
+            report.sound_mp3s,
+            report.sound_wavs,
+            report.asset_copies,
+            report.soundevent_json
+        );
+        if report.raw_copies > 0 {
+            println!("raw copies: {} under _raw/", report.raw_copies);
+        }
+        println!("manifest: {}", report.manifest_path);
+    }
+    Ok(())
+}
+
+fn run_panorama_build(args: &PanoramaBuildArgs) -> Result<()> {
+    let options = PanoramaBuildOptions {
+        allow_stale_raw: args.allow_stale_raw,
+    };
+    let report = vpkmerge_core::build_panorama_workspace(&args.workspace, &args.output, &options)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).context("serializing panorama build report")?
+        );
+    } else {
+        println!(
+            "packed {} entries from {} -> {}",
+            report.entries_packed, report.workspace, report.output_vpk
+        );
+        println!(
+            "rebuilt: {} DATA source(s), {} layout(s), {} texture(s), {} sound clip(s), {} soundevents file(s)",
+            report.data_rebuilt,
+            report.layouts_rebuilt,
+            report.textures_rebuilt,
+            report.sounds_rebuilt,
+            report.soundevents_rebuilt
+        );
+        println!(
+            "preserved: {} raw compiled resource(s), copied: {} direct file(s)",
+            report.raw_preserved, report.direct_copies
+        );
+        if report.stale_raw_allowed > 0 {
+            println!(
+                "warning: packed stale raw for {} changed decode-only sidecar(s)",
+                report.stale_raw_allowed
+            );
+        }
+    }
+    Ok(())
 }
 
 fn run_catalog(cmd: &CatalogCmd) -> Result<()> {

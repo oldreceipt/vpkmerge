@@ -23,6 +23,9 @@ serde = { version = "1", features = ["derive"] }
 morphic = { path = "../morphic", version = "0.9.1" }
 # Decode + resize user PNGs for the custom icon/hero-card import (icon.rs).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Parse decompiled Panorama layout XML back into the LaCo KV3 AST for
+# workspace rebuilds.
+quick-xml = "0.38"
 # Rust soul-container import prep reads user GLB files directly, replacing the
 # Blender-only normalization/material extraction stage for compiler source trees.
 gltf = { version = "1", features = ["names"] }
