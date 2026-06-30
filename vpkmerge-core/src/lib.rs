@@ -32,6 +32,13 @@ pub use model::{
 };
 pub use portrait::{extract_portraits, PortraitInfo, PortraitVariant};
 
+pub mod panorama;
+pub use panorama::{
+    build_panorama_workspace, dump_panorama_workspace, PanoramaBuildOptions, PanoramaBuildReport,
+    PanoramaBuildUnsupported, PanoramaDumpEntry, PanoramaDumpMode, PanoramaDumpOptions,
+    PanoramaDumpReport,
+};
+
 pub mod soundevents;
 pub use soundevents::{EventSummary, SoundEvents};
 

@@ -27,7 +27,9 @@ pub mod vfx_expr;
 pub use edit::{replace_face0_mip0, replace_face_mip, replace_face_mip_chain, replace_mip_chain};
 pub use error::{DecodeError, EncodeError};
 pub use material::{compile_pbr_vmat, encode_pbr_vmat_c, PbrVmatParams};
-pub use sound::{encode_vsnd_c, extract_vsnd_mp3, VsndParams};
+pub use sound::{
+    encode_vsnd_c, encode_vsnd_pcm16_c, extract_vsnd_audio, extract_vsnd_mp3, VsndAudio, VsndParams,
+};
 pub use texture::{
     crop_to_actual,
     decode::decode_image,
@@ -91,6 +93,16 @@ pub fn decode_kv3_resource(file_bytes: &[u8]) -> Result<kv3::Value, DecodeError>
 pub fn kv3_resource_data_block(file_bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let resource = resource::Resource::parse(file_bytes)?;
     Ok(resource.data_block()?.to_vec())
+}
+
+/// Rebuild a resource container with its raw `DATA` block replaced, preserving
+/// every non-DATA block byte-for-byte.
+pub fn replace_resource_data_block(
+    original: &[u8],
+    new_data: &[u8],
+) -> Result<Vec<u8>, DecodeError> {
+    let resource = resource::Resource::parse(original)?;
+    resource.rebuild_with_data(new_data)
 }
 
 /// Whether a resource's KV3 `DATA` block carries a binary-blob section

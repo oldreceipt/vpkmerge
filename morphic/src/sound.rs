@@ -21,6 +21,17 @@ use crate::resource::Resource;
 
 const BLOCK_CTRL: [u8; 4] = *b"CTRL";
 
+#[derive(Debug, Clone)]
+pub enum VsndAudio {
+    Mp3(Vec<u8>),
+    WavPcm16 {
+        wav: Vec<u8>,
+        rate: u32,
+        channels: u16,
+        sample_count: u32,
+    },
+}
+
 /// The audio parameters of the replacement clip. `streaming_size` is taken from
 /// the MP3 byte length, so it is not part of this struct.
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +112,52 @@ pub fn encode_vsnd_c(
     Ok(out)
 }
 
+/// Forge a PCM16-backed `.vsnd_c` by reusing `donor` as a template and
+/// substituting the PCM payload from a standard RIFF/WAVE file.
+///
+/// This is the PCM sibling of [`encode_vsnd_c`]. It is intended for clips whose
+/// original compiled container already uses `m_nFormat = PCM16`; the donor's
+/// dependency/envelope structure is preserved while rate/channels/sample count,
+/// duration, format, and stream size are rewritten.
+pub fn encode_vsnd_pcm16_c(donor: &[u8], wav: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    let pcm = parse_wav_pcm16(wav)?;
+    let resource = Resource::parse(donor)?;
+    let ctrl_idx = resource
+        .blocks()
+        .iter()
+        .position(|b| b.kind == BLOCK_CTRL)
+        .ok_or(DecodeError::BadResource("vsnd_c has no CTRL block"))?;
+    let ctrl_bytes = resource
+        .find_block(BLOCK_CTRL)
+        .ok_or(DecodeError::BadResource("vsnd_c CTRL block out of range"))?;
+
+    let format = kv3::Format::from_payload(ctrl_bytes)?;
+    let mut root = kv3::decode(ctrl_bytes)?;
+    let sound = root
+        .get_mut("m_vSound")
+        .ok_or(DecodeError::BadResource("vsnd_c CTRL has no m_vSound"))?;
+    set_value(sound, "m_nFormat", Value::String("PCM16".to_owned()));
+    set_value(sound, "m_nRate", Value::Int(i64::from(pcm.rate)));
+    set_value(sound, "m_nChannels", Value::Int(i64::from(pcm.channels)));
+    set_value(
+        sound,
+        "m_nSampleCount",
+        Value::UInt(u64::from(pcm.sample_count)),
+    );
+    set_value(
+        sound,
+        "m_nStreamingSize",
+        Value::UInt(u64::try_from(pcm.data.len()).unwrap_or(u64::MAX)),
+    );
+    set_value(sound, "m_flDuration", Value::Double(pcm.duration));
+    regenerate_flat_envelope(&mut root, pcm.duration);
+
+    let new_ctrl = kv3::encode(&root, &format);
+    let mut out = resource.rebuild_with_block(ctrl_idx, &new_ctrl)?;
+    out.extend_from_slice(&pcm.data);
+    Ok(out)
+}
+
 /// Extract the appended MP3 stream from a `.vsnd_c` container, ready to hand to
 /// an `<audio>` element (no decode needed). Deadlock VO / ability clips store
 /// their audio as a plain MP3 appended after the resource structure, its length
@@ -116,6 +173,15 @@ pub fn encode_vsnd_c(
 /// appended stream is not MP3 (the only container shape Deadlock VO uses; a
 /// different codec is reported rather than handed back as bogus `.mp3`).
 pub fn extract_vsnd_mp3(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
+    match extract_vsnd_audio(data)? {
+        VsndAudio::Mp3(mp3) => Ok(mp3),
+        VsndAudio::WavPcm16 { .. } => Err(DecodeError::BadResource(
+            "vsnd_c streamed audio is PCM16, not MP3",
+        )),
+    }
+}
+
+pub fn extract_vsnd_audio(data: &[u8]) -> Result<VsndAudio, DecodeError> {
     let resource = Resource::parse(data)?;
     let ctrl_bytes = resource
         .find_block(BLOCK_CTRL)
@@ -136,13 +202,62 @@ pub fn extract_vsnd_mp3(data: &[u8]) -> Result<Vec<u8>, DecodeError> {
             "vsnd_c streaming size out of range",
         ));
     }
-    let mp3 = &data[data.len() - streaming_size..];
-    if !looks_like_mp3(mp3) {
-        return Err(DecodeError::BadResource(
-            "vsnd_c streamed audio is not MP3 (unsupported codec for audition)",
-        ));
+    let stream = &data[data.len() - streaming_size..];
+    if looks_like_mp3(stream) {
+        return Ok(VsndAudio::Mp3(stream.to_vec()));
     }
-    Ok(mp3.to_vec())
+
+    let format = sound.get("m_nFormat").and_then(Value::as_str).unwrap_or("");
+    if format.eq_ignore_ascii_case("PCM16") {
+        let rate = u32::try_from(
+            sound
+                .get("m_nRate")
+                .and_then(Value::as_uint)
+                .ok_or(DecodeError::BadResource("vsnd_c PCM16 m_nRate missing"))?,
+        )
+        .map_err(|_| DecodeError::BadResource("vsnd_c PCM16 rate too large"))?;
+        let channels = u16::try_from(
+            sound
+                .get("m_nChannels")
+                .and_then(Value::as_uint)
+                .ok_or(DecodeError::BadResource("vsnd_c PCM16 m_nChannels missing"))?,
+        )
+        .map_err(|_| DecodeError::BadResource("vsnd_c PCM16 channels too large"))?;
+        let sample_count =
+            u32::try_from(sound.get("m_nSampleCount").and_then(Value::as_uint).ok_or(
+                DecodeError::BadResource("vsnd_c PCM16 m_nSampleCount missing"),
+            )?)
+            .map_err(|_| DecodeError::BadResource("vsnd_c PCM16 sample count too large"))?;
+        if rate == 0 || channels == 0 {
+            return Err(DecodeError::BadResource(
+                "vsnd_c PCM16 invalid rate/channels",
+            ));
+        }
+
+        let expected = usize::try_from(sample_count)
+            .ok()
+            .and_then(|samples| samples.checked_mul(usize::from(channels)))
+            .and_then(|sample_channels| sample_channels.checked_mul(2))
+            .ok_or(DecodeError::BadResource(
+                "vsnd_c PCM16 expected byte count overflow",
+            ))?;
+        if expected != stream.len() {
+            return Err(DecodeError::BadResource(
+                "vsnd_c PCM16 stream size does not match sample metadata",
+            ));
+        }
+
+        return Ok(VsndAudio::WavPcm16 {
+            wav: wav_pcm16(stream, rate, channels)?,
+            rate,
+            channels,
+            sample_count,
+        });
+    }
+
+    Err(DecodeError::BadResource(
+        "vsnd_c streamed audio is not MP3 or supported PCM16",
+    ))
 }
 
 /// Whether a `.vsnd_c` clip is authored to loop, read from its `CTRL` block's
@@ -168,17 +283,231 @@ pub fn vsnd_looped(data: &[u8]) -> Result<bool, DecodeError> {
     Ok(matches!(loop_start, Some(s) if s >= 0))
 }
 
-/// Whether `data` starts like an MP3 stream: an `ID3` tag, or an MPEG audio frame
-/// sync (11 set bits: `0xFF` then top 3 bits of the next byte). Cheap guard so a
-/// non-MP3 codec surfaces as an error instead of unplayable `.mp3` bytes.
+/// Whether `data` starts like an MP3 stream. This accepts an optional `ID3v2` tag,
+/// then requires two structurally valid MPEG audio frames back-to-back. A loose
+/// sync-word check is too weak here: raw little-endian PCM commonly starts with
+/// bytes such as `FF FF 00 00`, which has the sync bits but is not MP3.
 fn looks_like_mp3(data: &[u8]) -> bool {
-    if data.len() < 3 {
+    let Some(first) = first_mpeg_frame_offset(data) else {
         return false;
+    };
+    let Some(first_len) = mpeg_frame_len(data, first) else {
+        return false;
+    };
+    let second = first.saturating_add(first_len);
+    second < data.len() && mpeg_frame_len(data, second).is_some()
+}
+
+fn first_mpeg_frame_offset(data: &[u8]) -> Option<usize> {
+    if data.len() >= 10 && &data[..3] == b"ID3" {
+        let tag_size = id3v2_tag_size(data)?;
+        if tag_size <= data.len() {
+            return Some(tag_size);
+        }
     }
-    if &data[..3] == b"ID3" {
-        return true;
+    Some(0)
+}
+
+fn id3v2_tag_size(data: &[u8]) -> Option<usize> {
+    if data.len() < 10 {
+        return None;
     }
-    data[0] == 0xFF && (data[1] & 0xE0) == 0xE0
+    if data[6..10].iter().any(|b| (b & 0x80) != 0) {
+        return None;
+    }
+    let body_size = (usize::from(data[6]) << 21)
+        | (usize::from(data[7]) << 14)
+        | (usize::from(data[8]) << 7)
+        | usize::from(data[9]);
+    let footer_size = if (data[5] & 0x10) != 0 { 10 } else { 0 };
+    10usize.checked_add(body_size)?.checked_add(footer_size)
+}
+
+fn mpeg_frame_len(data: &[u8], offset: usize) -> Option<usize> {
+    let header = data.get(offset..offset + 4)?;
+    let header = u32::from_be_bytes(header.try_into().ok()?);
+    if (header >> 21) != 0x7ff {
+        return None;
+    }
+
+    let version = ((header >> 19) & 0b11) as u8;
+    let layer = ((header >> 17) & 0b11) as u8;
+    let bitrate_index = ((header >> 12) & 0b1111) as usize;
+    let sample_rate_index = ((header >> 10) & 0b11) as usize;
+    let padding = ((header >> 9) & 1) as usize;
+
+    if version == 0b01
+        || layer == 0
+        || bitrate_index == 0
+        || bitrate_index == 15
+        || sample_rate_index == 3
+    {
+        return None;
+    }
+
+    let bitrate_kbps = bitrate_kbps(version, layer, bitrate_index)?;
+    let sample_rate = sample_rate(version, sample_rate_index)?;
+    let bitrate = bitrate_kbps.checked_mul(1000)?;
+    let frame_len = if layer == 0b11 {
+        // Layer I.
+        ((12 * bitrate / sample_rate) + padding) * 4
+    } else if layer == 0b01 && version != 0b11 {
+        // MPEG-2/2.5 Layer III.
+        (72 * bitrate / sample_rate) + padding
+    } else {
+        // MPEG-1 Layer II/III and MPEG-2 Layer II.
+        (144 * bitrate / sample_rate) + padding
+    };
+
+    (frame_len >= 4 && offset.checked_add(frame_len)? <= data.len()).then_some(frame_len)
+}
+
+fn bitrate_kbps(version: u8, layer: u8, index: usize) -> Option<usize> {
+    const MPEG1_LAYER1: [usize; 16] = [
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0,
+    ];
+    const MPEG1_LAYER2: [usize; 16] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0,
+    ];
+    const MPEG1_LAYER3: [usize; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const MPEG2_LAYER1: [usize; 16] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0,
+    ];
+    const MPEG2_LAYER23: [usize; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
+
+    let table = match (version == 0b11, layer) {
+        (true, 0b11) => &MPEG1_LAYER1,
+        (true, 0b10) => &MPEG1_LAYER2,
+        (true, 0b01) => &MPEG1_LAYER3,
+        (false, 0b11) => &MPEG2_LAYER1,
+        (false, 0b10 | 0b01) => &MPEG2_LAYER23,
+        _ => return None,
+    };
+    table.get(index).copied().filter(|v| *v != 0)
+}
+
+fn sample_rate(version: u8, index: usize) -> Option<usize> {
+    const MPEG1: [usize; 3] = [44_100, 48_000, 32_000];
+    const MPEG2: [usize; 3] = [22_050, 24_000, 16_000];
+    const MPEG25: [usize; 3] = [11_025, 12_000, 8_000];
+    let table = match version {
+        0b11 => &MPEG1,
+        0b10 => &MPEG2,
+        0b00 => &MPEG25,
+        _ => return None,
+    };
+    table.get(index).copied()
+}
+
+fn wav_pcm16(pcm: &[u8], rate: u32, channels: u16) -> Result<Vec<u8>, DecodeError> {
+    let data_len = u32::try_from(pcm.len())
+        .map_err(|_| DecodeError::BadResource("PCM16 WAV data too large"))?;
+    let byte_rate = rate
+        .checked_mul(u32::from(channels))
+        .and_then(|v| v.checked_mul(2))
+        .ok_or(DecodeError::BadResource("PCM16 WAV byte rate overflow"))?;
+    let block_align = channels
+        .checked_mul(2)
+        .ok_or(DecodeError::BadResource("PCM16 WAV block align overflow"))?;
+    let riff_len = 36u32
+        .checked_add(data_len)
+        .ok_or(DecodeError::BadResource("PCM16 WAV RIFF size overflow"))?;
+
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&riff_len.to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.extend_from_slice(pcm);
+    Ok(out)
+}
+
+struct Pcm16Wav {
+    data: Vec<u8>,
+    rate: u32,
+    channels: u16,
+    sample_count: u32,
+    duration: f64,
+}
+
+fn parse_wav_pcm16(wav: &[u8]) -> Result<Pcm16Wav, DecodeError> {
+    if wav.len() < 12 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return Err(DecodeError::BadResource("WAV is not RIFF/WAVE"));
+    }
+
+    let mut cursor = 12usize;
+    let mut fmt: Option<(u16, u32, u16, u16)> = None;
+    let mut data: Option<&[u8]> = None;
+    while cursor.checked_add(8).is_some_and(|end| end <= wav.len()) {
+        let id = wav
+            .get(cursor..cursor + 4)
+            .ok_or(DecodeError::BadResource("WAV chunk id out of range"))?;
+        let size = u32::from_le_bytes(
+            wav.get(cursor + 4..cursor + 8)
+                .ok_or(DecodeError::BadResource("WAV chunk size out of range"))?
+                .try_into()
+                .map_err(|_| DecodeError::BadResource("WAV chunk size malformed"))?,
+        ) as usize;
+        cursor += 8;
+        let end = cursor
+            .checked_add(size)
+            .ok_or(DecodeError::BadResource("WAV chunk size overflow"))?;
+        let chunk = wav
+            .get(cursor..end)
+            .ok_or(DecodeError::BadResource("WAV chunk extends past EOF"))?;
+        match id {
+            b"fmt " => {
+                if chunk.len() < 16 {
+                    return Err(DecodeError::BadResource("WAV fmt chunk too short"));
+                }
+                let audio_format = u16::from_le_bytes([chunk[0], chunk[1]]);
+                let channels = u16::from_le_bytes([chunk[2], chunk[3]]);
+                let rate = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                let block_align = u16::from_le_bytes([chunk[12], chunk[13]]);
+                let bits_per_sample = u16::from_le_bytes([chunk[14], chunk[15]]);
+                fmt = Some((audio_format, rate, channels, block_align.max(1)));
+                if audio_format != 1 || bits_per_sample != 16 {
+                    return Err(DecodeError::BadResource("WAV is not PCM16"));
+                }
+            }
+            b"data" => data = Some(chunk),
+            _ => {}
+        }
+        cursor = end + (size & 1);
+    }
+
+    let (audio_format, rate, channels, block_align) =
+        fmt.ok_or(DecodeError::BadResource("WAV missing fmt chunk"))?;
+    if audio_format != 1 || rate == 0 || channels == 0 {
+        return Err(DecodeError::BadResource("WAV has invalid PCM16 metadata"));
+    }
+    let data = data.ok_or(DecodeError::BadResource("WAV missing data chunk"))?;
+    if data.len() % usize::from(block_align) != 0 {
+        return Err(DecodeError::BadResource(
+            "WAV data size is not aligned to PCM16 frames",
+        ));
+    }
+    let sample_count = u32::try_from(data.len() / usize::from(block_align))
+        .map_err(|_| DecodeError::BadResource("WAV sample count too large"))?;
+    Ok(Pcm16Wav {
+        data: data.to_vec(),
+        rate,
+        channels,
+        sample_count,
+        duration: f64::from(sample_count) / f64::from(rate),
+    })
 }
 
 /// Overwrite `key` on an object if present, leaving its absence to surface later
@@ -231,4 +560,54 @@ fn linear_tangent() -> Value {
             Value::String("CURVE_TANGENT_LINEAR".to_owned()),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp3_guard_rejects_pcm_like_sync_prefix() {
+        let mut pcm = vec![0xFF, 0xFF, 0x00, 0x00];
+        pcm.extend(std::iter::repeat_n(0, 1024));
+        assert!(!looks_like_mp3(&pcm));
+    }
+
+    #[test]
+    fn mp3_guard_accepts_two_valid_mpeg_frames() {
+        let mut frame = vec![0xFF, 0xFB, 0x90, 0x64];
+        frame.resize(417, 0);
+        let mut mp3 = frame.clone();
+        mp3.extend_from_slice(&frame);
+        assert!(looks_like_mp3(&mp3));
+    }
+
+    #[test]
+    fn mp3_guard_skips_id3v2_tag() {
+        let mut frame = vec![0xFF, 0xFB, 0x90, 0x64];
+        frame.resize(417, 0);
+        let mut mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x05hello".to_vec();
+        mp3.extend_from_slice(&frame);
+        mp3.extend_from_slice(&frame);
+        assert!(looks_like_mp3(&mp3));
+    }
+
+    #[test]
+    fn pcm16_wav_has_riff_header_and_payload() {
+        let wav = wav_pcm16(&[0, 0, 1, 0], 22_050, 1).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(&wav[44..], &[0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn parses_pcm16_wav_payload() {
+        let wav = wav_pcm16(&[0, 0, 1, 0], 22_050, 1).unwrap();
+        let parsed = parse_wav_pcm16(&wav).unwrap();
+        assert_eq!(parsed.data, [0, 0, 1, 0]);
+        assert_eq!(parsed.rate, 22_050);
+        assert_eq!(parsed.channels, 1);
+        assert_eq!(parsed.sample_count, 2);
+    }
 }

@@ -108,6 +108,11 @@ impl SoundEvents {
         value_to_json(&self.root)
     }
 
+    /// Replace the decoded tree from an edited JSON projection.
+    pub fn replace_from_json(&mut self, json: serde_json::Value) {
+        self.root = value_from_json(json);
+    }
+
     /// Replace every clip path equal to `from` with `to`, anywhere in the tree.
     /// Returns the number of strings rewritten.
     pub fn swap_vsnd(&mut self, from: &str, to: &str) -> usize {
@@ -226,6 +231,32 @@ pub(crate) fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
+pub(crate) fn value_from_json(v: serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match v {
+        J::Null => Value::Null,
+        J::Bool(b) => Value::Bool(b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(u) = n.as_u64() {
+                Value::UInt(u)
+            } else if let Some(f) = n.as_f64() {
+                Value::Double(f)
+            } else {
+                Value::Null
+            }
+        }
+        J::String(s) => Value::String(s),
+        J::Array(items) => Value::Array(items.into_iter().map(value_from_json).collect()),
+        J::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, value_from_json(value)))
+                .collect(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +333,17 @@ mod tests {
         let first_key = fire.as_object().unwrap().keys().next().unwrap();
         assert_eq!(first_key, "base");
         assert!(fire["vsnd_files"].is_array());
+    }
+
+    #[test]
+    fn json_projection_import_reencodes() {
+        let mut se = SoundEvents::from_file(FIXTURE).expect("load fixture");
+        let mut json = se.to_json();
+        json["Seven.Wpn.Fire"]["volume"] = serde_json::json!(-3.5);
+        se.replace_from_json(json);
+        let bytes = se.encode().expect("encode");
+        let back = SoundEvents::from_bytes(bytes).expect("reload");
+        let fire = back.root.get("Seven.Wpn.Fire").unwrap();
+        assert_eq!(fire.get("volume").and_then(Value::as_f64), Some(-3.5));
     }
 }
