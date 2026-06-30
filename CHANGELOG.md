@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.18.0
+
+Panorama (HUD/UI) workspace round-tripping, plus broader model decode coverage and a Victor VFX recolor fix. CLI-only release; all pre-existing commands are unchanged.
+
+### CLI (`vpkmerge` 0.18)
+
+- New `panorama` subcommand group for editing a HUD/UI mod's Panorama tree:
+  - `panorama dump --vpk <VPK> --out-dir <DIR>` unpacks a VPK's Panorama resources into a readable, editable workspace (`.vxml` / `.vcss` / `.vjs` / `.vsvg` sources plus decoded soundevents). `--panorama-only` and repeatable `--prefix` narrow the dump, `--no-raw` skips the `_raw/` compiled copies, `--json` emits the full report.
+  - `panorama build --workspace <DIR> --output <VPK>` repacks an edited workspace into an addon VPK, recompiling changed sources; `--allow-stale-raw` packs a changed decode-only sidecar's previous compiled bytes unchanged.
+
+### Library (`vpkmerge-core` 0.18)
+
+- New `panorama` module: dump a VPK's Panorama workspace and rebuild it into an addon VPK (`panorama::layout` owns the on-disk workspace layout).
+- `soundevents`: extended to round-trip through the panorama dump/rebuild path.
+
+### morphic (0.10.0)
+
+- Decode the legacy VBIB/MBUF embedded-mesh layout, so older `.vmdl_c` meshes that use the pre-MBUF embedded vertex/index buffers now decode and export (improves `model export` and hero/prop preview coverage).
+- `.vsnd_c` sound decode/encode helpers extended for the panorama soundevents path.
+
+### Fixes
+
+- `recolor-hero` / `prism`: drop a no-op material pin from Victor (`frank`). His Aura of Suffering is fully particle-driven (`g_vSelfIllumTint1 = $ILLUMCOLOR`, `g_vColorTint1 = $COLORTINT`), so the particle prefix pass already recolors the whole aura; `frank_painaura_sphere.vmat_c` carries no static tint constant, so the material patch was a no-op. Addons baked before the 2026-06-25 game update should be re-baked.
+
 ## v0.17.2
 
 Drop your own audio onto any hero sound. The new `soundswap` command replaces a clip's (or a whole soundevent pool's) audio with a user-supplied MP3, packed into a standalone addon VPK that overrides in place.
